@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from shapely import affinity
 
-from .._helpers import crop, linear_grating
+from .._helpers import crop
 from ..base import GeneratedPattern, ParamSpec, Pattern, ensure_multipolygon, register
+from ..motifs.tairona import concentric_goldwork
 
 
 @register
@@ -11,11 +12,11 @@ class TaironaTalbot(Pattern):
     slug = "tairona-talbot"
     name = "Tairona Talbot revival"
     description = (
-        "Front and back are identical linear gratings, inspired by the finely "
-        "ruled lines on Tairona goldwork. With the 500 μm fused-silica gap "
-        "between them set near the Talbot distance z_T = 2·Λ²·n/λ, the back "
-        "sits on a self-image of the front — and a half-period shift puts it "
-        "on a negative-Talbot revival where the fringes invert."
+        "Front and back are concentric ring gratings recalling Tairona coiled "
+        "goldwork. With the 500 μm fused-silica gap between them set near the "
+        "Talbot distance z_T = 2·Λ²·n/λ (valid paraxially far from the axis), "
+        "the back sits on a self-image of the front — and a half-period "
+        "lateral shift decenters the ring system to break that revival."
     )
     tags = ["talbot", "self-imaging", "diffraction", "Tairona"]
     tier = 3
@@ -39,8 +40,8 @@ class TaironaTalbot(Pattern):
         extent_um: float = 2000.0,
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
-        front = linear_grating(period_um, duty, extent)
-        back = linear_grating(period_um, duty, extent)
+        front = concentric_goldwork(extent, period_um, duty)
+        back = concentric_goldwork(extent, period_um, duty)
         if back_phase_shift == "half":
             back = ensure_multipolygon(affinity.translate(back, xoff=period_um / 2))
             back = crop(back, extent)
