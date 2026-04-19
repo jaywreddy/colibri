@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from shapely import affinity
+
+from .._helpers import crop, linear_grating
+from ..base import GeneratedPattern, ParamSpec, Pattern, ensure_multipolygon, register
+
+
+@register
+class TaironaTalbot(Pattern):
+    slug = "tairona-talbot"
+    name = "Tairona Talbot revival"
+    description = (
+        "Front and back are identical linear gratings, inspired by the finely "
+        "ruled lines on Tairona goldwork. With the 500 μm fused-silica gap "
+        "between them set near the Talbot distance z_T = 2·Λ²·n/λ, the back "
+        "sits on a self-image of the front — and a half-period shift puts it "
+        "on a negative-Talbot revival where the fringes invert."
+    )
+    tags = ["talbot", "self-imaging", "diffraction", "Tairona"]
+    tier = 3
+    theme = "Colombia"
+    params = [
+        ParamSpec("period_um", "Period", "float", 20.0, 8.0, 80.0, 0.5, "μm"),
+        ParamSpec("duty", "Duty cycle", "float", 0.5, 0.1, 0.9, 0.05),
+        ParamSpec("wavelength_um", "Design wavelength", "float", 0.55, 0.4, 0.8, 0.005, "μm"),
+        ParamSpec("back_phase_shift", "Back phase shift", "choice", "zero",
+                  choices=["zero", "half"]),
+        ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
+    ]
+
+    @classmethod
+    def generate(
+        cls,
+        period_um: float = 20.0,
+        duty: float = 0.5,
+        wavelength_um: float = 0.55,
+        back_phase_shift: str = "zero",
+        extent_um: float = 2000.0,
+    ) -> GeneratedPattern:
+        extent = (extent_um, extent_um)
+        front = linear_grating(period_um, duty, extent)
+        back = linear_grating(period_um, duty, extent)
+        if back_phase_shift == "half":
+            back = ensure_multipolygon(affinity.translate(back, xoff=period_um / 2))
+            back = crop(back, extent)
+
+        n = 1.46
+        z_T_um = 2 * period_um**2 * n / wavelength_um
+        plate_over_z_T = 500.0 / z_T_um
+        return GeneratedPattern(
+            front=front,
+            back=back,
+            extent_um=extent,
+            pixel_pitch_um=max(0.25, period_um * duty / 8),
+            min_feature_um=period_um * duty,
+            extra={
+                "talbot_distance_um": z_T_um,
+                "plate_over_z_T": plate_over_z_T,
+            },
+        )

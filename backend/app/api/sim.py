@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+import json
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from ..sim.fraunhofer import fraunhofer_far_field
+from ..sim.angular_spectrum import propagate as asm_propagate
+from ..service import DATA_ROOT
+
+router = APIRouter(prefix="/sim", tags=["sim"])
+
+
+class FftRequest(BaseModel):
+    slug: str
+    variant: str
+    wavelengths_um: list[float] = [0.65, 0.55, 0.45]
+    n_angles: int = 256
+    max_angle_deg: float = 30.0
+
+
+@router.post("/fft")
+def fft_sim(req: FftRequest) -> dict:
+    root = DATA_ROOT / req.slug / req.variant
+    if not root.exists():
+        raise HTTPException(404, f"Variant not found: {req.slug}/{req.variant}")
+    try:
+        out = fraunhofer_far_field(
+            root,
+            wavelengths_um=req.wavelengths_um,
+            n_angles=req.n_angles,
+            max_angle_deg=req.max_angle_deg,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"FFT failed: {e!r}") from e
+    return {
+        "slug": req.slug,
+        "variant": req.variant,
+        "wavelengths_um": req.wavelengths_um,
+        "atlas_png": f"/data/{req.slug}/{req.variant}/{out['atlas_name']}",
+        "max_angle_deg": req.max_angle_deg,
+    }
+
+
+class PropagateRequest(BaseModel):
+    slug: str
+    variant: str
+    wavelengths_um: list[float] = [0.65, 0.55, 0.45]
+    view_angles_deg: list[float] = [-15.0, 0.0, 15.0]
+    observer_distance_um: float = 1000.0
+    downsample: int = 4
+
+
+@router.post("/propagate")
+def propagate(req: PropagateRequest) -> dict:
+    root = DATA_ROOT / req.slug / req.variant
+    if not root.exists():
+        raise HTTPException(404, f"Variant not found: {req.slug}/{req.variant}")
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(404, "Variant missing manifest")
+    manifest = json.loads(manifest_path.read_text())
+    try:
+        out = asm_propagate(
+            root,
+            pixel_pitch_um=float(manifest["pixel_pitch_um"]),
+            wavelengths_um=req.wavelengths_um,
+            view_angles_deg=req.view_angles_deg,
+            observer_distance_um=req.observer_distance_um,
+            downsample=req.downsample,
+            substrate_thickness_um=float(manifest["substrate"]["thickness_um"]),
+            substrate_n=float(manifest["substrate"]["n"]),
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Propagate failed: {e!r}") from e
+    return {
+        "slug": req.slug,
+        "variant": req.variant,
+        "wavelengths_um": req.wavelengths_um,
+        "view_angles_deg": req.view_angles_deg,
+        "atlas_png": f"/data/{req.slug}/{req.variant}/{out['atlas_name']}",
+        "rows": out.get("rows"),
+        "cols": out.get("cols"),
+        "tile": out.get("tile"),
+        "cached": out.get("cached", False),
+    }
