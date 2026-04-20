@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from ..sim.fraunhofer import fraunhofer_far_field
 from ..sim.angular_spectrum import propagate as asm_propagate
+from ..sim.talbot_carpet import propagate_carpet
 from ..service import DATA_ROOT
 
 router = APIRouter(prefix="/sim", tags=["sim"])
@@ -120,6 +121,91 @@ def propagate(req: PropagateRequest) -> dict:
         "variant": req.variant,
         "wavelengths_um": req.wavelengths_um,
         "view_angles_deg": req.view_angles_deg,
+        "atlas_png": f"/data/{req.slug}/{req.variant}/{out['atlas_name']}",
+        "rows": out.get("rows"),
+        "cols": out.get("cols"),
+        "tile": out.get("tile"),
+        "cached": out.get("cached", False),
+    }
+
+
+class CarpetRequest(BaseModel):
+    slug: str
+    variant: str
+    wavelength_um: float = 0.55
+    z_min_um: float = 0.0
+    z_max_um: float = 4000.0
+    n_slices: int = 64
+    downsample: int = 8
+    tile_size: int = 128
+
+
+@router.post("/carpet")
+def carpet(req: CarpetRequest) -> dict:
+    """Near-field propagation carpet past the back face of the plate.
+
+    Used by the `near_field_carpet` render recipe (tairona-talbot,
+    muzo-emerald-zone). Returns a vertical atlas of `n_slices` 2D tiles
+    showing the intensity distribution at each z. The frontend shader
+    picks a row based on `uZSlice` and the SecondaryView panel displays
+    the full carpet with a slider indicator.
+    """
+    root = DATA_ROOT / req.slug / req.variant
+    if not root.exists():
+        raise HTTPException(404, f"Variant not found: {req.slug}/{req.variant}")
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(404, "Variant missing manifest")
+    manifest = json.loads(manifest_path.read_text())
+    if req.z_max_um <= req.z_min_um:
+        raise HTTPException(400, "z_max_um must exceed z_min_um")
+    if req.n_slices < 2:
+        raise HTTPException(400, "n_slices must be >= 2")
+    t0 = time.perf_counter()
+    _log.info(
+        "carpet start slug=%s variant=%s wl=%s z=[%s,%s] n=%d",
+        req.slug,
+        req.variant,
+        req.wavelength_um,
+        req.z_min_um,
+        req.z_max_um,
+        req.n_slices,
+    )
+    try:
+        out = propagate_carpet(
+            root,
+            pixel_pitch_um=float(manifest["pixel_pitch_um"]),
+            wavelength_um=req.wavelength_um,
+            z_min_um=req.z_min_um,
+            z_max_um=req.z_max_um,
+            n_slices=req.n_slices,
+            downsample=req.downsample,
+            tile_size=req.tile_size,
+            substrate_thickness_um=float(manifest["substrate"]["thickness_um"]),
+            substrate_n=float(manifest["substrate"]["n"]),
+        )
+    except Exception as e:  # noqa: BLE001
+        _log.warning(
+            "carpet failed slug=%s variant=%s err=%r (%dms)",
+            req.slug,
+            req.variant,
+            e,
+            int((time.perf_counter() - t0) * 1000),
+        )
+        raise HTTPException(400, f"Carpet failed: {e!r}") from e
+    _log.info(
+        "carpet done slug=%s variant=%s cached=%s %dms",
+        req.slug,
+        req.variant,
+        out.get("cached", False),
+        int((time.perf_counter() - t0) * 1000),
+    )
+    return {
+        "slug": req.slug,
+        "variant": req.variant,
+        "wavelength_um": req.wavelength_um,
+        "z_min_um": req.z_min_um,
+        "z_max_um": req.z_max_um,
         "atlas_png": f"/data/{req.slug}/{req.variant}/{out['atlas_name']}",
         "rows": out.get("rows"),
         "cols": out.get("cols"),

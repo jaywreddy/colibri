@@ -21,6 +21,7 @@ class TaironaTalbot(Pattern):
     tags = ["talbot", "self-imaging", "diffraction", "Tairona"]
     tier = 3
     theme = "Colombia"
+    render_recipe = "near_field_carpet"
     params = [
         ParamSpec("period_um", "Period", "float", 20.0, 8.0, 80.0, 0.5, "μm"),
         ParamSpec("duty", "Duty cycle", "float", 0.5, 0.1, 0.9, 0.05),
@@ -49,6 +50,11 @@ class TaironaTalbot(Pattern):
         n = 1.46
         z_T_um = 2 * period_um**2 * n / wavelength_um
         plate_over_z_T = 500.0 / z_T_um
+        # Carpet sweeps from the back face through 2·z_T so the revival at z=z_T
+        # sits at the midpoint of the z-slider (easy target for the vision check
+        # and the E2E test).
+        z_min_um = 0.0
+        z_max_um = 2.0 * z_T_um
         return GeneratedPattern(
             front=front,
             back=back,
@@ -58,5 +64,12 @@ class TaironaTalbot(Pattern):
             extra={
                 "talbot_distance_um": z_T_um,
                 "plate_over_z_T": plate_over_z_T,
+            },
+            recipe_data={
+                "talbot_distance_um": z_T_um,
+                "design_wavelength_um": wavelength_um,
+                "z_min_um": z_min_um,
+                "z_max_um": z_max_um,
+                "n_slices": 64,
             },
         )

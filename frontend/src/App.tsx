@@ -2,20 +2,41 @@ import Gallery from './ui/Gallery';
 import ParameterPanel from './ui/ParameterPanel';
 import IlluminationPanel from './ui/IlluminationPanel';
 import ManifestPanel from './ui/ManifestPanel';
+import SecondaryView from './ui/SecondaryView';
 import PlateScene from './scene/PlateScene';
+import { useStore } from './store';
 
 export default function App() {
+  const manifest = useStore((s) => s.manifest);
+  const recipe = manifest?.render_recipe ?? null;
+  const showSecondary =
+    recipe === 'near_field_carpet' || recipe === 'far_field_hologram';
+
+  // When the secondary panel is hidden the canvas reclaims its column, so
+  // the grid template has to reshape — doing this lazily keeps the layout
+  // tight for patterns that don't need the extra view.
+  const gridTemplateColumns = showSecondary
+    ? '260px 1fr 320px 300px'
+    : '260px 1fr 300px';
+  const gridTemplateAreas = showSecondary
+    ? `
+      "header header header header"
+      "gallery canvas secondary controls"
+      "gallery manifest secondary controls"
+    `
+    : `
+      "header header header"
+      "gallery canvas controls"
+      "gallery manifest controls"
+    `;
+
   return (
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: '260px 1fr 300px',
+        gridTemplateColumns,
         gridTemplateRows: '48px 1fr auto',
-        gridTemplateAreas: `
-          "header header header"
-          "gallery canvas controls"
-          "gallery manifest controls"
-        `,
+        gridTemplateAreas,
         height: '100vh',
         width: '100vw',
       }}
@@ -65,6 +86,8 @@ export default function App() {
       <section style={{ gridArea: 'manifest', background: '#0f1218' }}>
         <ManifestPanel />
       </section>
+
+      {showSecondary && <SecondaryView />}
 
       <aside
         style={{

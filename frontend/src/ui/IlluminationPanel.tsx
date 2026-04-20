@@ -11,6 +11,19 @@ export default function IlluminationPanel() {
   const setLight = useStore((s) => s.setLight);
   const engine = useStore((s) => s.engine);
   const setEngine = useStore((s) => s.setEngine);
+  const manifest = useStore((s) => s.manifest);
+  const zSlice = useStore((s) => s.zSlice);
+  const setZSlice = useStore((s) => s.setZSlice);
+
+  const recipe = manifest?.render_recipe ?? null;
+  const rd = (manifest?.recipe_data ?? {}) as Record<string, unknown>;
+  const isCarpet = recipe === 'near_field_carpet';
+  // For the slider readout — e.g. "z = 1200 μm" with a hint for z_T or f.
+  const zMinUm = Number(rd.z_min_um ?? 0) || 0;
+  const zMaxUm = Number(rd.z_max_um ?? 0) || 0;
+  const zAbsUm = zMinUm + zSlice * (zMaxUm - zMinUm);
+  const zTalbotUm = Number(rd.talbot_distance_um ?? 0) || 0;
+  const zFocalUm = Number(rd.focal_length_um ?? 0) || 0;
 
   return (
     <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -54,6 +67,37 @@ export default function IlluminationPanel() {
           ))}
         </div>
       </div>
+
+      {isCarpet && (
+        <div>
+          <div style={hdr}>Z-SLICE (NEAR-FIELD CARPET)</div>
+          <label style={lbl}>
+            <span>
+              z = {zAbsUm.toFixed(0)} μm
+              <span style={{ float: 'right', opacity: 0.7 }}>
+                {zTalbotUm
+                  ? `z_T = ${zTalbotUm.toFixed(0)} μm`
+                  : zFocalUm
+                  ? `f = ${zFocalUm.toFixed(0)} μm`
+                  : ''}
+              </span>
+            </span>
+            <input
+              data-testid="z-slice"
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={zSlice}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                log('z_slice_changed', { from: zSlice, to: v });
+                setZSlice(v);
+              }}
+            />
+          </label>
+        </div>
+      )}
 
       {illumination === 'laser' && (
         <div>

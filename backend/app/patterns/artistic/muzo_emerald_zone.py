@@ -18,6 +18,7 @@ class MuzoEmeraldZone(Pattern):
     tags = ["diffraction", "focusing", "laser", "Muzo"]
     tier = 2
     theme = "Colombia"
+    render_recipe = "near_field_carpet"
     params = [
         ParamSpec("focal_length_um", "Focal length", "float", 10000.0, 1000.0, 50000.0, 100.0, "μm"),
         ParamSpec("wavelength_um", "Design wavelength", "float", 0.55, 0.3, 1.0, 0.005, "μm"),
@@ -47,6 +48,11 @@ class MuzoEmeraldZone(Pattern):
 
         front = clipped if layer == "front" else empty_layer()
         back = clipped if layer == "back" else empty_layer()
+        # Carpet brackets the focal spot: start a quarter-focal past the plate
+        # so early z-slides still see near-field diffraction, end past the
+        # focus so the slider can walk through the concentrated spot.
+        z_min_um = max(500.0, 0.25 * focal_length_um)
+        z_max_um = 2.0 * focal_length_um
         return GeneratedPattern(
             front=front,
             back=back,
@@ -56,5 +62,12 @@ class MuzoEmeraldZone(Pattern):
             extra={
                 "focal_length_um": focal_length_um,
                 "design_wavelength_um": wavelength_um,
+            },
+            recipe_data={
+                "focal_length_um": focal_length_um,
+                "design_wavelength_um": wavelength_um,
+                "z_min_um": z_min_um,
+                "z_max_um": z_max_um,
+                "n_slices": 48,
             },
         )

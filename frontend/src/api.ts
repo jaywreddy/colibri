@@ -161,3 +161,58 @@ export async function propagateSim(
   if (!r.ok) throw new Error(`propagateSim: ${r.status} ${await r.text()}`);
   return r.json();
 }
+
+/**
+ * Near-field propagation carpet — the artifact for the `near_field_carpet`
+ * recipe (tairona-talbot, muzo-emerald-zone). Returns a vertical atlas of
+ * `n_slices` 2D intensity tiles from z_min to z_max.
+ */
+export async function fetchCarpet(
+  slug: string,
+  variant: string,
+  opts: {
+    wavelength_um?: number;
+    z_min_um?: number;
+    z_max_um?: number;
+    n_slices?: number;
+    downsample?: number;
+    tile_size?: number;
+    signal?: AbortSignal;
+  } = {}
+): Promise<{
+  atlas_png: string;
+  rows: number;
+  cols: number;
+  tile: [number, number];
+  z_min_um: number;
+  z_max_um: number;
+  wavelength_um: number;
+  cached: boolean;
+}> {
+  const {
+    wavelength_um = 0.55,
+    z_min_um = 0.0,
+    z_max_um = 4000.0,
+    n_slices = 48,
+    downsample = 8,
+    tile_size = 128,
+    signal,
+  } = opts;
+  const r = await tracedFetch('/sim/carpet', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      slug,
+      variant,
+      wavelength_um,
+      z_min_um,
+      z_max_um,
+      n_slices,
+      downsample,
+      tile_size,
+    }),
+    signal,
+  });
+  if (!r.ok) throw new Error(`fetchCarpet: ${r.status} ${await r.text()}`);
+  return r.json();
+}

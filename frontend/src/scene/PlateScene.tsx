@@ -9,7 +9,7 @@ import { StylizedEngine } from '../engines/StylizedEngine';
 import { FraunhoferEngine } from '../engines/FraunhoferEngine';
 import { WavePropEngine } from '../engines/WavePropEngine';
 import type { Engine } from '../engines/Engine';
-import { RECIPE_IDS, type RenderRecipe } from '../api';
+import { RECIPE_IDS, fetchCarpet, type RenderRecipe } from '../api';
 
 const ENGINES: Record<string, Engine> = {
   stylized: new StylizedEngine(),
@@ -31,6 +31,7 @@ export default function PlateScene() {
     backTex: THREE.Texture;
     viewATex: THREE.Texture;
     viewBTex: THREE.Texture;
+    carpetTex: THREE.Texture;
     currentEngine: Engine | null;
   } | null>(null);
 
@@ -40,6 +41,8 @@ export default function PlateScene() {
   const engine = useStore((s) => s.engine);
   const lightAz = useStore((s) => s.lightAzimuthDeg);
   const lightEl = useStore((s) => s.lightElevationDeg);
+  const zSlice = useStore((s) => s.zSlice);
+  const setCarpetAtlasUrl = useStore((s) => s.setCarpetAtlasUrl);
 
   useEffect(() => {
     const mount = mountRef.current!;
@@ -93,6 +96,11 @@ export default function PlateScene() {
         uViewB: { value: blank },
         uSlitOrientation: { value: 0.0 },
         uSlitPeriodUm: { value: 40.0 },
+        // --- near_field_carpet recipe (only read when uRecipe == 3) --------
+        uCarpetAtlas: { value: blank },
+        uZSlice: { value: 0.5 },
+        uCarpetRows: { value: 0 },
+        uHasCarpet: { value: false },
       },
     });
 
@@ -148,6 +156,7 @@ export default function PlateScene() {
       backTex: blank,
       viewATex: blank,
       viewBTex: blank,
+      carpetTex: blank,
       currentEngine: null,
     };
     (window as unknown as { __three: unknown }).__three = threeRef.current;
@@ -285,6 +294,79 @@ export default function PlateScene() {
         t.material.uniforms.uViewB.value = t.frontTex;
       }
 
+      // near_field_carpet: fetch the z-sweep atlas from /sim/carpet using the
+      // recipe_data z-range + design wavelength. Bound asynchronously so the
+      // plate renders immediately (recipe 3 falls through to runStylized when
+      // uHasCarpet=false, so the plate isn't blank while we wait).
+      if (recipe === 'near_field_carpet') {
+        t.material.uniforms.uHasCarpet.value = false;
+        t.material.uniforms.uCarpetRows.value = 0;
+        const wavelength_um = Number(rd.design_wavelength_um ?? 0.55) || 0.55;
+        const z_min_um = Number(rd.z_min_um ?? 0.0) || 0.0;
+        const z_max_um = Number(rd.z_max_um ?? 4000.0) || 4000.0;
+        const n_slices = Math.max(
+          2,
+          Math.floor(Number(rd.n_slices ?? 48) || 48)
+        );
+        const slugAtFetch = manifest.slug;
+        const variantAtFetch = manifest.variant;
+        fetchCarpet(slugAtFetch, variantAtFetch, {
+          wavelength_um,
+          z_min_um,
+          z_max_um,
+          n_slices,
+          downsample: 8,
+          tile_size: 128,
+        })
+          .then((res) => {
+            // Drop the result if the user has already selected a different
+            // variant (selection race — mirrors the propagate cache guard).
+            if (
+              !threeRef.current ||
+              threeRef.current !== t ||
+              manifest.slug !== slugAtFetch ||
+              manifest.variant !== variantAtFetch
+            ) {
+              return;
+            }
+            const loader2 = new THREE.TextureLoader();
+            loader2.loadAsync(res.atlas_png).then((tex) => {
+              tex.colorSpace = THREE.LinearSRGBColorSpace;
+              tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+              tex.magFilter = THREE.LinearFilter;
+              tex.minFilter = THREE.LinearFilter;
+              tex.generateMipmaps = false;
+              tex.anisotropy = 1;
+              tex.needsUpdate = true;
+              if (t.carpetTex !== tex) t.carpetTex.dispose();
+              t.carpetTex = tex;
+              t.material.uniforms.uCarpetAtlas.value = tex;
+              t.material.uniforms.uCarpetRows.value = res.rows;
+              t.material.uniforms.uHasCarpet.value = true;
+              setCarpetAtlasUrl(res.atlas_png);
+              log('carpet_fetched', {
+                slug: slugAtFetch,
+                variant: variantAtFetch,
+                rows: res.rows,
+                cached: res.cached,
+              });
+            });
+          })
+          .catch((e) => {
+            log('carpet_fetch_error', {
+              slug: slugAtFetch,
+              variant: variantAtFetch,
+              message: (e as Error).message,
+            });
+          });
+      } else {
+        // Non-carpet recipe: clear any stale carpet state so a transient
+        // uRecipe == 3 frame doesn't show the previous pattern's z-sweep.
+        t.material.uniforms.uHasCarpet.value = false;
+        t.material.uniforms.uCarpetRows.value = 0;
+        setCarpetAtlasUrl(null);
+      }
+
       log('recipe_bound', { slug: manifest.slug, recipe });
       log('texture_bound', {
         slug: manifest.slug,
@@ -328,6 +410,14 @@ export default function PlateScene() {
     const laserUm: Record<string, number> = { red: 0.65, green: 0.55, blue: 0.45 };
     t.material.uniforms.uLaserWavelengthUm.value = laserUm[laserColor] ?? 0.55;
   }, [illumination, laserColor]);
+
+  // z-slice slider → uZSlice. Decoupled from the manifest effect so dragging
+  // the slider is a zero-cost uniform push, not a full texture rebind.
+  useEffect(() => {
+    const t = threeRef.current;
+    if (!t) return;
+    t.material.uniforms.uZSlice.value = zSlice;
+  }, [zSlice]);
 
   // Light position
   useEffect(() => {

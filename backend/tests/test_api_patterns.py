@@ -121,6 +121,29 @@ def test_recipe_data_for_phase_b_c_patterns(client: TestClient) -> None:
     assert "slit_axis_deg" in som["recipe_data"]
 
 
+def test_recipe_data_for_phase_d_patterns(client: TestClient) -> None:
+    # near_field_carpet patterns must carry the z-range and design wavelength
+    # so the frontend can fetch /sim/carpet without guessing physical scales.
+    r = client.post("/patterns/generate", json={"slug": "tairona-talbot", "params": {}})
+    assert r.status_code == 200
+    tai = r.json()
+    assert tai["render_recipe"] == "near_field_carpet"
+    rd = tai["recipe_data"]
+    for key in ("talbot_distance_um", "design_wavelength_um", "z_min_um", "z_max_um", "n_slices"):
+        assert key in rd, f"tairona missing {key}"
+    assert rd["z_max_um"] > rd["z_min_um"]
+    assert rd["n_slices"] >= 2
+
+    r = client.post("/patterns/generate", json={"slug": "muzo-emerald-zone", "params": {}})
+    assert r.status_code == 200
+    muz = r.json()
+    assert muz["render_recipe"] == "near_field_carpet"
+    rd = muz["recipe_data"]
+    for key in ("focal_length_um", "design_wavelength_um", "z_min_um", "z_max_um", "n_slices"):
+        assert key in rd, f"muzo missing {key}"
+    assert rd["z_max_um"] > rd["z_min_um"]
+
+
 def test_invalid_param_type_returns_error(client: TestClient) -> None:
     # period_um is a float in wayuu-kanasu-moire. A string should either 422 at pydantic
     # or 400 at the generator. Either is acceptable — just not 200.

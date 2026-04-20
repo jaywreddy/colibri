@@ -20,6 +20,13 @@ type State = {
   engine: EngineTier;
   fftAtlasUrl: string | null;
 
+  // --- near_field_carpet recipe (tairona, muzo) --------------------------
+  // zSlice is a normalized [0,1] position along the z-sweep fetched from
+  // /sim/carpet. 0.5 puts the slider at the mid-slice — for Talbot that's
+  // the revival at z_T, for the zone plate it's near the focal spot.
+  zSlice: number;
+  carpetAtlasUrl: string | null;
+
   setCatalog: (c: PatternDescriptor[]) => void;
   /** Mark `slug` as the user's latest intent. Call this BEFORE kicking off a
    * fetch so stale responses can be discarded on arrival. */
@@ -38,6 +45,8 @@ type State = {
   setTilt: (t: [number, number]) => void;
   setEngine: (e: EngineTier) => void;
   setFftAtlas: (url: string | null) => void;
+  setZSlice: (z: number) => void;
+  setCarpetAtlasUrl: (url: string | null) => void;
 };
 
 export const useStore = create<State>((set, get) => ({
@@ -53,6 +62,8 @@ export const useStore = create<State>((set, get) => ({
   tilt: [0, 0],
   engine: 'stylized',
   fftAtlasUrl: null,
+  zSlice: 0.5,
+  carpetAtlasUrl: null,
 
   setCatalog: (catalog) => set({ catalog }),
   beginSelect: (slug) => set({ pendingSlug: slug }),
@@ -63,6 +74,8 @@ export const useStore = create<State>((set, get) => ({
       manifest,
       params: { ...(manifest.params as Record<string, unknown>) },
       fftAtlasUrl: null,
+      carpetAtlasUrl: null,
+      zSlice: 0.5,
     });
     return true;
   },
@@ -73,8 +86,11 @@ export const useStore = create<State>((set, get) => ({
       manifest,
       params: { ...(manifest.params as Record<string, unknown>) },
       fftAtlasUrl: null,
+      carpetAtlasUrl: null,
+      zSlice: 0.5,
     }),
-  setManifest: (manifest) => set({ manifest, fftAtlasUrl: null }),
+  setManifest: (manifest) =>
+    set({ manifest, fftAtlasUrl: null, carpetAtlasUrl: null, zSlice: 0.5 }),
   setParams: (params) => set({ params }),
   patchParams: (patch) => set((s) => ({ params: { ...s.params, ...patch } })),
   setIllumination: (illumination) => set({ illumination }),
@@ -84,4 +100,6 @@ export const useStore = create<State>((set, get) => ({
   setTilt: (tilt) => set({ tilt }),
   setEngine: (engine) => set({ engine }),
   setFftAtlas: (fftAtlasUrl) => set({ fftAtlasUrl }),
+  setZSlice: (zSlice) => set({ zSlice }),
+  setCarpetAtlasUrl: (carpetAtlasUrl) => set({ carpetAtlasUrl }),
 }));

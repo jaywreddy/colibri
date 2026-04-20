@@ -39,6 +39,14 @@ uniform sampler2D uViewB;          // right-eye / tilt-positive scene
 uniform float uSlitOrientation;    // radians; slit-normal direction (0 = +X)
 uniform float uSlitPeriodUm;       // slit period Λ_slit (μm), for crossfade width
 
+// --- near_field_carpet uniforms (only read when uRecipe == 3) ---------------
+// Vertical atlas of uCarpetRows 2D intensity tiles, one per z-slice.
+// uZSlice ∈ [0,1] picks a row (0 = z_min, 1 = z_max) with bilinear blend.
+uniform sampler2D uCarpetAtlas;
+uniform float uZSlice;             // [0,1] — position along z axis
+uniform int   uCarpetRows;         // number of z-slices packed in the atlas
+uniform bool  uHasCarpet;          // false while the atlas is still fetching
+
 const vec3 GOLD = vec3(0.902, 0.737, 0.314);
 const vec3 GOLD_BACK = vec3(0.4, 0.32, 0.12);
 
@@ -253,6 +261,55 @@ vec3 runStereoLenticular(vec3 viewTangent) {
   return color;
 }
 
+// ----------------------------------------------------------------------------
+// Recipe 3: near_field_carpet — show the intensity distribution at an
+// adjustable z past the plate's back face. The backend precomputes a vertical
+// atlas of N_z grayscale tiles (one per z-slice) via `/sim/carpet`. We
+// sample the row corresponding to uZSlice ∈ [0,1] so the user's slider
+// literally walks the beam through propagation space — Talbot revivals for
+// tairona, zone-plate focus for muzo.
+//
+// Atlas layout: rows laid out top-to-bottom, row r = slice at
+//   z = z_min + (r / (uCarpetRows-1)) * (z_max - z_min).
+// We bilinearly blend between the two nearest rows so the slider is smooth.
+// The front amplitude mask tints the plate so the plate still looks like the
+// aperture; intensity is additive so bright regions of the carpet "glow".
+// ----------------------------------------------------------------------------
+vec3 runNearFieldCarpet(vec3 viewTangent) {
+  // Start with the stylized composite — this is what the plate physically
+  // is. Without the carpet atlas (uHasCarpet = false) we just fall through.
+  vec3 base = runStylized(viewTangent);
+  if (!uHasCarpet || uCarpetRows < 2) return base;
+
+  // Row index in continuous-space. clamp guards against uZSlice outside [0,1].
+  float rowsMinusOne = float(uCarpetRows - 1);
+  float zNorm = clamp(uZSlice, 0.0, 1.0);
+  float rowFloat = zNorm * rowsMinusOne;
+  float r0 = floor(rowFloat);
+  float r1 = min(r0 + 1.0, rowsMinusOne);
+  float t = rowFloat - r0;
+
+  // In atlas uv-space, each row occupies 1/uCarpetRows height. Sample the
+  // center of row r via v = (r + vUv.y) / uCarpetRows.
+  float rows = float(uCarpetRows);
+  vec2 uv0 = vec2(vUv.x, (r0 + vUv.y) / rows);
+  vec2 uv1 = vec2(vUv.x, (r1 + vUv.y) / rows);
+  vec3 i0 = texture2D(uCarpetAtlas, uv0).rgb;
+  vec3 i1 = texture2D(uCarpetAtlas, uv1).rgb;
+  vec3 intensity = mix(i0, i1, t);
+
+  // Tint the intensity with the illumination color so laser-green Talbot
+  // looks like laser-green Talbot. Ambient broadband stays white.
+  vec3 tint =
+      (uIllumination == 1) ? uLaserColor :
+      (uIllumination == 2) ? uBacklightColor :
+      vec3(1.0);
+
+  // Additive glow on top of the base plate; intensity is pre-normalized
+  // by the backend log-stretch so 1.0 is a bright-but-not-blown-out peak.
+  return base * 0.35 + intensity * tint * 1.15;
+}
+
 void main() {
   vec3 viewTangent = normalize(vViewDirTangent);
 
@@ -263,9 +320,11 @@ void main() {
     color = runStereoLenticular(viewTangent);
   } else if (uRecipe == 2) {
     color = runMoireInteractive(viewTangent);
+  } else if (uRecipe == 3) {
+    color = runNearFieldCarpet(viewTangent);
   } else {
-    // Recipes 3, 4 not yet implemented — fall back to stylized_amplitude so
-    // nothing regresses until phases D–E land.
+    // Recipe 4 not yet implemented — fall back to stylized_amplitude so
+    // nothing regresses until phase E lands.
     color = runStylized(viewTangent);
   }
 
