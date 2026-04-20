@@ -40,36 +40,6 @@ describe('api', () => {
     });
   });
 
-  it('fftSim includes wavelengths in POST body', async () => {
-    const spy = mockFetchOk({ atlas_png: '/x.png' });
-    vi.stubGlobal('fetch', spy);
-    await api.fftSim('wayuu-kanasu-moire', 'abc123', [0.6]);
-    const [, opts] = spy.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(opts.body as string)).toMatchObject({
-      slug: 'wayuu-kanasu-moire',
-      variant: 'abc123',
-      wavelengths_um: [0.6],
-    });
-  });
-
-  it('propagateSim defaults to [0.65, 0.55, 0.45] wavelengths and [-15, 0, 15] angles', async () => {
-    const spy = mockFetchOk({
-      atlas_png: '/x.png',
-      rows: 3,
-      cols: 3,
-      tile: [64, 64],
-      view_angles_deg: [-15, 0, 15],
-      wavelengths_um: [0.65, 0.55, 0.45],
-      cached: false,
-    });
-    vi.stubGlobal('fetch', spy);
-    await api.propagateSim('wayuu-kanasu-moire', 'abc123');
-    const [, opts] = spy.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(opts.body as string);
-    expect(body.wavelengths_um).toEqual([0.65, 0.55, 0.45]);
-    expect(body.view_angles_deg).toEqual([-15, 0, 15]);
-  });
-
   it('throws on non-ok response', async () => {
     vi.stubGlobal(
       'fetch',

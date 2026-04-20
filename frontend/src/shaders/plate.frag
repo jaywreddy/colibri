@@ -10,9 +10,6 @@ varying vec3 vNormalWorld;
 
 uniform sampler2D uFront;
 uniform sampler2D uBack;
-uniform sampler2D uFftAtlas;   // optional — Tier 2 diffraction halo atlas
-uniform float uUseFft;         // 0.0 = no FFT, 1.0 = composite FFT halo
-uniform int uWavelengthSlot;   // which slab of atlas (0=R,1=G,2=B) to sample
 
 uniform float uExtentUm;       // physical width of the plate surface (μm)
 uniform float uThicknessUm;    // substrate thickness
@@ -60,16 +57,6 @@ vec3 ambientLit(vec3 base) {
   return base * (0.2 + 0.9 * ndl) + vec3(1.0, 0.85, 0.6) * spec * (0.3 + ndv);
 }
 
-vec3 fftHaloColor(vec3 viewTangent) {
-  float ax = clamp(viewTangent.x, -0.7, 0.7);  // sin of tilt-x
-  float ay = clamp(viewTangent.y, -0.7, 0.7);
-  vec2 local = vec2((ax + 0.7) / 1.4, (ay + 0.7) / 1.4);
-  float slabW = 1.0 / 3.0;
-  float slab = float(uWavelengthSlot);
-  vec2 atlasUv = vec2(slab * slabW + local.x * slabW, local.y);
-  return texture2D(uFftAtlas, atlasUv).rgb;
-}
-
 // ----------------------------------------------------------------------------
 // Recipe 5 / legacy: flat-mask composite with Snell parallax. Using
 // parallax_offset from lib/parallax.glsl fixes the historical
@@ -96,10 +83,6 @@ vec3 runStylized(vec3 viewTangent) {
     color += (1.0 - viewTangent.z) * vec3(0.08, 0.07, 0.04) * frontGold;
   } else if (uIllumination == 1) {
     color *= 0.4 + 0.6 * max(0.0, vLightDirTangent.z);
-    if (uUseFft > 0.5) {
-      float aperture = (1.0 - frontGold) * (1.0 - backGold);
-      color += fftHaloColor(viewTangent) * aperture * 0.9;
-    }
   } else {
     float t = (1.0 - frontGold) * (1.0 - backGold);
     color = backlight * t + GOLD_BACK * 0.15 * backGold + GOLD * 0.25 * frontGold;

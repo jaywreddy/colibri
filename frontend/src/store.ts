@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import type { PatternDescriptor, PatternManifest } from './api';
 
 export type Illumination = 'ambient' | 'laser' | 'backlight';
-export type EngineTier = 'stylized' | 'fraunhofer' | 'waveprop';
 
 type State = {
   catalog: PatternDescriptor[];
@@ -17,8 +16,6 @@ type State = {
   lightAzimuthDeg: number;
   lightElevationDeg: number;
   tilt: [number, number]; // deg X, deg Y — driven by orbit controls
-  engine: EngineTier;
-  fftAtlasUrl: string | null;
 
   // --- near_field_carpet recipe (tairona, muzo) --------------------------
   // zSlice is a normalized [0,1] position along the z-sweep fetched from
@@ -49,8 +46,6 @@ type State = {
   setLaserColor: (c: 'red' | 'green' | 'blue') => void;
   setLight: (az: number, el: number) => void;
   setTilt: (t: [number, number]) => void;
-  setEngine: (e: EngineTier) => void;
-  setFftAtlas: (url: string | null) => void;
   setZSlice: (z: number) => void;
   setCarpetAtlasUrl: (url: string | null) => void;
   setFarfieldUrl: (url: string | null) => void;
@@ -67,8 +62,6 @@ export const useStore = create<State>((set, get) => ({
   lightAzimuthDeg: 35,
   lightElevationDeg: 55,
   tilt: [0, 0],
-  engine: 'stylized',
-  fftAtlasUrl: null,
   zSlice: 0.5,
   carpetAtlasUrl: null,
   farfieldUrl: null,
@@ -81,7 +74,6 @@ export const useStore = create<State>((set, get) => ({
       activeSlug: slug,
       manifest,
       params: { ...(manifest.params as Record<string, unknown>) },
-      fftAtlasUrl: null,
       carpetAtlasUrl: null,
       farfieldUrl: null,
       zSlice: 0.5,
@@ -94,7 +86,6 @@ export const useStore = create<State>((set, get) => ({
       pendingSlug: slug,
       manifest,
       params: { ...(manifest.params as Record<string, unknown>) },
-      fftAtlasUrl: null,
       carpetAtlasUrl: null,
       farfieldUrl: null,
       zSlice: 0.5,
@@ -102,7 +93,6 @@ export const useStore = create<State>((set, get) => ({
   setManifest: (manifest) =>
     set({
       manifest,
-      fftAtlasUrl: null,
       carpetAtlasUrl: null,
       farfieldUrl: null,
       zSlice: 0.5,
@@ -114,8 +104,6 @@ export const useStore = create<State>((set, get) => ({
   setLight: (lightAzimuthDeg, lightElevationDeg) =>
     set({ lightAzimuthDeg, lightElevationDeg }),
   setTilt: (tilt) => set({ tilt }),
-  setEngine: (engine) => set({ engine }),
-  setFftAtlas: (fftAtlasUrl) => set({ fftAtlasUrl }),
   setZSlice: (zSlice) => set({ zSlice }),
   setCarpetAtlasUrl: (carpetAtlasUrl) => set({ carpetAtlasUrl }),
   setFarfieldUrl: (farfieldUrl) => set({ farfieldUrl }),

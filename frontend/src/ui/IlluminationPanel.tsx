@@ -9,8 +9,6 @@ export default function IlluminationPanel() {
   const az = useStore((s) => s.lightAzimuthDeg);
   const el = useStore((s) => s.lightElevationDeg);
   const setLight = useStore((s) => s.setLight);
-  const engine = useStore((s) => s.engine);
-  const setEngine = useStore((s) => s.setEngine);
   const manifest = useStore((s) => s.manifest);
   const zSlice = useStore((s) => s.zSlice);
   const setZSlice = useStore((s) => s.setZSlice);
@@ -27,24 +25,6 @@ export default function IlluminationPanel() {
 
   return (
     <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div>
-        <div style={hdr}>ENGINE</div>
-        <select
-          data-testid="engine-select"
-          value={engine}
-          onChange={(e) => {
-            const next = e.target.value as typeof engine;
-            log('engine_switched', { from: engine, to: next });
-            setEngine(next);
-          }}
-          style={input}
-        >
-          <option value="stylized">Tier 1 — Stylized parallax</option>
-          <option value="fraunhofer">Tier 2 — Fraunhofer FFT</option>
-          <option value="waveprop">Tier 3 — Angular spectrum (scaffolded)</option>
-        </select>
-      </div>
-
       <div>
         <div style={hdr}>ILLUMINATION</div>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -175,14 +155,6 @@ const lbl: React.CSSProperties = {
   gap: 2,
   fontSize: 12,
   marginBottom: 6,
-};
-const input: React.CSSProperties = {
-  width: '100%',
-  background: '#141820',
-  border: '1px solid #2a2f36',
-  color: '#e8eaed',
-  borderRadius: 4,
-  padding: '6px 8px',
 };
 const btn: React.CSSProperties = {
   flex: 1,

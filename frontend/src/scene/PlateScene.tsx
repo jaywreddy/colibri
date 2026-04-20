@@ -5,17 +5,7 @@ import vert from '../shaders/plate.vert';
 import frag from '../shaders/plate.frag';
 import { log } from '../logger';
 import { useStore } from '../store';
-import { StylizedEngine } from '../engines/StylizedEngine';
-import { FraunhoferEngine } from '../engines/FraunhoferEngine';
-import { WavePropEngine } from '../engines/WavePropEngine';
-import type { Engine } from '../engines/Engine';
 import { RECIPE_IDS, fetchCarpet, fetchFarfield, type RenderRecipe } from '../api';
-
-const ENGINES: Record<string, Engine> = {
-  stylized: new StylizedEngine(),
-  fraunhofer: new FraunhoferEngine(),
-  waveprop: new WavePropEngine(),
-};
 
 export default function PlateScene() {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -32,13 +22,11 @@ export default function PlateScene() {
     viewATex: THREE.Texture;
     viewBTex: THREE.Texture;
     carpetTex: THREE.Texture;
-    currentEngine: Engine | null;
   } | null>(null);
 
   const manifest = useStore((s) => s.manifest);
   const illumination = useStore((s) => s.illumination);
   const laserColor = useStore((s) => s.laserColor);
-  const engine = useStore((s) => s.engine);
   const lightAz = useStore((s) => s.lightAzimuthDeg);
   const lightEl = useStore((s) => s.lightElevationDeg);
   const zSlice = useStore((s) => s.zSlice);
@@ -74,9 +62,6 @@ export default function PlateScene() {
       uniforms: {
         uFront: { value: blank },
         uBack: { value: blank },
-        uFftAtlas: { value: blank },
-        uUseFft: { value: 0.0 },
-        uWavelengthSlot: { value: 1 }, // green
         uExtentUm: { value: 2000.0 },
         uThicknessUm: { value: 500.0 },
         uN: { value: 1.46 },
@@ -158,7 +143,6 @@ export default function PlateScene() {
       viewATex: blank,
       viewBTex: blank,
       carpetTex: blank,
-      currentEngine: null,
     };
     (window as unknown as { __three: unknown }).__three = threeRef.current;
 
@@ -414,23 +398,8 @@ export default function PlateScene() {
         front: { w: front.image?.width ?? 0, h: front.image?.height ?? 0 },
         back: { w: back.image?.width ?? 0, h: back.image?.height ?? 0 },
       });
-
-      const eng = ENGINES[engine];
-      const ctx = {
-        scene: t.scene,
-        plateMesh: t.mesh,
-        material: t.material,
-        frontTex: front,
-        backTex: back,
-      };
-      if (t.currentEngine && t.currentEngine.id !== eng.id) {
-        t.currentEngine.deactivate(ctx);
-      }
-      eng.activate(ctx, manifest).then(() => {
-        t.currentEngine = eng;
-      });
     });
-  }, [manifest, engine]);
+  }, [manifest]);
 
   // Illumination / laser color → uniforms
   useEffect(() => {
@@ -444,8 +413,6 @@ export default function PlateScene() {
       blue: 0x3388ff,
     };
     t.material.uniforms.uLaserColor.value.setHex(laserRgb[laserColor]);
-    t.material.uniforms.uWavelengthSlot.value =
-      laserColor === 'red' ? 0 : laserColor === 'green' ? 1 : 2;
     // Wavelength in μm for iridescent_grating recipe (laser-spot gating).
     const laserUm: Record<string, number> = { red: 0.65, green: 0.55, blue: 0.45 };
     t.material.uniforms.uLaserWavelengthUm.value = laserUm[laserColor] ?? 0.55;

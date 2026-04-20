@@ -32,8 +32,8 @@ beforeEach(() => {
     activeSlug: null,
     manifest: null,
     params: {},
-    engine: 'stylized',
-    fftAtlasUrl: null,
+    carpetAtlasUrl: null,
+    farfieldUrl: null,
     illumination: 'ambient',
     laserColor: 'green',
   });
@@ -49,23 +49,19 @@ describe('store', () => {
     expect(s.params).toEqual(m.params);
   });
 
-  it('selectPattern clears stale fft atlas', () => {
-    useStore.setState({ fftAtlasUrl: '/stale/atlas.png' });
+  it('selectPattern clears stale recipe artifacts', () => {
+    useStore.setState({
+      carpetAtlasUrl: '/stale/carpet.png',
+      farfieldUrl: '/stale/farfield.png',
+    });
     useStore.getState().selectPattern('wayuu-kanasu-moire', baseManifest());
-    expect(useStore.getState().fftAtlasUrl).toBeNull();
+    expect(useStore.getState().carpetAtlasUrl).toBeNull();
+    expect(useStore.getState().farfieldUrl).toBeNull();
   });
 
   it('patchParams merges without dropping other params', () => {
     useStore.setState({ params: { a: 1, b: 2 } });
     useStore.getState().patchParams({ b: 3, c: 4 });
     expect(useStore.getState().params).toEqual({ a: 1, b: 3, c: 4 });
-  });
-
-  it('setEngine changes engine and leaves other state intact', () => {
-    const m = baseManifest();
-    useStore.getState().selectPattern('wayuu-kanasu-moire', m);
-    useStore.getState().setEngine('waveprop');
-    expect(useStore.getState().engine).toBe('waveprop');
-    expect(useStore.getState().activeSlug).toBe('wayuu-kanasu-moire');
   });
 });

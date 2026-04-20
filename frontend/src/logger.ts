@@ -40,7 +40,6 @@ export type EventType =
   | 'param_regen_start'
   | 'param_regen_done'
   | 'param_regen_failed'
-  | 'engine_switched'
   | 'illumination_changed'
   | 'light_moved'
   | 'laser_color_changed'

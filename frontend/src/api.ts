@@ -125,43 +125,6 @@ export async function generatePattern(
   return r.json();
 }
 
-export async function fftSim(
-  slug: string,
-  variant: string,
-  wavelengths_um: number[] = [0.65, 0.55, 0.45]
-): Promise<{ atlas_png: string }> {
-  const r = await tracedFetch('/sim/fft', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ slug, variant, wavelengths_um }),
-  });
-  if (!r.ok) throw new Error(`fftSim: ${r.status} ${await r.text()}`);
-  return r.json();
-}
-
-export async function propagateSim(
-  slug: string,
-  variant: string,
-  wavelengths_um: number[] = [0.65, 0.55, 0.45],
-  view_angles_deg: number[] = [-15, 0, 15]
-): Promise<{
-  atlas_png: string;
-  rows: number;
-  cols: number;
-  tile: [number, number];
-  view_angles_deg: number[];
-  wavelengths_um: number[];
-  cached: boolean;
-}> {
-  const r = await tracedFetch('/sim/propagate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ slug, variant, wavelengths_um, view_angles_deg }),
-  });
-  if (!r.ok) throw new Error(`propagateSim: ${r.status} ${await r.text()}`);
-  return r.json();
-}
-
 /**
  * Near-field propagation carpet — the artifact for the `near_field_carpet`
  * recipe (tairona-talbot, muzo-emerald-zone). Returns a vertical atlas of

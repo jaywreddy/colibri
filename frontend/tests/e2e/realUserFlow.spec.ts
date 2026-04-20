@@ -105,15 +105,8 @@ test.describe('real user flow', () => {
     ).toBe(true);
   });
 
-  test('switching engine and illumination emits the expected log events', async ({ page }) => {
+  test('switching illumination and laser color emits the expected log events', async ({ page }) => {
     await clearLog(page);
-
-    await page.getByTestId('engine-select').selectOption('fraunhofer');
-    await expectLogEvent(
-      page,
-      'engine_switched',
-      (e) => e.to === 'fraunhofer'
-    );
 
     await page.locator('button[data-mode="laser"]').click();
     await expectLogEvent(
