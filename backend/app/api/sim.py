@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -10,6 +12,7 @@ from ..sim.angular_spectrum import propagate as asm_propagate
 from ..service import DATA_ROOT
 
 router = APIRouter(prefix="/sim", tags=["sim"])
+_log = logging.getLogger("optics.sim")
 
 
 class FftRequest(BaseModel):
@@ -25,6 +28,8 @@ def fft_sim(req: FftRequest) -> dict:
     root = DATA_ROOT / req.slug / req.variant
     if not root.exists():
         raise HTTPException(404, f"Variant not found: {req.slug}/{req.variant}")
+    t0 = time.perf_counter()
+    _log.info("fft start slug=%s variant=%s wl=%s", req.slug, req.variant, req.wavelengths_um)
     try:
         out = fraunhofer_far_field(
             root,
@@ -33,7 +38,21 @@ def fft_sim(req: FftRequest) -> dict:
             max_angle_deg=req.max_angle_deg,
         )
     except Exception as e:  # noqa: BLE001
+        _log.warning(
+            "fft failed slug=%s variant=%s err=%r (%dms)",
+            req.slug,
+            req.variant,
+            e,
+            int((time.perf_counter() - t0) * 1000),
+        )
         raise HTTPException(400, f"FFT failed: {e!r}") from e
+    _log.info(
+        "fft done slug=%s variant=%s cached=%s %dms",
+        req.slug,
+        req.variant,
+        out.get("cached", False),
+        int((time.perf_counter() - t0) * 1000),
+    )
     return {
         "slug": req.slug,
         "variant": req.variant,
@@ -61,6 +80,14 @@ def propagate(req: PropagateRequest) -> dict:
     if not manifest_path.exists():
         raise HTTPException(404, "Variant missing manifest")
     manifest = json.loads(manifest_path.read_text())
+    t0 = time.perf_counter()
+    _log.info(
+        "propagate start slug=%s variant=%s wl=%s angles=%s",
+        req.slug,
+        req.variant,
+        req.wavelengths_um,
+        req.view_angles_deg,
+    )
     try:
         out = asm_propagate(
             root,
@@ -73,7 +100,21 @@ def propagate(req: PropagateRequest) -> dict:
             substrate_n=float(manifest["substrate"]["n"]),
         )
     except Exception as e:  # noqa: BLE001
+        _log.warning(
+            "propagate failed slug=%s variant=%s err=%r (%dms)",
+            req.slug,
+            req.variant,
+            e,
+            int((time.perf_counter() - t0) * 1000),
+        )
         raise HTTPException(400, f"Propagate failed: {e!r}") from e
+    _log.info(
+        "propagate done slug=%s variant=%s cached=%s %dms",
+        req.slug,
+        req.variant,
+        out.get("cached", False),
+        int((time.perf_counter() - t0) * 1000),
+    )
     return {
         "slug": req.slug,
         "variant": req.variant,

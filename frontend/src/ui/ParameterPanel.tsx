@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { generatePattern } from '../api';
+import { log } from '../logger';
 import { useStore } from '../store';
 
 function useDebounce<T extends (...args: never[]) => void>(fn: T, ms: number): T {
@@ -29,10 +30,23 @@ export default function ParameterPanel() {
   );
 
   const regen = useDebounce(async (slug: string, p: Record<string, unknown>) => {
+    const t0 = performance.now();
+    log('param_regen_start', { slug, params: p });
     try {
       const m = await generatePattern(slug, p);
       setManifest(m);
+      log('param_regen_done', {
+        slug,
+        variant: m.variant,
+        duration_ms: Math.round(performance.now() - t0),
+      });
     } catch (e) {
+      const err = e as Error;
+      log('param_regen_failed', {
+        slug,
+        duration_ms: Math.round(performance.now() - t0),
+        error: err.message,
+      });
       console.error(e);
     }
   }, 250);
@@ -48,7 +62,10 @@ export default function ParameterPanel() {
   }
 
   return (
-    <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div
+      data-testid="parameter-panel"
+      style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}
+    >
       <div style={{ fontSize: 11, letterSpacing: 1.5, opacity: 0.7 }}>PARAMETERS</div>
       <div style={{ fontSize: 13, fontWeight: 600 }}>{spec.name}</div>
       <div style={{ fontSize: 11, opacity: 0.7, lineHeight: 1.4 }}>{spec.description}</div>
@@ -63,7 +80,10 @@ export default function ParameterPanel() {
               </span>
               <select
                 value={String(v)}
-                onChange={(e) => patchParams({ [p.name]: e.target.value })}
+                onChange={(e) => {
+                  log('param_changed', { slug: activeSlug, name: p.name, value: e.target.value });
+                  patchParams({ [p.name]: e.target.value });
+                }}
                 style={inputStyle}
               >
                 {p.choices?.map((c) => (
@@ -82,7 +102,10 @@ export default function ParameterPanel() {
               <input
                 type="checkbox"
                 checked={Boolean(v)}
-                onChange={(e) => patchParams({ [p.name]: e.target.checked })}
+                onChange={(e) => {
+                  log('param_changed', { slug: activeSlug, name: p.name, value: e.target.checked });
+                  patchParams({ [p.name]: e.target.checked });
+                }}
               />
             </label>
           );
@@ -102,12 +125,12 @@ export default function ParameterPanel() {
               max={p.max}
               step={p.step ?? (p.type === 'int' ? 1 : 0.01)}
               value={Number(v)}
-              onChange={(e) =>
-                patchParams({
-                  [p.name]:
-                    p.type === 'int' ? parseInt(e.target.value, 10) : parseFloat(e.target.value),
-                })
-              }
+              onChange={(e) => {
+                const raw = e.target.value;
+                const value = p.type === 'int' ? parseInt(raw, 10) : parseFloat(raw);
+                log('param_changed', { slug: activeSlug, name: p.name, value });
+                patchParams({ [p.name]: value });
+              }}
             />
           </label>
         );

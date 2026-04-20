@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import vert from '../shaders/plate.vert';
 import frag from '../shaders/plate.frag';
+import { log } from '../logger';
 import { useStore } from '../store';
 import { StylizedEngine } from '../engines/StylizedEngine';
 import { FraunhoferEngine } from '../engines/FraunhoferEngine';
@@ -92,6 +93,34 @@ export default function PlateScene() {
     controls.minDistance = 0.6;
     controls.maxDistance = 4.0;
 
+    // WebGL context loss is common in headless Chromium and on driver hiccups.
+    // Logging both ends makes it possible to correlate a blank canvas in an
+    // E2E failure with the actual cause.
+    const canvas = renderer.domElement;
+    const onContextLost = (e: Event) => {
+      e.preventDefault();
+      log('webgl_context_lost');
+    };
+    const onContextRestored = () => log('webgl_context_restored');
+    canvas.addEventListener('webglcontextlost', onContextLost);
+    canvas.addEventListener('webglcontextrestored', onContextRestored);
+
+    // Emit tilt_changed when the user orbits the camera. Throttled to 50ms so
+    // a drag doesn't spam the ring buffer.
+    let lastTiltLog = 0;
+    const onControlsChange = () => {
+      const now = performance.now();
+      if (now - lastTiltLog < 50) return;
+      lastTiltLog = now;
+      const az = controls.getAzimuthalAngle();
+      const pol = controls.getPolarAngle();
+      log('tilt_changed', {
+        az_deg: +((az * 180) / Math.PI).toFixed(2),
+        polar_deg: +((pol * 180) / Math.PI).toFixed(2),
+      });
+    };
+    controls.addEventListener('change', onControlsChange);
+
     threeRef.current = {
       scene,
       camera,
@@ -129,6 +158,9 @@ export default function PlateScene() {
     return () => {
       cancelAnimationFrame(rafId);
       ro.disconnect();
+      canvas.removeEventListener('webglcontextlost', onContextLost);
+      canvas.removeEventListener('webglcontextrestored', onContextRestored);
+      controls.removeEventListener('change', onControlsChange);
       renderer.dispose();
       mount.removeChild(renderer.domElement);
     };
@@ -161,6 +193,12 @@ export default function PlateScene() {
       t.material.uniforms.uExtentUm.value = manifest.extent_um[0];
       t.material.uniforms.uThicknessUm.value = manifest.substrate.thickness_um;
       t.material.uniforms.uN.value = manifest.substrate.n;
+      log('texture_bound', {
+        slug: manifest.slug,
+        variant: manifest.variant,
+        front: { w: front.image?.width ?? 0, h: front.image?.height ?? 0 },
+        back: { w: back.image?.width ?? 0, h: back.image?.height ?? 0 },
+      });
 
       const eng = ENGINES[engine];
       const ctx = {

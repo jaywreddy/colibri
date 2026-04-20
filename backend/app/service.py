@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,8 @@ from .rasterize import make_thumbnail, rasterize
 
 
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
+
+_log = logging.getLogger("optics.service")
 
 
 def _params_hash(params: dict[str, Any]) -> str:
@@ -49,8 +53,10 @@ def materialize(
 
     manifest_path = out / "manifest.json"
     if manifest_path.exists() and not force:
+        _log.info("materialize cache_hit slug=%s variant=%s", slug, variant)
         return json.loads(manifest_path.read_text())
 
+    t0 = time.perf_counter()
     gp = cls.generate(**merged)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -94,6 +100,16 @@ def materialize(
         },
     }
     (manifest_path).write_text(json.dumps(manifest, indent=2))
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    pixels = front_png.size[0] * front_png.size[1]
+    _log.info(
+        "materialize done slug=%s variant=%s pixels=%d pitch_um=%.3f %dms",
+        slug,
+        variant,
+        pixels,
+        gp.pixel_pitch_um,
+        dt_ms,
+    )
     return manifest
 
 

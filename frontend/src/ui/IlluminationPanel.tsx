@@ -1,3 +1,4 @@
+import { log } from '../logger';
 import { useStore } from '../store';
 
 export default function IlluminationPanel() {
@@ -16,8 +17,13 @@ export default function IlluminationPanel() {
       <div>
         <div style={hdr}>ENGINE</div>
         <select
+          data-testid="engine-select"
           value={engine}
-          onChange={(e) => setEngine(e.target.value as typeof engine)}
+          onChange={(e) => {
+            const next = e.target.value as typeof engine;
+            log('engine_switched', { from: engine, to: next });
+            setEngine(next);
+          }}
           style={input}
         >
           <option value="stylized">Tier 1 — Stylized parallax</option>
@@ -32,7 +38,11 @@ export default function IlluminationPanel() {
           {(['ambient', 'laser', 'backlight'] as const).map((m) => (
             <button
               key={m}
-              onClick={() => setIllumination(m)}
+              data-mode={m}
+              onClick={() => {
+                log('illumination_changed', { from: illumination, to: m });
+                setIllumination(m);
+              }}
               style={{
                 ...btn,
                 background: illumination === m ? '#1d2434' : '#141820',
@@ -52,7 +62,11 @@ export default function IlluminationPanel() {
             {(['red', 'green', 'blue'] as const).map((c) => (
               <button
                 key={c}
-                onClick={() => setLaserColor(c)}
+                data-color={c}
+                onClick={() => {
+                  log('laser_color_changed', { from: laserColor, to: c });
+                  setLaserColor(c);
+                }}
                 style={{
                   ...btn,
                   background: laserColor === c ? '#1d2434' : '#141820',
@@ -71,23 +85,33 @@ export default function IlluminationPanel() {
         <label style={lbl}>
           Azimuth <span style={{ float: 'right', opacity: 0.7 }}>{az.toFixed(0)}°</span>
           <input
+            data-testid="light-az"
             type="range"
             min={-180}
             max={180}
             step={1}
             value={az}
-            onChange={(e) => setLight(parseFloat(e.target.value), el)}
+            onChange={(e) => {
+              const nextAz = parseFloat(e.target.value);
+              log('light_moved', { az: nextAz, el });
+              setLight(nextAz, el);
+            }}
           />
         </label>
         <label style={lbl}>
           Elevation <span style={{ float: 'right', opacity: 0.7 }}>{el.toFixed(0)}°</span>
           <input
+            data-testid="light-el"
             type="range"
             min={5}
             max={89}
             step={1}
             value={el}
-            onChange={(e) => setLight(az, parseFloat(e.target.value))}
+            onChange={(e) => {
+              const nextEl = parseFloat(e.target.value);
+              log('light_moved', { az, el: nextEl });
+              setLight(az, nextEl);
+            }}
           />
         </label>
       </div>

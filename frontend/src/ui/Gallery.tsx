@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getDefault, listPatterns, type PatternDescriptor } from '../api';
+import { log } from '../logger';
 import { useStore } from '../store';
 
 const THEME_ORDER: PatternDescriptor['theme'][] = ['Colombia', 'Global Travel'];
@@ -14,17 +15,51 @@ export default function Gallery() {
   const [patterns, setPatterns] = useState<PatternDescriptor[]>([]);
   const activeSlug = useStore((s) => s.activeSlug);
   const selectPattern = useStore((s) => s.selectPattern);
+  const beginSelect = useStore((s) => s.beginSelect);
+  const selectPatternIfCurrent = useStore((s) => s.selectPatternIfCurrent);
   const setCatalog = useStore((s) => s.setCatalog);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     listPatterns().then((pts) => {
       setPatterns(pts);
       setCatalog(pts);
+      log('catalog_loaded', { count: pts.length });
       if (pts.length && !activeSlug) {
-        getDefault(pts[0].slug).then((m) => selectPattern(pts[0].slug, m));
+        getDefault(pts[0].slug).then((m) => {
+          selectPattern(pts[0].slug, m);
+          log('pattern_selected', { slug: pts[0].slug, variant: m.variant, auto: true });
+        });
       }
     });
+    return () => abortRef.current?.abort();
   }, []);
+
+  /**
+   * Race-safe selection. The last click wins: any previous in-flight fetch is
+   * aborted and — as a belt-and-suspenders — if an abort slips through, the
+   * `selectPatternIfCurrent` guard drops the stale response.
+   */
+  const onSelect = (slug: string) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    beginSelect(slug);
+    log('pattern_select_requested', { slug });
+    getDefault(slug, { signal: controller.signal })
+      .then((m) => {
+        const committed = selectPatternIfCurrent(slug, m);
+        log('pattern_selected', { slug, variant: m.variant, committed });
+      })
+      .catch((err: Error) => {
+        if (err.name === 'AbortError') {
+          log('pattern_select_aborted', { slug });
+          return;
+        }
+        log('pattern_load_failed', { slug, error: err.message });
+        console.error('pattern load failed', slug, err);
+      });
+  };
 
   const grouped: Record<string, PatternDescriptor[]> = {};
   for (const p of patterns) {
@@ -71,9 +106,7 @@ export default function Gallery() {
                 data-slug={p.slug}
                 data-tier={p.tier}
                 data-theme={p.theme}
-                onClick={() =>
-                  getDefault(p.slug).then((m) => selectPattern(p.slug, m))
-                }
+                onClick={() => onSelect(p.slug)}
                 style={{
                   textAlign: 'left',
                   padding: '8px 10px',

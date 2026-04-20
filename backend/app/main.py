@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -12,6 +14,7 @@ from .api import sim as sim_api
 from .service import DATA_ROOT, seed_defaults
 
 log = logging.getLogger("optics")
+http_log = logging.getLogger("optics.http")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
@@ -41,6 +44,43 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):
+        """Stamp every HTTP response with a short request_id and duration, and
+        mirror to the ``optics.http`` logger at a level tied to the status."""
+        request_id = uuid.uuid4().hex[:8]
+        t0 = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:  # noqa: BLE001 — ensure 500s are logged too
+            dt_ms = int((time.perf_counter() - t0) * 1000)
+            http_log.exception(
+                "req=%s %s %s -> 500 (%dms)",
+                request_id,
+                request.method,
+                request.url.path,
+                dt_ms,
+            )
+            raise
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        response.headers["X-Request-ID"] = request_id
+        if response.status_code >= 500:
+            level = logging.ERROR
+        elif response.status_code >= 400:
+            level = logging.WARNING
+        else:
+            level = logging.INFO
+        http_log.log(
+            level,
+            "req=%s %s %s -> %d (%dms)",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            dt_ms,
+        )
+        return response
 
     app.include_router(patterns_api.router)
     app.include_router(sim_api.router)

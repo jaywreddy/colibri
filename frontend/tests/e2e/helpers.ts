@@ -1,4 +1,14 @@
-import { type Page, expect } from '@playwright/test';
+import { type Page, type TestInfo, expect } from '@playwright/test';
+
+/**
+ * Shape of a single entry in the frontend log ring buffer.
+ * Mirrors `LogEvent` in frontend/src/logger.ts.
+ */
+export type LogEvent = {
+  t: number;
+  type: string;
+  [key: string]: unknown;
+};
 
 /**
  * Wait for the Three.js global debug hook to be installed by PlateScene
@@ -116,4 +126,77 @@ export async function expectCanvasNotBlank(page: Page): Promise<void> {
     maxB,
     `canvas appears entirely dark, samples=${JSON.stringify(samples)}`
   ).toBeGreaterThan(10);
+}
+
+/** Snapshot the frontend log ring buffer. Returns [] before the app boots. */
+export async function readLog(page: Page): Promise<LogEvent[]> {
+  return (await page.evaluate(() => (window as unknown as { __log?: LogEvent[] }).__log ?? [])) as LogEvent[];
+}
+
+/** Clear the frontend log ring buffer — handy between assertions in one spec. */
+export async function clearLog(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as unknown as { __log?: unknown[] }).__log = [];
+  });
+}
+
+/**
+ * Poll the log buffer for an event matching `type` (and optionally a
+ * predicate on the whole event). On timeout, fails with the full buffer
+ * dumped to the assertion message so failures are self-diagnosing.
+ */
+export async function expectLogEvent(
+  page: Page,
+  type: string,
+  match?: (ev: LogEvent) => boolean,
+  opts: { timeout?: number } = {}
+): Promise<LogEvent> {
+  const timeout = opts.timeout ?? 15_000;
+  const deadline = Date.now() + timeout;
+  let lastBuf: LogEvent[] = [];
+  while (Date.now() < deadline) {
+    lastBuf = await readLog(page);
+    const hit = lastBuf.find((e) => e.type === type && (!match || match(e)));
+    if (hit) return hit;
+    await page.waitForTimeout(50);
+  }
+  throw new Error(
+    `expectLogEvent: no event of type '${type}' within ${timeout}ms. ` +
+      `Recent log (last 30):\n${JSON.stringify(lastBuf.slice(-30), null, 2)}`
+  );
+}
+
+/**
+ * Canonical "click card → wait for render" helper. Clicks the Gallery
+ * button with the given slug, waits for a `pattern_selected` event with
+ * `committed: true` for that slug, then waits for `texture_bound` to fire
+ * for the same slug. This is the minimum guarantee that the user's click
+ * actually reached the GPU.
+ */
+export async function clickCardAndWait(page: Page, slug: string): Promise<void> {
+  await page.locator(`button[data-slug="${slug}"]`).click();
+  await expectLogEvent(
+    page,
+    'pattern_selected',
+    (e) => e.slug === slug && e.committed !== false
+  );
+  await expectLogEvent(page, 'texture_bound', (e) => e.slug === slug);
+}
+
+/**
+ * Attach the frontend log (and any backend-log hint) to a failing test.
+ * Call from `test.afterEach` in fixtures.ts. Safe to call on pass too —
+ * bails out when the test didn't fail.
+ */
+export async function dumpLogOnFailure(page: Page, testInfo: TestInfo): Promise<void> {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  try {
+    const buf = await readLog(page);
+    await testInfo.attach('frontend-log.json', {
+      body: JSON.stringify(buf, null, 2),
+      contentType: 'application/json',
+    });
+  } catch {
+    // Page may already be closed by the time afterEach fires; nothing to do.
+  }
 }
