@@ -53,8 +53,33 @@ def materialize(
 
     manifest_path = out / "manifest.json"
     if manifest_path.exists() and not force:
-        _log.info("materialize cache_hit slug=%s variant=%s", slug, variant)
-        return json.loads(manifest_path.read_text())
+        cached = json.loads(manifest_path.read_text())
+        # Migrate pre-recipe manifests on read. render_recipe comes from the
+        # pattern class, not the params, so it's safe to stamp onto an
+        # existing variant without regenerating pixels. For recipes that
+        # *need* recipe_data from the generator (iridescent_grating needs
+        # period_um, etc.) the cached manifest is unusable — bounce to the
+        # fresh-generate path below.
+        needs_recipe_data = cls.render_recipe in {
+            "iridescent_grating",
+            "stereo_lenticular",
+            "near_field_carpet",
+        }
+        if "render_recipe" not in cached and not needs_recipe_data:
+            cached["render_recipe"] = cls.render_recipe
+            cached.setdefault("recipe_data", {})
+            manifest_path.write_text(json.dumps(cached, indent=2))
+            _log.info("materialize migrated slug=%s variant=%s", slug, variant)
+            return cached
+        if "render_recipe" in cached and cached["render_recipe"] == cls.render_recipe:
+            _log.info("materialize cache_hit slug=%s variant=%s", slug, variant)
+            return cached
+        _log.info(
+            "materialize regenerate_for_recipe slug=%s variant=%s recipe=%s",
+            slug,
+            variant,
+            cls.render_recipe,
+        )
 
     t0 = time.perf_counter()
     gp = cls.generate(**merged)
@@ -69,6 +94,15 @@ def materialize(
     # SVG exports
     (out / "front.svg").write_text(to_svg(gp.front, gp.extent_um), encoding="utf-8")
     (out / "back.svg").write_text(to_svg(gp.back, gp.extent_um), encoding="utf-8")
+
+    # Recipe-specific extra layers (e.g. view_a / view_b for stereo_lenticular).
+    # Each gets rasterized and its URL stamped into recipe_data[<name>_png] so
+    # the frontend can load them without the generator doing path bookkeeping.
+    extra_layer_urls: dict[str, str] = {}
+    for layer_name, layer_poly in gp.extra_layers.items():
+        layer_png = rasterize(layer_poly, gp.extent_um, gp.pixel_pitch_um)
+        layer_png.save(out / f"{layer_name}.png")
+        extra_layer_urls[f"{layer_name}_png"] = f"/data/{slug}/{variant}/{layer_name}.png"
 
     # Thumbnail
     thumb = make_thumbnail(front_png, back_png, size=256)
@@ -91,6 +125,12 @@ def materialize(
         "pixel_pitch_um": gp.pixel_pitch_um,
         "min_feature_um": gp.min_feature_um,
         "extra": gp.extra,
+        # Render-recipe hints for the frontend shader. The class-level default
+        # is "stylized_amplitude" (flat-mask composite); patterns that want a
+        # physics-correct recipe override Pattern.render_recipe on the class
+        # and can stash per-variant file refs in GeneratedPattern.recipe_data.
+        "render_recipe": cls.render_recipe,
+        "recipe_data": {**gp.recipe_data, **extra_layer_urls},
         "files": {
             "front_png": f"/data/{slug}/{variant}/front.png",
             "back_png": f"/data/{slug}/{variant}/back.png",

@@ -25,6 +25,11 @@ class SombreroVueltiaoParallax(Pattern):
     tags = ["parallax", "tilt-reveal", "Sombrero Vueltiao"]
     tier = 1
     theme = "Colombia"
+    # Front slit barrier + two separate scene layers (view_a / view_b). The
+    # shader picks which scene to show based on the sign of the tangent-space
+    # view-vector component along the slit axis, so tilting the plate actually
+    # swaps scenes — the parallax that used to be discarded now lives here.
+    render_recipe = "stereo_lenticular"
     params = [
         ParamSpec("period_um", "Slit period", "float", 40.0, 8.0, 200.0, 0.5, "μm"),
         ParamSpec("slit_duty", "Slit duty", "float", 0.5, 0.1, 0.9, 0.05),
@@ -51,9 +56,19 @@ class SombreroVueltiaoParallax(Pattern):
         front = ensure_multipolygon(unary_union([barrier, brim]))
         front = crop(front, extent)
 
-        # Back: interlaced scenes — Scene A full-height strips in the left half
-        # of each period, Scene B short horizontal bars in the right half
-        # (classic 2-view parallax interlace, just dressed in caña-flecha scale).
+        # Scene A: caña flecha concentric bands — the hat silhouette.
+        view_a = cana_flecha.concentric_bands(extent, brim_band_um, duty=0.55)
+
+        # Scene B: triangular pinta tooth ring — the hat's woven brim motif.
+        view_b = cana_flecha.pinta_triangles(
+            extent,
+            brim_band_um,
+            triangle_size_um=brim_band_um * 0.4,
+        )
+
+        # Legacy back = classic interlace of the two scenes, kept so the
+        # stylized_amplitude fallback still has something to show if the
+        # shader drops back to it.
         w = period_um / 2
         strips_a = []
         strips_b = []
@@ -76,5 +91,14 @@ class SombreroVueltiaoParallax(Pattern):
                 "half_angle_deg_view_switch": float(
                     np.degrees(math.atan(period_um / 2 / 500.0))
                 )
+            },
+            extra_layers={
+                "view_a": ensure_multipolygon(view_a),
+                "view_b": ensure_multipolygon(view_b),
+            },
+            recipe_data={
+                # Slit axis is +X (vertical slits → horizontal parallax).
+                "slit_axis_deg": 0.0,
+                "slit_period_um": period_um,
             },
         )

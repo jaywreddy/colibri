@@ -4,7 +4,7 @@
  * (pattern registry / manifest churn).
  */
 import { describe, it, expect } from 'vitest';
-import type { PatternManifest } from '../../src/api';
+import { RECIPE_IDS, type PatternManifest, type RenderRecipe } from '../../src/api';
 
 const SAMPLE: PatternManifest = {
   slug: 'wayuu-kanasu-moire',
@@ -78,5 +78,63 @@ describe('PatternManifest shape', () => {
       substrate: { ...SAMPLE.substrate, thickness_um: 0 },
     } as unknown;
     expect(isManifest(bad)).toBe(false);
+  });
+
+  // Phase A round-trip: if the backend adds render_recipe + recipe_data, the
+  // manifest still passes the guard (these fields are optional on the type
+  // and must not be rejected by the runtime check).
+  it('accepts a manifest with render_recipe + recipe_data', () => {
+    const withRecipe: unknown = {
+      ...SAMPLE,
+      render_recipe: 'iridescent_grating' as RenderRecipe,
+      recipe_data: { period_um: 4.0, orientation_deg: 0 },
+    };
+    expect(isManifest(withRecipe)).toBe(true);
+  });
+
+  // Pre-Phase-A manifests lacked render_recipe; they must still parse (the
+  // frontend treats them as stylized_amplitude).
+  it('accepts a legacy manifest without render_recipe', () => {
+    const legacy: unknown = { ...SAMPLE };
+    expect(isManifest(legacy)).toBe(true);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// Phase A — RECIPE_IDS numeric mapping must match the uRecipe switch order
+// in plate.frag. If these drift, the shader will run the wrong recipe for
+// the wrong pattern — a silent correctness bug, not a crash. Pin the values.
+// ----------------------------------------------------------------------------
+describe('RECIPE_IDS', () => {
+  it('maps each recipe name to the plate.frag switch constant', () => {
+    expect(RECIPE_IDS.iridescent_grating).toBe(0);
+    expect(RECIPE_IDS.stereo_lenticular).toBe(1);
+    expect(RECIPE_IDS.moire_interactive).toBe(2);
+    expect(RECIPE_IDS.near_field_carpet).toBe(3);
+    expect(RECIPE_IDS.far_field_hologram).toBe(4);
+    expect(RECIPE_IDS.stylized_amplitude).toBe(5);
+  });
+
+  it('covers every RenderRecipe name', () => {
+    const names: RenderRecipe[] = [
+      'iridescent_grating',
+      'stereo_lenticular',
+      'moire_interactive',
+      'near_field_carpet',
+      'far_field_hologram',
+      'stylized_amplitude',
+    ];
+    for (const n of names) {
+      expect(typeof RECIPE_IDS[n]).toBe('number');
+    }
+
+    // Unknown recipe strings must NOT be treated as a known recipe. PlateScene
+    // uses `rawRecipe in RECIPE_IDS` to guard against this — pin the behavior
+    // so a future rename doesn't silently push `undefined` into uRecipe.
+    expect('not_a_real_recipe' in RECIPE_IDS).toBe(false);
+    expect((RECIPE_IDS as Record<string, number>)['not_a_real_recipe']).toBeUndefined();
+    // Values are a dense 0..5 range (no holes).
+    const ids = Object.values(RECIPE_IDS).sort();
+    expect(ids).toEqual([0, 1, 2, 3, 4, 5]);
   });
 });

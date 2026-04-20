@@ -9,6 +9,7 @@ import { StylizedEngine } from '../engines/StylizedEngine';
 import { FraunhoferEngine } from '../engines/FraunhoferEngine';
 import { WavePropEngine } from '../engines/WavePropEngine';
 import type { Engine } from '../engines/Engine';
+import { RECIPE_IDS, type RenderRecipe } from '../api';
 
 const ENGINES: Record<string, Engine> = {
   stylized: new StylizedEngine(),
@@ -28,6 +29,8 @@ export default function PlateScene() {
     controls: OrbitControls;
     frontTex: THREE.Texture;
     backTex: THREE.Texture;
+    viewATex: THREE.Texture;
+    viewBTex: THREE.Texture;
     currentEngine: Engine | null;
   } | null>(null);
 
@@ -78,6 +81,18 @@ export default function PlateScene() {
         uBacklightColor: { value: new THREE.Color(0xffffff) },
         uAmbientColor: { value: new THREE.Color(0xffffff) },
         uLightWorld: { value: new THREE.Vector3(2, 3, 3) },
+        // Default to the back-compat stylized path until a manifest with a
+        // real recipe arrives. See RECIPE_IDS in src/api.ts.
+        uRecipe: { value: RECIPE_IDS.stylized_amplitude },
+        // --- iridescent_grating recipe (only read when uRecipe == 0) --------
+        uGratingPeriodUm: { value: 4.0 },
+        uGratingOrientation: { value: 0.0 },
+        uLaserWavelengthUm: { value: 0.55 },
+        // --- stereo_lenticular recipe (only read when uRecipe == 1) --------
+        uViewA: { value: blank },
+        uViewB: { value: blank },
+        uSlitOrientation: { value: 0.0 },
+        uSlitPeriodUm: { value: 40.0 },
       },
     });
 
@@ -131,6 +146,8 @@ export default function PlateScene() {
       controls,
       frontTex: blank,
       backTex: blank,
+      viewATex: blank,
+      viewBTex: blank,
       currentEngine: null,
     };
     (window as unknown as { __three: unknown }).__three = threeRef.current;
@@ -193,6 +210,82 @@ export default function PlateScene() {
       t.material.uniforms.uExtentUm.value = manifest.extent_um[0];
       t.material.uniforms.uThicknessUm.value = manifest.substrate.thickness_um;
       t.material.uniforms.uN.value = manifest.substrate.n;
+      // Legacy manifests on disk (from before Phase A) don't carry a recipe
+      // — treat them as stylized_amplitude so every pattern keeps rendering.
+      // An unknown recipe name (backend shipped a new recipe before the
+      // frontend knew about it) would otherwise push `undefined` into an int
+      // uniform; guard explicitly so the plate never hits that state.
+      const rawRecipe = manifest.render_recipe;
+      const recipe: RenderRecipe =
+        rawRecipe && rawRecipe in RECIPE_IDS
+          ? (rawRecipe as RenderRecipe)
+          : 'stylized_amplitude';
+      if (rawRecipe && recipe !== rawRecipe) {
+        log('recipe_unknown_fallback', { slug: manifest.slug, requested: rawRecipe });
+      }
+      t.material.uniforms.uRecipe.value = RECIPE_IDS[recipe];
+
+      // Per-recipe uniform hookup. Pull from recipe_data (generator-supplied)
+      // and fall back to the pattern's nominal params when present.
+      const rd = manifest.recipe_data ?? {};
+      const params = manifest.params ?? {};
+      if (recipe === 'iridescent_grating') {
+        const period =
+          Number(rd.period_um ?? params.period_um ?? 4.0) || 4.0;
+        const orientRad =
+          ((Number(rd.orientation_deg ?? 0) || 0) * Math.PI) / 180;
+        t.material.uniforms.uGratingPeriodUm.value = period;
+        t.material.uniforms.uGratingOrientation.value = orientRad;
+      }
+
+      // stereo_lenticular: load view_a / view_b textures + set slit axis.
+      // We default-bind blank then overwrite asynchronously so a slow fetch
+      // doesn't blank the canvas. The recipe_bound + texture_bound events
+      // still fire above with the synchronous front/back state, so E2E
+      // assertions that just want "binding happened" don't need to wait for
+      // view textures to arrive.
+      if (recipe === 'stereo_lenticular') {
+        const viewAUrl = typeof rd.view_a_png === 'string' ? rd.view_a_png : null;
+        const viewBUrl = typeof rd.view_b_png === 'string' ? rd.view_b_png : null;
+        const slitDeg = Number(rd.slit_axis_deg ?? 0) || 0;
+        const slitPeriod = Number(rd.slit_period_um ?? params.slit_period_um ?? params.period_um ?? 40.0) || 40.0;
+        t.material.uniforms.uSlitOrientation.value = (slitDeg * Math.PI) / 180;
+        t.material.uniforms.uSlitPeriodUm.value = slitPeriod;
+        if (viewAUrl && viewBUrl) {
+          const vLoader = new THREE.TextureLoader();
+          Promise.all([vLoader.loadAsync(viewAUrl), vLoader.loadAsync(viewBUrl)]).then(
+            ([va, vb]) => {
+              for (const tex of [va, vb]) {
+                tex.colorSpace = THREE.LinearSRGBColorSpace;
+                tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+                tex.magFilter = THREE.LinearFilter;
+                tex.minFilter = THREE.LinearFilter;
+                tex.generateMipmaps = false;
+                tex.anisotropy = 8;
+                tex.needsUpdate = true;
+              }
+              if (t.viewATex !== va) t.viewATex.dispose();
+              if (t.viewBTex !== vb) t.viewBTex.dispose();
+              t.viewATex = va;
+              t.viewBTex = vb;
+              t.material.uniforms.uViewA.value = va;
+              t.material.uniforms.uViewB.value = vb;
+              log('stereo_views_bound', {
+                slug: manifest.slug,
+                view_a: { w: va.image?.width ?? 0, h: va.image?.height ?? 0 },
+                view_b: { w: vb.image?.width ?? 0, h: vb.image?.height ?? 0 },
+              });
+            }
+          );
+        }
+      } else {
+        // Other recipes: clear any stale stereo textures so they don't bleed
+        // into the shader if uRecipe == 1 ever runs transiently.
+        t.material.uniforms.uViewA.value = t.frontTex; // harmless placeholder
+        t.material.uniforms.uViewB.value = t.frontTex;
+      }
+
+      log('recipe_bound', { slug: manifest.slug, recipe });
       log('texture_bound', {
         slug: manifest.slug,
         variant: manifest.variant,
@@ -231,6 +324,9 @@ export default function PlateScene() {
     t.material.uniforms.uLaserColor.value.setHex(laserRgb[laserColor]);
     t.material.uniforms.uWavelengthSlot.value =
       laserColor === 'red' ? 0 : laserColor === 'green' ? 1 : 2;
+    // Wavelength in μm for iridescent_grating recipe (laser-spot gating).
+    const laserUm: Record<string, number> = { red: 0.65, green: 0.55, blue: 0.45 };
+    t.material.uniforms.uLaserWavelengthUm.value = laserUm[laserColor] ?? 0.55;
   }, [illumination, laserColor]);
 
   // Light position

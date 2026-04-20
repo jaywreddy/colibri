@@ -21,6 +21,10 @@ class CompassRoseSpiral(Pattern):
     tags = ["moire", "rotational", "ambient", "compass"]
     tier = 2
     theme = "Global Travel"
+    # Radial-period mismatch between ring gratings beats into a pinwheel as
+    # the viewer orbits — same parallax-shift trick as the other moiré
+    # patterns, just with concentric rings instead of straight weaves.
+    render_recipe = "moire_interactive"
     params = [
         ParamSpec("period_front_um", "Front radial period", "float", 30.0, 4.0, 100.0, 0.5, "μm"),
         ParamSpec("period_back_um", "Back radial period", "float", 32.0, 4.0, 100.0, 0.5, "μm"),

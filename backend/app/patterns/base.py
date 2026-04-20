@@ -40,6 +40,17 @@ class GeneratedPattern:
     min_feature_um: float = 2.0
     substrate: Substrate = field(default_factory=Substrate)
     extra: dict = field(default_factory=dict)
+    # Per-variant overrides for the class-level render_recipe. Generators can
+    # push path-typed data here (e.g. {"view_a_png": "view_a.png"}) that the
+    # shader needs beyond the standard front/back textures. Stays empty for
+    # patterns that don't need recipe-specific artifacts.
+    recipe_data: dict = field(default_factory=dict)
+    # Optional extra polygon layers that the backend will rasterize into
+    # "<name>.png" alongside front/back. Used by stereo_lenticular to ship
+    # view_a / view_b scenes separately from the front slit barrier. service.py
+    # writes the resulting PNG URLs into recipe_data[<name>] automatically, so
+    # generators only need to set this field — no manual path bookkeeping.
+    extra_layers: dict[str, MultiPolygon] = field(default_factory=dict)
 
 
 def _as_multipolygon(geom: BaseGeometry) -> MultiPolygon:
@@ -54,6 +65,16 @@ def _as_multipolygon(geom: BaseGeometry) -> MultiPolygon:
     return MultiPolygon(polys)
 
 
+RECIPE_NAMES = {
+    "iridescent_grating",
+    "stereo_lenticular",
+    "moire_interactive",
+    "near_field_carpet",
+    "far_field_hologram",
+    "stylized_amplitude",
+}
+
+
 class Pattern(ABC):
     slug: ClassVar[str]
     name: ClassVar[str]
@@ -62,6 +83,11 @@ class Pattern(ABC):
     params: ClassVar[list[ParamSpec]] = []
     tier: ClassVar[int] = 1
     theme: ClassVar[str] = "Colombia"
+    # Which shader recipe the frontend should use when rendering this
+    # pattern. "stylized_amplitude" is the current flat-mask fallback, which
+    # is what every pattern uses until it's upgraded to a physics-correct
+    # recipe. See frontend/src/shaders/plate.frag for the switch.
+    render_recipe: ClassVar[str] = "stylized_amplitude"
 
     @classmethod
     @abstractmethod
@@ -80,6 +106,7 @@ class Pattern(ABC):
             "tags": cls.tags,
             "tier": cls.tier,
             "theme": cls.theme,
+            "render_recipe": cls.render_recipe,
             "params": [p.to_dict() for p in cls.params],
         }
 

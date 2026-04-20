@@ -23,6 +23,9 @@ class CafeteroIridescence(Pattern):
     tags = ["diffraction", "ambient", "iridescence", "Eje Cafetero"]
     tier = 2
     theme = "Colombia"
+    # The shader computes diffraction-order dispersion analytically using
+    # period_um + orientation. See frontend/src/shaders/plate.frag runIridescent.
+    render_recipe = "iridescent_grating"
     params = [
         ParamSpec("period_um", "Grating period", "float", 4.0, 2.0, 10.0, 0.1, "μm"),
         ParamSpec("duty", "Grating duty", "float", 0.5, 0.1, 0.9, 0.05),
@@ -58,4 +61,11 @@ class CafeteroIridescence(Pattern):
             pixel_pitch_um=max(1.0, period_um * duty / 4),
             min_feature_um=period_um * duty,
             extra={"first_order_green_deg": m1},
+            # linear_grating() emits stripes periodic along +X (rotation=0).
+            # The shader needs Λ in μm and the period-vector orientation in
+            # degrees (0 = period along +X).
+            recipe_data={
+                "period_um": period_um,
+                "orientation_deg": 0.0,
+            },
         )

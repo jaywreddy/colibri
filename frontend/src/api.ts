@@ -12,6 +12,19 @@ export type ParamSpec = {
   choices?: string[];
 };
 
+/**
+ * Names map 1:1 to the `uRecipe` switch in plate.frag. Keep in sync with
+ * RECIPE_NAMES in backend/app/patterns/base.py. `stylized_amplitude` is the
+ * back-compat default for patterns that haven't been upgraded yet.
+ */
+export type RenderRecipe =
+  | 'iridescent_grating'
+  | 'stereo_lenticular'
+  | 'moire_interactive'
+  | 'near_field_carpet'
+  | 'far_field_hologram'
+  | 'stylized_amplitude';
+
 export type PatternDescriptor = {
   slug: string;
   name: string;
@@ -19,6 +32,7 @@ export type PatternDescriptor = {
   tags: string[];
   tier: 1 | 2 | 3;
   theme: 'Colombia' | 'Global Travel';
+  render_recipe?: RenderRecipe;
   params: ParamSpec[];
 };
 
@@ -34,6 +48,10 @@ export type PatternManifest = {
   pixel_pitch_um: number;
   min_feature_um: number;
   extra: Record<string, unknown>;
+  // Present in new manifests; older on-disk manifests (pre-Phase A) omit it
+  // and must fall back to 'stylized_amplitude' at read time.
+  render_recipe?: RenderRecipe;
+  recipe_data?: Record<string, unknown>;
   files: {
     front_png: string;
     back_png: string;
@@ -41,6 +59,15 @@ export type PatternManifest = {
     back_svg: string;
     thumbnail: string;
   };
+};
+
+export const RECIPE_IDS: Record<RenderRecipe, number> = {
+  iridescent_grating: 0,
+  stereo_lenticular: 1,
+  moire_interactive: 2,
+  near_field_carpet: 3,
+  far_field_hologram: 4,
+  stylized_amplitude: 5,
 };
 
 /**

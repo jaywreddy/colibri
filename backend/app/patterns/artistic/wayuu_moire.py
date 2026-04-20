@@ -18,6 +18,10 @@ class WayuuKanasuMoire(Pattern):
     tags = ["moire", "ambient", "tilt-reveal", "Wayuu"]
     tier = 1
     theme = "Colombia"
+    # Shader samples front × back with a Snell-refracted parallax shift so
+    # the rotation mismatch between layers becomes visible moiré fringes that
+    # walk with the camera angle.
+    render_recipe = "moire_interactive"
     params = [
         ParamSpec("period_um", "Weave period", "float", 20.0, 4.0, 200.0, 0.5, "μm"),
         ParamSpec("duty", "Thread thickness", "float", 0.5, 0.1, 0.9, 0.05),

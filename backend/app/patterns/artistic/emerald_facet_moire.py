@@ -17,6 +17,9 @@ class EmeraldFacetMoire(Pattern):
     tags = ["moire", "parallax", "magnifier", "emerald"]
     tier = 1
     theme = "Colombia"
+    # Hex-lattice pitch mismatch produces a floating "ghost gem" via moiré —
+    # the parallax-shifted back sample makes the beat walk with the camera.
+    render_recipe = "moire_interactive"
     params = [
         ParamSpec("period_front_um", "Front facet pitch", "float", 30.0, 6.0, 100.0, 0.5, "μm"),
         ParamSpec("period_back_um", "Back facet pitch", "float", 31.0, 6.0, 100.0, 0.5, "μm"),
