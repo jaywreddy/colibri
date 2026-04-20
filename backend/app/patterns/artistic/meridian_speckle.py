@@ -21,6 +21,7 @@ class MeridianSpeckle(Pattern):
     tags = ["diffuser", "laser", "random", "meridian"]
     tier = 2
     theme = "Global Travel"
+    render_recipe = "far_field_hologram"
     params = [
         ParamSpec("grid", "Speckle grid (cells)", "int", 200, 64, 400, 16),
         ParamSpec("cell_um", "Cell size", "float", 4.0, 2.0, 20.0, 0.5, "μm"),
@@ -63,4 +64,11 @@ class MeridianSpeckle(Pattern):
             pixel_pitch_um=max(0.5, cell_um / 4),
             min_feature_um=min(cell_um, grid_line_um),
             extra={"grid": N, "fill": fill},
+            recipe_data={
+                # Same R/G/B trichromat as colibri; the speckle diffuser's
+                # far-field is a flat-topped beam with wavelength-dependent
+                # speckle, which the RGB merge renders as subtly-colored
+                # grains rather than monochrome noise.
+                "wavelengths_um": [0.65, 0.55, 0.45],
+            },
         )

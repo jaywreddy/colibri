@@ -144,6 +144,22 @@ def test_recipe_data_for_phase_d_patterns(client: TestClient) -> None:
     assert rd["z_max_um"] > rd["z_min_um"]
 
 
+def test_recipe_data_for_phase_e_patterns(client: TestClient) -> None:
+    # far_field_hologram patterns must carry a 3-element wavelengths_um list
+    # so the frontend can hit /sim/farfield with the right R/G/B trichromat.
+    r = client.post("/patterns/generate", json={"slug": "colibri-hologram", "params": {}})
+    assert r.status_code == 200
+    col = r.json()
+    assert col["render_recipe"] == "far_field_hologram"
+    assert col["recipe_data"].get("wavelengths_um") and len(col["recipe_data"]["wavelengths_um"]) == 3
+
+    r = client.post("/patterns/generate", json={"slug": "meridian-speckle", "params": {}})
+    assert r.status_code == 200
+    mer = r.json()
+    assert mer["render_recipe"] == "far_field_hologram"
+    assert mer["recipe_data"].get("wavelengths_um") and len(mer["recipe_data"]["wavelengths_um"]) == 3
+
+
 def test_invalid_param_type_returns_error(client: TestClient) -> None:
     # period_um is a float in wayuu-kanasu-moire. A string should either 422 at pydantic
     # or 400 at the generator. Either is acceptable — just not 200.

@@ -8,8 +8,11 @@ import { useStore } from '../store';
  *     full vertical (x, z) propagation carpet. The z-slice slider in
  *     `IlluminationPanel` drives a horizontal indicator line so the user
  *     can see which slice the plate is currently sampling.
- *   - `far_field_hologram` (colibri-hologram, meridian-speckle) — will
- *     show the Fraunhofer RGB reconstruction in Phase E.
+ *   - `far_field_hologram` (colibri-hologram, meridian-speckle) — shows
+ *     the merged-RGB Fraunhofer reconstruction returned by /sim/farfield.
+ *     The plate itself shows the bare mask (recipe 4 routes to runStylized)
+ *     because the actual "what you'd see on a screen" lives here, not
+ *     in the shader.
  *
  * For any other recipe the panel hides itself (returns null) so the canvas
  * reclaims that column.
@@ -18,6 +21,7 @@ export default function SecondaryView() {
   const manifest = useStore((s) => s.manifest);
   const zSlice = useStore((s) => s.zSlice);
   const carpetAtlasUrl = useStore((s) => s.carpetAtlasUrl);
+  const farfieldUrl = useStore((s) => s.farfieldUrl);
   const recipe = manifest?.render_recipe ?? null;
   const rd = (manifest?.recipe_data ?? {}) as Record<string, unknown>;
 
@@ -106,15 +110,59 @@ export default function SecondaryView() {
     );
   }
 
-  // --- far_field_hologram placeholder (Phase E will populate) --------------
+  // --- far_field_hologram: merged-RGB Fraunhofer reconstruction -----------
+  // colibri-hologram: a hummingbird silhouette under white coherent light.
+  // meridian-speckle: a flat-topped beam with color-smeared speckle grain.
+  // The plate shader itself doesn't know about any of this — the plate
+  // keeps showing the bare amplitude mask, and the "signature" physics
+  // visualization is the DOM image right here. A styled "plate → projected"
+  // arrow above the reconstruction emphasizes the optical relationship.
+  const wavelengths = Array.isArray(rd.wavelengths_um) ? rd.wavelengths_um : [];
+  const target = typeof rd.target === 'string' ? rd.target : null;
   return (
     <aside
       data-testid="secondary-view"
       data-recipe={recipe}
       style={panel}
     >
-      <div style={title}>Far-field reconstruction</div>
-      <div style={placeholder}>coming in Phase E</div>
+      <div style={title}>
+        Far-field reconstruction
+        <span style={{ float: 'right', opacity: 0.5, textTransform: 'none' }}>
+          plate&nbsp;──→&nbsp;projected
+        </span>
+      </div>
+      <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+        {farfieldUrl ? (
+          <img
+            data-testid="farfield-image"
+            src={farfieldUrl}
+            alt={`far-field reconstruction${target ? ` (${target})` : ''}`}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'contain',
+              // Log-stretched reconstructions look best with crisp pixels
+              // at small atlas sizes; the actual PNG is ~128×128.
+              imageRendering: 'pixelated',
+              background: '#000',
+            }}
+          />
+        ) : (
+          <div style={placeholder}>fetching reconstruction…</div>
+        )}
+      </div>
+      <div style={footer}>
+        {wavelengths.length === 3
+          ? `λ = ${wavelengths
+              .map((w) => `${(Number(w) * 1000).toFixed(0)} nm`)
+              .join(' · ')}`
+          : 'coherent illumination'}
+        {target && (
+          <span style={{ float: 'right', opacity: 0.7 }}>target: {target}</span>
+        )}
+      </div>
     </aside>
   );
 }

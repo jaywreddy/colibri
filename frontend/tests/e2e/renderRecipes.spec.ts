@@ -345,4 +345,76 @@ test.describe('render recipes', () => {
 
     await expectCanvasNotBlank(page);
   });
+
+  // --- Phase E: far_field_hologram -------------------------------------
+  // The plate shader intentionally reuses runStylized for recipe 4 — the
+  // signature visualization is the RGB Fraunhofer reconstruction in the
+  // SecondaryView <img>, not the plate itself. So these tests assert that
+  // (a) the recipe routes to uRecipe == 4, (b) /sim/farfield actually
+  // returns and the URL lands in the store, and (c) the SecondaryView
+  // image element is visible and points at a PNG.
+  test('colibri binds far_field_hologram recipe and SecondaryView shows the reconstruction', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await clearLog(page);
+    await clickCardAndWait(page, 'colibri-hologram');
+
+    const bound = await expectLogEvent(
+      page,
+      'recipe_bound',
+      (e) => e.slug === 'colibri-hologram'
+    );
+    expect(bound.recipe).toBe('far_field_hologram');
+    expect(await readUniform<number>(page, 'uRecipe')).toBe(4);
+
+    const fetched = await expectLogEvent(
+      page,
+      'farfield_fetched',
+      (e) => e.slug === 'colibri-hologram',
+      { timeout: 90_000 }
+    );
+    expect(typeof fetched.cached).toBe('boolean');
+
+    await expect(page.getByTestId('secondary-view')).toBeVisible();
+    const img = page.getByTestId('farfield-image');
+    await expect(img).toBeVisible();
+    // The <img> must actually be pointing at the /data/... PNG — not a
+    // stale relative path or an empty src.
+    const src = await img.getAttribute('src');
+    expect(src).toMatch(/\/data\/colibri-hologram\/.+\.png$/);
+
+    await expectCanvasNotBlank(page);
+  });
+
+  test('meridian binds far_field_hologram recipe and SecondaryView shows the reconstruction', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await clearLog(page);
+    await clickCardAndWait(page, 'meridian-speckle');
+
+    const bound = await expectLogEvent(
+      page,
+      'recipe_bound',
+      (e) => e.slug === 'meridian-speckle'
+    );
+    expect(bound.recipe).toBe('far_field_hologram');
+    expect(await readUniform<number>(page, 'uRecipe')).toBe(4);
+
+    await expectLogEvent(
+      page,
+      'farfield_fetched',
+      (e) => e.slug === 'meridian-speckle',
+      { timeout: 90_000 }
+    );
+
+    await expect(page.getByTestId('secondary-view')).toBeVisible();
+    const img = page.getByTestId('farfield-image');
+    await expect(img).toBeVisible();
+    const src = await img.getAttribute('src');
+    expect(src).toMatch(/\/data\/meridian-speckle\/.+\.png$/);
+
+    await expectCanvasNotBlank(page);
+  });
 });

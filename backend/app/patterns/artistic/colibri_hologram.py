@@ -20,6 +20,7 @@ class ColibriHologram(Pattern):
     tags = ["hologram", "laser", "fft", "colibri"]
     tier = 2
     theme = "Colombia"
+    render_recipe = "far_field_hologram"
     params = [
         ParamSpec("grid", "Hologram grid (cells)", "int", 256, 64, 512, 32),
         ParamSpec("cell_um", "Cell size", "float", 4.0, 2.0, 16.0, 0.5, "μm"),
@@ -50,4 +51,14 @@ class ColibriHologram(Pattern):
             pixel_pitch_um=max(0.5, cell_um / 4),
             min_feature_um=cell_um,
             extra={"grid": N, "cell_um": cell_um, "target": "colibri"},
+            recipe_data={
+                # R/G/B design wavelengths fed to /sim/farfield. The
+                # reconstruction is spatially identical at all three in
+                # this approximation — the chromatic smear comes from
+                # the merge, not from geometric scaling — which still
+                # gives a plausible "rainbow-edged" hummingbird under
+                # white coherent illumination.
+                "wavelengths_um": [0.65, 0.55, 0.45],
+                "target": "colibri",
+            },
         )

@@ -27,6 +27,12 @@ type State = {
   zSlice: number;
   carpetAtlasUrl: string | null;
 
+  // --- far_field_hologram recipe (colibri, meridian) ---------------------
+  // URL of the merged-RGB Fraunhofer reconstruction PNG returned by
+  // /sim/farfield. Consumed only by SecondaryView; the plate shader keeps
+  // showing the bare mask.
+  farfieldUrl: string | null;
+
   setCatalog: (c: PatternDescriptor[]) => void;
   /** Mark `slug` as the user's latest intent. Call this BEFORE kicking off a
    * fetch so stale responses can be discarded on arrival. */
@@ -47,6 +53,7 @@ type State = {
   setFftAtlas: (url: string | null) => void;
   setZSlice: (z: number) => void;
   setCarpetAtlasUrl: (url: string | null) => void;
+  setFarfieldUrl: (url: string | null) => void;
 };
 
 export const useStore = create<State>((set, get) => ({
@@ -64,6 +71,7 @@ export const useStore = create<State>((set, get) => ({
   fftAtlasUrl: null,
   zSlice: 0.5,
   carpetAtlasUrl: null,
+  farfieldUrl: null,
 
   setCatalog: (catalog) => set({ catalog }),
   beginSelect: (slug) => set({ pendingSlug: slug }),
@@ -75,6 +83,7 @@ export const useStore = create<State>((set, get) => ({
       params: { ...(manifest.params as Record<string, unknown>) },
       fftAtlasUrl: null,
       carpetAtlasUrl: null,
+      farfieldUrl: null,
       zSlice: 0.5,
     });
     return true;
@@ -87,10 +96,17 @@ export const useStore = create<State>((set, get) => ({
       params: { ...(manifest.params as Record<string, unknown>) },
       fftAtlasUrl: null,
       carpetAtlasUrl: null,
+      farfieldUrl: null,
       zSlice: 0.5,
     }),
   setManifest: (manifest) =>
-    set({ manifest, fftAtlasUrl: null, carpetAtlasUrl: null, zSlice: 0.5 }),
+    set({
+      manifest,
+      fftAtlasUrl: null,
+      carpetAtlasUrl: null,
+      farfieldUrl: null,
+      zSlice: 0.5,
+    }),
   setParams: (params) => set({ params }),
   patchParams: (patch) => set((s) => ({ params: { ...s.params, ...patch } })),
   setIllumination: (illumination) => set({ illumination }),
@@ -102,4 +118,5 @@ export const useStore = create<State>((set, get) => ({
   setFftAtlas: (fftAtlasUrl) => set({ fftAtlasUrl }),
   setZSlice: (zSlice) => set({ zSlice }),
   setCarpetAtlasUrl: (carpetAtlasUrl) => set({ carpetAtlasUrl }),
+  setFarfieldUrl: (farfieldUrl) => set({ farfieldUrl }),
 }));

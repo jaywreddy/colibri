@@ -173,3 +173,89 @@ def test_carpet_unknown_variant_404(client: TestClient) -> None:
         },
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase E — /sim/farfield contract. Used by the far_field_hologram recipe for
+# colibri-hologram and meridian-speckle. Single RGB PNG whose channels are
+# per-wavelength Fraunhofer reconstructions.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def seeded_colibri_hologram(client: TestClient) -> tuple[str, str]:
+    r = client.post(
+        "/patterns/generate", json={"slug": "colibri-hologram", "params": {}}
+    )
+    assert r.status_code == 200, r.text
+    m = r.json()
+    return m["slug"], m["variant"]
+
+
+def test_farfield_returns_rgb_reconstruction(
+    client: TestClient, seeded_colibri_hologram
+) -> None:
+    slug, variant = seeded_colibri_hologram
+    r = client.post(
+        "/sim/farfield",
+        json={
+            "slug": slug,
+            "variant": variant,
+            "wavelengths_um": [0.65, 0.55, 0.45],
+            "n_angles": 128,
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["farfield_png"].endswith(".png")
+    assert body["farfield_png"].startswith(f"/data/{slug}/{variant}/")
+    assert isinstance(body["shape"], list) and len(body["shape"]) == 2
+    # Second call must be cached.
+    r2 = client.post(
+        "/sim/farfield",
+        json={
+            "slug": slug,
+            "variant": variant,
+            "wavelengths_um": [0.65, 0.55, 0.45],
+            "n_angles": 128,
+        },
+    )
+    assert r2.json()["cached"] is True
+
+    # Fetch the actual PNG bytes and check it's a 3-channel RGB with real signal
+    # (not a uniform field). We read through the TestClient's /data mount.
+    png_url = body["farfield_png"]
+    png_r = client.get(png_url)
+    assert png_r.status_code == 200
+    from io import BytesIO
+
+    from PIL import Image
+    import numpy as np
+
+    img = Image.open(BytesIO(png_r.content))
+    assert img.mode == "RGB"
+    arr = np.asarray(img)
+    assert arr.shape[2] == 3
+    # The colibri CGH is not uniform — its reconstruction has structure.
+    assert float(arr.std()) > 2.0, "farfield PNG looks suspiciously flat"
+
+
+def test_farfield_rejects_wrong_channel_count(
+    client: TestClient, seeded_colibri_hologram
+) -> None:
+    slug, variant = seeded_colibri_hologram
+    r = client.post(
+        "/sim/farfield",
+        json={
+            "slug": slug,
+            "variant": variant,
+            "wavelengths_um": [0.55],  # single channel not allowed
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_farfield_unknown_variant_404(client: TestClient) -> None:
+    r = client.post(
+        "/sim/farfield",
+        json={"slug": "colibri-hologram", "variant": "nope0000ff"},
+    )
+    assert r.status_code == 404

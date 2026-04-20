@@ -9,7 +9,7 @@ import { StylizedEngine } from '../engines/StylizedEngine';
 import { FraunhoferEngine } from '../engines/FraunhoferEngine';
 import { WavePropEngine } from '../engines/WavePropEngine';
 import type { Engine } from '../engines/Engine';
-import { RECIPE_IDS, fetchCarpet, type RenderRecipe } from '../api';
+import { RECIPE_IDS, fetchCarpet, fetchFarfield, type RenderRecipe } from '../api';
 
 const ENGINES: Record<string, Engine> = {
   stylized: new StylizedEngine(),
@@ -43,6 +43,7 @@ export default function PlateScene() {
   const lightEl = useStore((s) => s.lightElevationDeg);
   const zSlice = useStore((s) => s.zSlice);
   const setCarpetAtlasUrl = useStore((s) => s.setCarpetAtlasUrl);
+  const setFarfieldUrl = useStore((s) => s.setFarfieldUrl);
 
   useEffect(() => {
     const mount = mountRef.current!;
@@ -365,6 +366,45 @@ export default function PlateScene() {
         t.material.uniforms.uHasCarpet.value = false;
         t.material.uniforms.uCarpetRows.value = 0;
         setCarpetAtlasUrl(null);
+      }
+
+      // far_field_hologram: fetch the merged-RGB Fraunhofer reconstruction
+      // and stash the URL in the store for SecondaryView to display. The
+      // plate shader doesn't consume it directly (recipe 4 falls through to
+      // runStylized), so there's no texture to bind here — just a URL hand-off.
+      if (recipe === 'far_field_hologram') {
+        const rawWl = rd.wavelengths_um;
+        const wavelengths_um: [number, number, number] = Array.isArray(rawWl) && rawWl.length === 3
+          ? [Number(rawWl[0]) || 0.65, Number(rawWl[1]) || 0.55, Number(rawWl[2]) || 0.45]
+          : [0.65, 0.55, 0.45];
+        const slugAtFetch = manifest.slug;
+        const variantAtFetch = manifest.variant;
+        fetchFarfield(slugAtFetch, variantAtFetch, { wavelengths_um })
+          .then((res) => {
+            if (
+              !threeRef.current ||
+              threeRef.current !== t ||
+              manifest.slug !== slugAtFetch ||
+              manifest.variant !== variantAtFetch
+            ) {
+              return;
+            }
+            setFarfieldUrl(res.farfield_png);
+            log('farfield_fetched', {
+              slug: slugAtFetch,
+              variant: variantAtFetch,
+              cached: res.cached,
+            });
+          })
+          .catch((e) => {
+            log('farfield_fetch_error', {
+              slug: slugAtFetch,
+              variant: variantAtFetch,
+              message: (e as Error).message,
+            });
+          });
+      } else {
+        setFarfieldUrl(null);
       }
 
       log('recipe_bound', { slug: manifest.slug, recipe });

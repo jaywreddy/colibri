@@ -216,3 +216,46 @@ export async function fetchCarpet(
   if (!r.ok) throw new Error(`fetchCarpet: ${r.status} ${await r.text()}`);
   return r.json();
 }
+
+/**
+ * Merged-RGB Fraunhofer reconstruction for the `far_field_hologram` recipe
+ * (colibri-hologram, meridian-speckle). Returns a single PNG whose RGB
+ * channels are the three-wavelength reconstructions — what you would see
+ * projected on a screen under white coherent illumination.
+ */
+export async function fetchFarfield(
+  slug: string,
+  variant: string,
+  opts: {
+    wavelengths_um?: [number, number, number];
+    n_angles?: number;
+    max_angle_deg?: number;
+    signal?: AbortSignal;
+  } = {}
+): Promise<{
+  farfield_png: string;
+  shape: [number, number];
+  wavelengths_um: [number, number, number];
+  cached: boolean;
+}> {
+  const {
+    wavelengths_um = [0.65, 0.55, 0.45],
+    n_angles = 256,
+    max_angle_deg = 30.0,
+    signal,
+  } = opts;
+  const r = await tracedFetch('/sim/farfield', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      slug,
+      variant,
+      wavelengths_um,
+      n_angles,
+      max_angle_deg,
+    }),
+    signal,
+  });
+  if (!r.ok) throw new Error(`fetchFarfield: ${r.status} ${await r.text()}`);
+  return r.json();
+}

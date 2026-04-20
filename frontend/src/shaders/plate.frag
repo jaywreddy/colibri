@@ -323,8 +323,11 @@ void main() {
   } else if (uRecipe == 3) {
     color = runNearFieldCarpet(viewTangent);
   } else {
-    // Recipe 4 not yet implemented — fall back to stylized_amplitude so
-    // nothing regresses until phase E lands.
+    // Recipe 4 (far_field_hologram) intentionally reuses runStylized — the
+    // plate itself is just "the mask under coherent illumination"; the
+    // signature visualization is the RGB Fraunhofer reconstruction, which
+    // lives in the DOM (SecondaryView), not in the shader. Recipe 5
+    // (stylized_amplitude) is the legacy fallback and uses the same body.
     color = runStylized(viewTangent);
   }
 

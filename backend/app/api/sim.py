@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from ..sim.fraunhofer import fraunhofer_far_field
 from ..sim.angular_spectrum import propagate as asm_propagate
 from ..sim.talbot_carpet import propagate_carpet
+from ..sim.farfield_rgb import farfield_rgb
 from ..service import DATA_ROOT
 
 router = APIRouter(prefix="/sim", tags=["sim"])
@@ -210,5 +211,69 @@ def carpet(req: CarpetRequest) -> dict:
         "rows": out.get("rows"),
         "cols": out.get("cols"),
         "tile": out.get("tile"),
+        "cached": out.get("cached", False),
+    }
+
+
+class FarfieldRequest(BaseModel):
+    slug: str
+    variant: str
+    # R, G, B wavelengths. Default picks standard laser-printing trichromat
+    # so the reconstruction looks natural under "white coherent" illumination.
+    wavelengths_um: list[float] = [0.65, 0.55, 0.45]
+    n_angles: int = 256
+    max_angle_deg: float = 30.0
+
+
+@router.post("/farfield")
+def farfield(req: FarfieldRequest) -> dict:
+    """Merged-RGB Fraunhofer reconstruction for `far_field_hologram`.
+
+    Used by colibri-hologram and meridian-speckle. Returns a single RGB
+    PNG (channel = wavelength), suitable for direct <img> display in
+    SecondaryView — the visualization of "what you'd see on a screen"
+    for a binary CGH under white coherent light.
+    """
+    root = DATA_ROOT / req.slug / req.variant
+    if not root.exists():
+        raise HTTPException(404, f"Variant not found: {req.slug}/{req.variant}")
+    if len(req.wavelengths_um) != 3:
+        raise HTTPException(400, "wavelengths_um must have exactly 3 entries (R, G, B)")
+    t0 = time.perf_counter()
+    _log.info(
+        "farfield start slug=%s variant=%s wl=%s",
+        req.slug,
+        req.variant,
+        req.wavelengths_um,
+    )
+    try:
+        out = farfield_rgb(
+            root,
+            wavelengths_um=tuple(req.wavelengths_um),  # type: ignore[arg-type]
+            n_angles=req.n_angles,
+            max_angle_deg=req.max_angle_deg,
+        )
+    except Exception as e:  # noqa: BLE001
+        _log.warning(
+            "farfield failed slug=%s variant=%s err=%r (%dms)",
+            req.slug,
+            req.variant,
+            e,
+            int((time.perf_counter() - t0) * 1000),
+        )
+        raise HTTPException(400, f"Farfield failed: {e!r}") from e
+    _log.info(
+        "farfield done slug=%s variant=%s cached=%s %dms",
+        req.slug,
+        req.variant,
+        out.get("cached", False),
+        int((time.perf_counter() - t0) * 1000),
+    )
+    return {
+        "slug": req.slug,
+        "variant": req.variant,
+        "wavelengths_um": req.wavelengths_um,
+        "farfield_png": f"/data/{req.slug}/{req.variant}/{out['farfield_name']}",
+        "shape": out.get("shape"),
         "cached": out.get("cached", False),
     }
