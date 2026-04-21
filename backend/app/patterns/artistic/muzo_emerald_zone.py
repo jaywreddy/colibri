@@ -69,5 +69,8 @@ class MuzoEmeraldZone(Pattern):
                 "z_min_um": z_min_um,
                 "z_max_um": z_max_um,
                 "n_slices": 48,
+                # 2D snapshots per z: the zone plate's signature is a focal
+                # spot, inherently 2D — not a line cut like Talbot.
+                "carpet_layout": "tiles",
             },
         )

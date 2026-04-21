@@ -37,12 +37,14 @@ class FarfieldParams:
     wavelengths_um: tuple[float, float, float]  # R, G, B
     n_angles: int
     max_angle_deg: float
+    carrier_cells: int
 
     def hash(self) -> str:
         payload = {
             "w": list(self.wavelengths_um),
             "na": self.n_angles,
             "ma": self.max_angle_deg,
+            "cc": self.carrier_cells,
         }
         return hashlib.sha1(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -54,18 +56,19 @@ def _load_binary(path: Path) -> np.ndarray:
     return np.asarray(img, dtype=np.float32) / 255.0
 
 
-def _reconstruction_channel(aperture: np.ndarray, pad: int) -> np.ndarray:
-    """Return the log-stretched central-crop intensity of FFT(aperture).
+def _reconstruction_channel(
+    aperture: np.ndarray, pad: int, carrier_cells: int = 0
+) -> np.ndarray:
+    """Return the log-stretched quadrant-crop intensity of FFT(aperture).
+
+    carrier_cells:
+      * 0 — center crop (default; speckle / any rotationally-symmetric
+        target whose reconstruction is centered at DC).
+      * C > 0 — crop the (pad/C, pad/C)-shifted quadrant containing the
+        off-axis replica of a carrier-shifted target (e.g. the Lohmann
+        colibri-hologram encoder shifts by N/C, so set C=4 to follow it).
 
     The result is in [0, 1], suitable for use as a single RGB channel.
-    We intentionally don't scale by wavelength at this stage — the
-    wavelength only selects *which* channel the intensity lands in
-    (R for ~0.65 μm, G for ~0.55 μm, B for ~0.45 μm). The physical
-    wavelength scaling of the Fraunhofer pattern would require knowing
-    the pixel pitch, which this function doesn't consume; shipping
-    three identical-extent reconstructions is the right call for
-    hologram visualization because the human eye perceives the
-    spatially-overlapped color image (what you'd see on a screen).
     """
     h, w = aperture.shape
     field = np.zeros((pad, pad), dtype=np.complex64)
@@ -77,10 +80,25 @@ def _reconstruction_channel(aperture: np.ndarray, pad: int) -> np.ndarray:
     intensity = np.abs(ft) ** 2
     intensity /= intensity.max() + 1e-12
 
-    # Match fraunhofer.py: take central 50% window.
+    # Crop a 50%-sized window. For carrier_cells == 0 the window is
+    # centered on DC (preserves pre-G speckle behavior); for carrier_cells
+    # > 0 the window is offset by pad/carrier_cells in both axes to follow
+    # the Lohmann off-axis replica.
     c = pad // 2
     half = pad // 4
-    slab = intensity[c - half : c + half, c - half : c + half]
+    if carrier_cells > 0:
+        off = pad // carrier_cells
+        cy = c + off
+        cx = c + off
+    else:
+        cy = c
+        cx = c
+    # Guard against crop falling outside the array at extreme carrier_cells.
+    y_lo = max(0, cy - half)
+    y_hi = min(pad, cy + half)
+    x_lo = max(0, cx - half)
+    x_hi = min(pad, cx + half)
+    slab = intensity[y_lo:y_hi, x_lo:x_hi]
 
     slab_db = 10.0 * np.log10(slab + 1e-8)
     return np.clip((slab_db + 80) / 80, 0, 1).astype(np.float32)
@@ -91,6 +109,7 @@ def farfield_rgb(
     wavelengths_um: tuple[float, float, float] = (0.65, 0.55, 0.45),
     n_angles: int = 256,
     max_angle_deg: float = 30.0,
+    carrier_cells: int = 0,
 ) -> dict:
     """Compute a merged-RGB Fraunhofer reconstruction and cache it.
 
@@ -100,6 +119,7 @@ def farfield_rgb(
         wavelengths_um=tuple(wavelengths_um),  # type: ignore[arg-type]
         n_angles=n_angles,
         max_angle_deg=max_angle_deg,
+        carrier_cells=int(carrier_cells),
     )
     out_name = f"farfield_{params.hash()}.png"
     out_path = variant_dir / out_name
@@ -129,7 +149,10 @@ def farfield_rgb(
     # small chromatic smear *is* the visual signature of a binary
     # hologram under white coherent illumination.
     # R, G, B order in wavelengths_um is the intended channel order.
-    channels = [_reconstruction_channel(aperture, pad) for _ in wavelengths_um]
+    channels = [
+        _reconstruction_channel(aperture, pad, carrier_cells=int(carrier_cells))
+        for _ in wavelengths_um
+    ]
     rgb = np.stack(channels, axis=-1)  # (H, W, 3)
 
     # Gentle contrast lift so the faint reconstruction is visible on

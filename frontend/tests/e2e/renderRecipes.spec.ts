@@ -49,6 +49,61 @@ async function setZSliceUniform(
   }, value);
 }
 
+/**
+ * Decode the far-field PNG off the network, draw it into an offscreen
+ * canvas, and return the PEAK luminance (R+G+B) in each of the four
+ * quadrants of the image with the central N/8 square excluded (the DC
+ * spike from binary-amplitude CGHs dominates there and isn't the target).
+ *
+ * We use peak (not mean) because log-stretched reconstructions have a
+ * compressed dynamic range — the hummingbird silhouette is maybe 40-60
+ * grayscale units above the noise floor, but the noise floor per quadrant
+ * averages to roughly the same brightness. The target's *peak* is what
+ * stands out, not its quadrant mean.
+ *
+ * Returns { ul, ur, ll, lr } in per-pixel luminance (0..765 = 3·255).
+ */
+async function farfieldQuadrantPeak(
+  page: import('@playwright/test').Page,
+  url: string
+): Promise<{ ul: number; ur: number; ll: number; lr: number }> {
+  return await page.evaluate(async (u: string) => {
+    const r = await fetch(u);
+    const blob = await r.blob();
+    const bmp = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(bmp, 0, 0);
+    const img = ctx.getImageData(0, 0, bmp.width, bmp.height);
+    const { width: W, height: H, data } = img;
+    const cy = Math.floor(H / 2),
+      cx = Math.floor(W / 2);
+    const maskH = Math.max(1, Math.floor(H / 8));
+    const maskW = Math.max(1, Math.floor(W / 8));
+    const peak = { ul: 0, ur: 0, ll: 0, lr: 0 };
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (Math.abs(y - cy) < maskH && Math.abs(x - cx) < maskW) continue;
+        const i = (y * W + x) * 4;
+        const lum = data[i] + data[i + 1] + data[i + 2];
+        const top = y < cy;
+        const left = x < cx;
+        const key = top
+          ? left
+            ? ('ul' as const)
+            : ('ur' as const)
+          : left
+            ? ('ll' as const)
+            : ('lr' as const);
+        if (lum > peak[key]) peak[key] = lum;
+      }
+    }
+    return peak;
+  }, url);
+}
+
 async function orbitCamera(page: import('@playwright/test').Page, dAz: number): Promise<void> {
   // Drive OrbitControls directly via the debug hook. We avoid mouse events
   // here because Playwright's drag inside the WebGL canvas is flaky under
@@ -282,9 +337,16 @@ test.describe('render recipes', () => {
     expect(fetched.rows as number).toBeGreaterThan(8);
     expect(await readUniform<boolean>(page, 'uHasCarpet')).toBe(true);
     expect(await readUniform<number>(page, 'uCarpetRows')).toBeGreaterThan(8);
+    // Phase G.1: tairona switched to the canonical (x, z) stripe Talbot
+    // carpet. Shader must be told so it samples the atlas as rows-of-x
+    // rather than rows-of-2D-tiles.
+    expect(fetched.layout).toBe('stripe');
+    expect(await readUniform<boolean>(page, 'uCarpetIsStripe')).toBe(true);
 
     // SecondaryView should be visible with the carpet image bound.
-    await expect(page.getByTestId('secondary-view')).toBeVisible();
+    const secondary = page.getByTestId('secondary-view');
+    await expect(secondary).toBeVisible();
+    await expect(secondary).toHaveAttribute('data-carpet-layout', 'stripe');
     await expect(page.getByTestId('carpet-image')).toBeVisible();
 
     await expectCanvasNotBlank(page);
@@ -339,8 +401,14 @@ test.describe('render recipes', () => {
     );
     expect(fetched.rows as number).toBeGreaterThan(8);
     expect(await readUniform<boolean>(page, 'uHasCarpet')).toBe(true);
+    // Zone-plate focus is inherently a 2D focal-spot shape, not a 1D x-cut,
+    // so muzo keeps the tiles layout (one 2D snapshot per z).
+    expect(fetched.layout).toBe('tiles');
+    expect(await readUniform<boolean>(page, 'uCarpetIsStripe')).toBe(false);
 
-    await expect(page.getByTestId('secondary-view')).toBeVisible();
+    const secondary = page.getByTestId('secondary-view');
+    await expect(secondary).toBeVisible();
+    await expect(secondary).toHaveAttribute('data-carpet-layout', 'tiles');
     await expect(page.getByTestId('carpet-image')).toBeVisible();
 
     await expectCanvasNotBlank(page);
@@ -383,6 +451,22 @@ test.describe('render recipes', () => {
     // stale relative path or an empty src.
     const src = await img.getAttribute('src');
     expect(src).toMatch(/\/data\/colibri-hologram\/.+\.png$/);
+
+    // Phase G.2: the off-axis carrier (carrier_cells=4) shifts the colibri
+    // reconstruction into the upper-right quadrant of the crop window. The
+    // target + its Hermitian conjugate land in opposite quadrants (UR and
+    // LL); DC sits at center (excluded). So the UR and LL peaks should both
+    // outshine the UL and LR peaks (UL/LR are noise-only quadrants).
+    // Together UR + LL being brighter than UL + LR proves the off-axis
+    // replica landed where the carrier was supposed to put it.
+    const q = await farfieldQuadrantPeak(page, src!);
+    const diagPair = q.ur + q.ll;
+    const offDiag = q.ul + q.lr;
+    expect(
+      diagPair,
+      `colibri's target+conjugate (UR, LL) should outshine the noise quadrants (UL, LR); ` +
+        `ul=${q.ul}, ur=${q.ur}, ll=${q.ll}, lr=${q.lr}`
+    ).toBeGreaterThan(offDiag);
 
     await expectCanvasNotBlank(page);
   });

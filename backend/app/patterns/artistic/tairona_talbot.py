@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from shapely import affinity
+from shapely.geometry import Point
+from shapely.ops import unary_union
 
-from .._helpers import crop
+from .._helpers import crop, linear_grating, ring_grating
 from ..base import GeneratedPattern, ParamSpec, Pattern, ensure_multipolygon, register
-from ..motifs.tairona import concentric_goldwork
 
 
 @register
@@ -12,11 +13,11 @@ class TaironaTalbot(Pattern):
     slug = "tairona-talbot"
     name = "Tairona Talbot revival"
     description = (
-        "Front and back are concentric ring gratings recalling Tairona coiled "
-        "goldwork. With the 500 μm fused-silica gap between them set near the "
-        "Talbot distance z_T = 2·Λ²·n/λ (valid paraxially far from the axis), "
-        "the back sits on a self-image of the front — and a half-period "
-        "lateral shift decenters the ring system to break that revival."
+        "Interior: a linear Ronchi ruling whose Talbot distance "
+        "z_T = 2·Λ²·n/λ places a textbook Talbot carpet in the air past the "
+        "back face. Outer annulus: concentric Tairona goldwork rings as a "
+        "decorative frame — the artistic motif, kept outside the active "
+        "propagation region so the (x, z) revival structure is clean."
     )
     tags = ["talbot", "self-imaging", "diffraction", "Tairona"]
     tier = 3
@@ -41,8 +42,27 @@ class TaironaTalbot(Pattern):
         extent_um: float = 2000.0,
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
-        front = concentric_goldwork(extent, period_um, duty)
-        back = concentric_goldwork(extent, period_um, duty)
+
+        # Interior = linear Ronchi ruling (the actual Talbot source).
+        # Frame = Tairona ring grating, masked to an outer annulus so the
+        #   interior reads as "pure stripes" for Talbot physics while the
+        #   edge keeps the Colombia-goldwork aesthetic.
+        frame_inner_r = 0.80 * extent_um / 2
+        interior_half = frame_inner_r  # where linear stripes live
+        interior_extent = (interior_half * 2, interior_half * 2)
+
+        ruling = linear_grating(period_um, duty, interior_extent)
+        # ring_grating(...) then intersect with (outer - inner) annulus to
+        # keep only the decorative border.
+        rings_full = ring_grating(period_um, duty, extent)
+        outer_disk = Point(0, 0).buffer(extent_um / 2, quad_segs=128)
+        inner_disk = Point(0, 0).buffer(frame_inner_r, quad_segs=128)
+        frame_annulus = outer_disk.difference(inner_disk)
+        rings_frame = ensure_multipolygon(rings_full.intersection(frame_annulus))
+
+        front_geom = unary_union([ruling, rings_frame])
+        front = crop(ensure_multipolygon(front_geom), extent)
+        back = crop(ensure_multipolygon(unary_union([ruling, rings_frame])), extent)
         if back_phase_shift == "half":
             back = ensure_multipolygon(affinity.translate(back, xoff=period_um / 2))
             back = crop(back, extent)
@@ -59,7 +79,9 @@ class TaironaTalbot(Pattern):
             front=front,
             back=back,
             extent_um=extent,
-            pixel_pitch_um=max(0.25, period_um * duty / 8),
+            # Finer sampling than period*duty/8 so the carpet propagator has
+            # headroom when downsampled (Phase G Nyquist fix).
+            pixel_pitch_um=max(0.25, period_um / 16),
             min_feature_um=period_um * duty,
             extra={
                 "talbot_distance_um": z_T_um,
@@ -71,5 +93,10 @@ class TaironaTalbot(Pattern):
                 "z_min_um": z_min_um,
                 "z_max_um": z_max_um,
                 "n_slices": 64,
+                # Stripe layout: atlas is a single 2D x-z image (one row per
+                # z-slice, each row = centerline x-cut). The shader samples
+                # it as a texture; the SecondaryView renders it directly as
+                # the canonical Talbot carpet diagram.
+                "carpet_layout": "stripe",
             },
         )

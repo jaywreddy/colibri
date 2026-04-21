@@ -37,12 +37,21 @@ uniform float uSlitOrientation;    // radians; slit-normal direction (0 = +X)
 uniform float uSlitPeriodUm;       // slit period Λ_slit (μm), for crossfade width
 
 // --- near_field_carpet uniforms (only read when uRecipe == 3) ---------------
-// Vertical atlas of uCarpetRows 2D intensity tiles, one per z-slice.
-// uZSlice ∈ [0,1] picks a row (0 = z_min, 1 = z_max) with bilinear blend.
+// Two possible atlas layouts (see backend/app/sim/talbot_carpet.py):
+//   tiles  (uCarpetIsStripe == false, muzo-emerald-zone): uCarpetRows 2D
+//          intensity snapshots stacked top-to-bottom; each row is a full 2D
+//          tile at one z. Plate samples the row corresponding to uZSlice,
+//          bilinearly blended across neighboring rows.
+//   stripe (uCarpetIsStripe == true,  tairona-talbot): the canonical Talbot
+//          (x, z) carpet diagram — each row is a 1D centerline x-cut at one z,
+//          so the atlas itself is the (x, z) diagram. Plate samples
+//          texture2D(uCarpetAtlas, vec2(vUv.x, uZSlice)) to paint the x-line
+//          at the current z across the whole plate.
 uniform sampler2D uCarpetAtlas;
 uniform float uZSlice;             // [0,1] — position along z axis
 uniform int   uCarpetRows;         // number of z-slices packed in the atlas
 uniform bool  uHasCarpet;          // false while the atlas is still fetching
+uniform bool  uCarpetIsStripe;     // true = (x, z) stripe layout, false = tiles
 
 const vec3 GOLD = vec3(0.902, 0.737, 0.314);
 const vec3 GOLD_BACK = vec3(0.4, 0.32, 0.12);
@@ -264,22 +273,33 @@ vec3 runNearFieldCarpet(vec3 viewTangent) {
   vec3 base = runStylized(viewTangent);
   if (!uHasCarpet || uCarpetRows < 2) return base;
 
-  // Row index in continuous-space. clamp guards against uZSlice outside [0,1].
-  float rowsMinusOne = float(uCarpetRows - 1);
-  float zNorm = clamp(uZSlice, 0.0, 1.0);
-  float rowFloat = zNorm * rowsMinusOne;
-  float r0 = floor(rowFloat);
-  float r1 = min(r0 + 1.0, rowsMinusOne);
-  float t = rowFloat - r0;
+  vec3 intensity;
+  if (uCarpetIsStripe) {
+    // Stripe layout (tairona): atlas rows are 1D x-cuts stacked across z. The
+    // plate shows the x-line at the current z painted across the whole
+    // surface (so the full plate reads as "this is what the fringe pattern
+    // looks like at z = uZSlice"). V picks z, U matches the plate's x axis.
+    float zNorm = clamp(uZSlice, 0.0, 1.0);
+    intensity = texture2D(uCarpetAtlas, vec2(vUv.x, zNorm)).rgb;
+  } else {
+    // Tiles layout (muzo): atlas rows are 2D snapshots. Sample the row
+    // corresponding to uZSlice, bilinearly blended across neighboring rows.
+    float rowsMinusOne = float(uCarpetRows - 1);
+    float zNorm = clamp(uZSlice, 0.0, 1.0);
+    float rowFloat = zNorm * rowsMinusOne;
+    float r0 = floor(rowFloat);
+    float r1 = min(r0 + 1.0, rowsMinusOne);
+    float t = rowFloat - r0;
 
-  // In atlas uv-space, each row occupies 1/uCarpetRows height. Sample the
-  // center of row r via v = (r + vUv.y) / uCarpetRows.
-  float rows = float(uCarpetRows);
-  vec2 uv0 = vec2(vUv.x, (r0 + vUv.y) / rows);
-  vec2 uv1 = vec2(vUv.x, (r1 + vUv.y) / rows);
-  vec3 i0 = texture2D(uCarpetAtlas, uv0).rgb;
-  vec3 i1 = texture2D(uCarpetAtlas, uv1).rgb;
-  vec3 intensity = mix(i0, i1, t);
+    // In atlas uv-space, each row occupies 1/uCarpetRows height. Sample the
+    // center of row r via v = (r + vUv.y) / uCarpetRows.
+    float rows = float(uCarpetRows);
+    vec2 uv0 = vec2(vUv.x, (r0 + vUv.y) / rows);
+    vec2 uv1 = vec2(vUv.x, (r1 + vUv.y) / rows);
+    vec3 i0 = texture2D(uCarpetAtlas, uv0).rgb;
+    vec3 i1 = texture2D(uCarpetAtlas, uv1).rgb;
+    intensity = mix(i0, i1, t);
+  }
 
   // Tint the intensity with the illumination color so laser-green Talbot
   // looks like laser-green Talbot. Ambient broadband stays white.

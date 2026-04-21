@@ -27,6 +27,14 @@ class ColibriHologram(Pattern):
         ParamSpec("seed", "Phase seed", "int", 42, 0, 999, 1),
     ]
 
+    # Off-axis carrier shift in units of cells (pad/4 = N/4 in frequency
+    # space); the Lohmann binary-amplitude reconstruction is
+    # Hermitian-symmetric (target + conjugate co-exist), so a center-fed
+    # target collides with DC. Shifting the target by (N/4, N/4) places
+    # the reconstruction replica cleanly in the upper-right quadrant,
+    # with DC at center and the conjugate in the lower-left.
+    _CARRIER_CELLS = 4
+
     @classmethod
     def generate(
         cls,
@@ -36,9 +44,19 @@ class ColibriHologram(Pattern):
     ) -> GeneratedPattern:
         N = int(grid)
         target = colibri.colibri_silhouette(extent_um=0.0, n_grid=N).astype(np.float32)
+        # Off-axis carrier: shift target by (N/C, N/C) in Fourier space so
+        # the reconstruction's first-order replica lands off-axis, cleanly
+        # separated from the DC spike and from the Hermitian-symmetric
+        # conjugate replica. C = _CARRIER_CELLS; default 4 -> quarter-image shift.
+        iy, ix = np.indices((N, N))
+        carrier = np.exp(
+            1j * 2 * np.pi * (ix + iy) / cls._CARRIER_CELLS
+        ).astype(np.complex64)
         rng = np.random.default_rng(int(seed))
         phase = np.exp(1j * 2 * np.pi * rng.random((N, N)))
-        field = np.fft.ifftshift(np.fft.ifft2(np.fft.fftshift(target * phase)))
+        field = np.fft.ifftshift(
+            np.fft.ifft2(np.fft.fftshift(target * carrier * phase))
+        )
         binary = (field.real > 0).astype(np.uint8)
 
         extent_um = N * cell_um
@@ -60,5 +78,10 @@ class ColibriHologram(Pattern):
                 # white coherent illumination.
                 "wavelengths_um": [0.65, 0.55, 0.45],
                 "target": "colibri",
+                # Carrier shift in units of image-width fractions: 4 means
+                # the reconstruction is shifted by 1/4 of the field in both
+                # axes, landing in the upper-right quadrant. /sim/farfield
+                # uses this to crop to the correct quadrant.
+                "carrier_cells": cls._CARRIER_CELLS,
             },
         )

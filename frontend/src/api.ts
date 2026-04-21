@@ -130,6 +130,8 @@ export async function generatePattern(
  * recipe (tairona-talbot, muzo-emerald-zone). Returns a vertical atlas of
  * `n_slices` 2D intensity tiles from z_min to z_max.
  */
+export type CarpetLayout = 'tiles' | 'stripe';
+
 export async function fetchCarpet(
   slug: string,
   variant: string,
@@ -140,6 +142,7 @@ export async function fetchCarpet(
     n_slices?: number;
     downsample?: number;
     tile_size?: number;
+    layout?: CarpetLayout;
     signal?: AbortSignal;
   } = {}
 ): Promise<{
@@ -147,6 +150,7 @@ export async function fetchCarpet(
   rows: number;
   cols: number;
   tile: [number, number];
+  layout: CarpetLayout;
   z_min_um: number;
   z_max_um: number;
   wavelength_um: number;
@@ -159,6 +163,7 @@ export async function fetchCarpet(
     n_slices = 48,
     downsample = 8,
     tile_size = 128,
+    layout = 'tiles',
     signal,
   } = opts;
   const r = await tracedFetch('/sim/carpet', {
@@ -173,6 +178,7 @@ export async function fetchCarpet(
       n_slices,
       downsample,
       tile_size,
+      layout,
     }),
     signal,
   });
@@ -193,6 +199,7 @@ export async function fetchFarfield(
     wavelengths_um?: [number, number, number];
     n_angles?: number;
     max_angle_deg?: number;
+    carrier_cells?: number;
     signal?: AbortSignal;
   } = {}
 ): Promise<{
@@ -205,6 +212,7 @@ export async function fetchFarfield(
     wavelengths_um = [0.65, 0.55, 0.45],
     n_angles = 256,
     max_angle_deg = 30.0,
+    carrier_cells = 0,
     signal,
   } = opts;
   const r = await tracedFetch('/sim/farfield', {
@@ -216,6 +224,7 @@ export async function fetchFarfield(
       wavelengths_um,
       n_angles,
       max_angle_deg,
+      carrier_cells,
     }),
     signal,
   });

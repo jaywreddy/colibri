@@ -42,6 +42,7 @@ class CarpetParams:
     tile_size: int
     substrate_thickness_um: float
     substrate_n: float
+    layout: str  # "tiles" (2D snapshots per z) or "stripe" (1D x-cut per z)
 
     def hash(self) -> str:
         payload = {
@@ -53,6 +54,7 @@ class CarpetParams:
             "ts": self.tile_size,
             "t": self.substrate_thickness_um,
             "ns": self.substrate_n,
+            "lo": self.layout,
         }
         return hashlib.sha1(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -66,15 +68,28 @@ def propagate_carpet(
     z_min_um: float,
     z_max_um: float,
     n_slices: int = 64,
-    downsample: int = 8,
+    downsample: int = 2,
     tile_size: int = 128,
     substrate_thickness_um: float = 500.0,
     substrate_n: float = 1.46,
+    layout: str = "tiles",
 ) -> dict:
-    """Compute the near-field intensity carpet and save as a vertical atlas.
+    """Compute the near-field intensity carpet and save it as an atlas.
 
-    Returns {"atlas_name", "rows", "cols", "tile": [h, w], "cached"}.
+    Layouts:
+      * "tiles"  — classic 2D snapshots per z, stacked vertically as
+        n_slices × tile_size × tile_size. Used by muzo-emerald-zone, whose
+        signature is a 2D focal spot.
+      * "stripe" — 1D x-line-cut at the centerline of each z-slice, stacked
+        vertically as n_slices × W. The output is a single 2D image of the
+        (x, z) plane — the canonical Talbot-carpet diagram. Used by
+        tairona-talbot.
+
+    Returns {"atlas_name", "rows", "cols", "tile": [h, w], "layout", "cached"}.
     """
+    if layout not in {"tiles", "stripe"}:
+        raise ValueError(f"layout must be 'tiles' or 'stripe', got {layout!r}")
+
     params = CarpetParams(
         wavelength_um=wavelength_um,
         z_min_um=z_min_um,
@@ -84,17 +99,10 @@ def propagate_carpet(
         tile_size=tile_size,
         substrate_thickness_um=substrate_thickness_um,
         substrate_n=substrate_n,
+        layout=layout,
     )
     out_name = f"carpet_{params.hash()}.png"
     out_path = variant_dir / out_name
-    if out_path.exists():
-        return {
-            "atlas_name": out_name,
-            "rows": n_slices,
-            "cols": 1,
-            "tile": [tile_size, tile_size],
-            "cached": True,
-        }
 
     front = _load_mask(variant_dir / "front.png", downsample)
     back = _load_mask(variant_dir / "back.png", downsample)
@@ -102,6 +110,25 @@ def propagate_carpet(
     w = min(front.shape[1], back.shape[1])
     front = front[:h, :w]
     back = back[:h, :w]
+
+    if out_path.exists():
+        if layout == "stripe":
+            return {
+                "atlas_name": out_name,
+                "rows": n_slices,
+                "cols": w,
+                "tile": [1, w],
+                "layout": layout,
+                "cached": True,
+            }
+        return {
+            "atlas_name": out_name,
+            "rows": n_slices,
+            "cols": 1,
+            "tile": [tile_size, tile_size],
+            "layout": layout,
+            "cached": True,
+        }
     # Gold is opaque -> aperture amplitude is (1 - gold)
     front_t = (1.0 - front).astype(np.complex64)
     back_t = (1.0 - back).astype(np.complex64)
@@ -117,23 +144,49 @@ def propagate_carpet(
     )
     u_back = u_behind_substrate * back_t
 
-    # 2) For each target z past the back face, propagate in air (n=1) from z=0
-    # to that absolute z. Each step is an independent FFT sandwich — fine for
-    # n_slices ~ 64 on a ~250×250 grid.
+    # 2) For each target z past the back face, propagate in air (n=1) from
+    # z=0 to that absolute z.
     zs = np.linspace(z_min_um, z_max_um, n_slices)
+    rgb = np.asarray(_wavelength_to_rgb(wavelength_um), dtype=np.float32)
 
-    # Output atlas: stack tiles vertically. We crop each slice to a centered
-    # square and resize to tile_size.
+    if layout == "stripe":
+        # 1D x-cut at the centerline of each z-slice, stacked to form a
+        # single (n_slices × W) image of the (x, z) plane — the textbook
+        # Talbot carpet diagram. Per-slice 1/99 percentile normalization so
+        # every z row has full dynamic range regardless of absolute brightness.
+        stripes = np.zeros((n_slices, w), dtype=np.float32)
+        ymid = h // 2
+        for i, z_um in enumerate(zs):
+            if z_um <= 1e-6:
+                u_z = u_back
+            else:
+                u_z = _propagate(u_back, dx, float(z_um), wavelength_um, 1.0)
+            irr = np.abs(u_z) ** 2
+            row = irr[ymid, :]
+            lo, hi = np.percentile(row, [1, 99])
+            stripes[i] = np.clip((row - lo) / max(hi - lo, 1e-9), 0, 1)
+        # Tint by wavelength for visual aesthetic; the signature is already
+        # in the grayscale structure.
+        rgb_img = stripes[:, :, None] * rgb
+        atlas8 = (np.clip(rgb_img, 0, 1) * 255).astype(np.uint8)
+        Image.fromarray(atlas8, "RGB").save(out_path)
+        return {
+            "atlas_name": out_name,
+            "rows": n_slices,
+            "cols": w,
+            "tile": [1, w],
+            "layout": layout,
+            "cached": False,
+        }
+
+    # layout == "tiles": classic 2D snapshots per z (muzo zone plate).
     crop = min(h, w)
     y0 = (h - crop) // 2
     x0 = (w - crop) // 2
 
     atlas_h = n_slices * tile_size
     atlas = np.zeros((atlas_h, tile_size, 3), dtype=np.float32)
-    rgb = np.asarray(_wavelength_to_rgb(wavelength_um), dtype=np.float32)
 
-    # Accumulate per-slice max across the stack so the slider doesn't dim the
-    # whole carpet when a single bright slice dominates; we normalize globally.
     slices: list[np.ndarray] = []
     for z_um in zs:
         if z_um <= 1e-6:
@@ -145,20 +198,18 @@ def propagate_carpet(
         # Resize to tile_size via block-mean (crop is square, tile_size square).
         if patch.shape[0] != tile_size:
             factor = patch.shape[0] / tile_size
-            # Nearest-ish resampling with PIL for consistency with existing kernels.
             pil = Image.fromarray((patch / (patch.max() + 1e-12) * 255).astype(np.uint8))
             pil = pil.resize((tile_size, tile_size), Image.Resampling.BOX)
             patch = np.asarray(pil, dtype=np.float32) / 255.0
-            # Undo the normalization so the global pass sees real relative brightness.
-            patch = patch * factor  # coarse compensation; exact value not critical
+            patch = patch * factor
         slices.append(patch.astype(np.float32))
 
-    # Normalize globally so the slider genuinely shows relative brightness
-    # across z. Single wavelength → single scalar normalization.
+    # For muzo: a focal spot is O(100×) brighter than background, so log
+    # stretch across a global scale is the correct normalization (unchanged
+    # from pre-G behavior).
     g_max = max((s.max() for s in slices), default=1.0)
     if g_max <= 0:
         g_max = 1.0
-    # Log-stretch for visibility (same scheme as angular_spectrum).
     log_slices = [np.clip(np.log10(s / g_max + 1e-4) / 4 + 1, 0, 1) for s in slices]
 
     for i, patch in enumerate(log_slices):
@@ -173,5 +224,6 @@ def propagate_carpet(
         "rows": n_slices,
         "cols": 1,
         "tile": [tile_size, tile_size],
+        "layout": layout,
         "cached": False,
     }

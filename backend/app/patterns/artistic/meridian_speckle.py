@@ -70,5 +70,8 @@ class MeridianSpeckle(Pattern):
                 # speckle, which the RGB merge renders as subtly-colored
                 # grains rather than monochrome noise.
                 "wavelengths_um": [0.65, 0.55, 0.45],
+                # No off-axis carrier: speckle is rotationally symmetric
+                # around DC, so the central crop is the correct window.
+                "carrier_cells": 0,
             },
         )

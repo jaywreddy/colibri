@@ -139,6 +139,10 @@ class CarpetRequest(BaseModel):
     n_slices: int = 64
     downsample: int = 8
     tile_size: int = 128
+    # "tiles" = 2D snapshots per z (muzo zone plate, pre-G default).
+    # "stripe" = 1D centerline x-cut per z stacked into the (x, z) carpet
+    #   diagram (tairona Talbot, Phase G).
+    layout: str = "tiles"
 
 
 @router.post("/carpet")
@@ -184,6 +188,7 @@ def carpet(req: CarpetRequest) -> dict:
             tile_size=req.tile_size,
             substrate_thickness_um=float(manifest["substrate"]["thickness_um"]),
             substrate_n=float(manifest["substrate"]["n"]),
+            layout=req.layout,
         )
     except Exception as e:  # noqa: BLE001
         _log.warning(
@@ -211,6 +216,7 @@ def carpet(req: CarpetRequest) -> dict:
         "rows": out.get("rows"),
         "cols": out.get("cols"),
         "tile": out.get("tile"),
+        "layout": out.get("layout", req.layout),
         "cached": out.get("cached", False),
     }
 
@@ -223,6 +229,10 @@ class FarfieldRequest(BaseModel):
     wavelengths_um: list[float] = [0.65, 0.55, 0.45]
     n_angles: int = 256
     max_angle_deg: float = 30.0
+    # Off-axis carrier shift (in units of image-width fractions). 0 means
+    # center-crop (speckle). Colibri's Lohmann encoder shifts the target by
+    # N/4 in frequency space → pass 4 so the crop tracks the replica.
+    carrier_cells: int = 0
 
 
 @router.post("/farfield")
@@ -252,6 +262,7 @@ def farfield(req: FarfieldRequest) -> dict:
             wavelengths_um=tuple(req.wavelengths_um),  # type: ignore[arg-type]
             n_angles=req.n_angles,
             max_angle_deg=req.max_angle_deg,
+            carrier_cells=req.carrier_cells,
         )
     except Exception as e:  # noqa: BLE001
         _log.warning(

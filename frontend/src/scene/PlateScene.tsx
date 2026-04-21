@@ -87,6 +87,7 @@ export default function PlateScene() {
         uZSlice: { value: 0.5 },
         uCarpetRows: { value: 0 },
         uHasCarpet: { value: false },
+        uCarpetIsStripe: { value: false },
       },
     });
 
@@ -293,6 +294,12 @@ export default function PlateScene() {
           2,
           Math.floor(Number(rd.n_slices ?? 48) || 48)
         );
+        // "stripe" layout = 1D x-cut per z stacked to an (x, z) diagram
+        // (tairona Talbot — canonical textbook carpet). "tiles" = 2D snapshot
+        // per z (muzo zone plate — genuine 2D focal-spot shape). Shader reads
+        // the layout from uCarpetIsStripe so it samples the atlas correctly.
+        const layout = rd.carpet_layout === 'stripe' ? 'stripe' : 'tiles';
+        t.material.uniforms.uCarpetIsStripe.value = layout === 'stripe';
         const slugAtFetch = manifest.slug;
         const variantAtFetch = manifest.variant;
         fetchCarpet(slugAtFetch, variantAtFetch, {
@@ -300,8 +307,9 @@ export default function PlateScene() {
           z_min_um,
           z_max_um,
           n_slices,
-          downsample: 8,
+          downsample: layout === 'stripe' ? 2 : 8,
           tile_size: 128,
+          layout,
         })
           .then((res) => {
             // Drop the result if the user has already selected a different
@@ -334,6 +342,7 @@ export default function PlateScene() {
                 variant: variantAtFetch,
                 rows: res.rows,
                 cached: res.cached,
+                layout: res.layout,
               });
             });
           })

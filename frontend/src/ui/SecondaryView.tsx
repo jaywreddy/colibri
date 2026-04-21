@@ -35,6 +35,7 @@ export default function SecondaryView() {
     const zMaxUm = Number(rd.z_max_um ?? 0) || 0;
     const zTalbotUm = Number(rd.talbot_distance_um ?? 0) || 0;
     const zFocalUm = Number(rd.focal_length_um ?? 0) || 0;
+    const layout = rd.carpet_layout === 'stripe' ? 'stripe' : 'tiles';
     // The carpet atlas is stacked top-to-bottom by z-slice; the indicator's
     // top offset as a percentage of the image height tracks zSlice.
     const indicatorTopPct = Math.max(0, Math.min(100, zSlice * 100));
@@ -49,13 +50,22 @@ export default function SecondaryView() {
         ? ((zFocalUm - zMinUm) / (zMaxUm - zMinUm)) * 100
         : null;
 
+    // Stripe layout = canonical (x, z) Talbot diagram (tairona); tiles layout
+    // = stack of 2D focal snapshots per z (muzo). The title and the footer
+    // axis hint differ so the user reads the panel correctly.
+    const carpetTitle =
+      layout === 'stripe'
+        ? 'Talbot carpet — x (horizontal) · z (vertical)'
+        : 'Near-field carpet — propagation through z';
+
     return (
       <aside
         data-testid="secondary-view"
         data-recipe={recipe}
+        data-carpet-layout={layout}
         style={panel}
       >
-        <div style={title}>Near-field carpet — propagation through z</div>
+        <div style={title}>{carpetTitle}</div>
         <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
           {carpetAtlasUrl ? (
             <>
