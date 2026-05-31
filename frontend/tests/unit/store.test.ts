@@ -6,7 +6,7 @@ function baseManifest(overrides: Partial<PatternManifest> = {}): PatternManifest
   return {
     slug: 'wayuu-kanasu-moire',
     variant: 'abcdef0123',
-    name: 'Linear moire',
+    name: 'Wayuu kanasü moiré',
     description: '',
     tags: [],
     params: { period_um: 4.0, duty: 0.5 },
@@ -32,8 +32,6 @@ beforeEach(() => {
     activeSlug: null,
     manifest: null,
     params: {},
-    carpetAtlasUrl: null,
-    farfieldUrl: null,
     illumination: 'ambient',
     laserColor: 'green',
   });
@@ -49,19 +47,25 @@ describe('store', () => {
     expect(s.params).toEqual(m.params);
   });
 
-  it('selectPattern clears stale recipe artifacts', () => {
-    useStore.setState({
-      carpetAtlasUrl: '/stale/carpet.png',
-      farfieldUrl: '/stale/farfield.png',
-    });
-    useStore.getState().selectPattern('wayuu-kanasu-moire', baseManifest());
-    expect(useStore.getState().carpetAtlasUrl).toBeNull();
-    expect(useStore.getState().farfieldUrl).toBeNull();
-  });
-
   it('patchParams merges without dropping other params', () => {
     useStore.setState({ params: { a: 1, b: 2 } });
     useStore.getState().patchParams({ b: 3, c: 4 });
     expect(useStore.getState().params).toEqual({ a: 1, b: 3, c: 4 });
+  });
+
+  it('selectPatternIfCurrent commits only when pendingSlug matches', () => {
+    const m = baseManifest({ slug: 'colibri-globe-moire' });
+    useStore.getState().beginSelect('colibri-globe-moire');
+    const ok = useStore.getState().selectPatternIfCurrent('colibri-globe-moire', m);
+    expect(ok).toBe(true);
+    expect(useStore.getState().activeSlug).toBe('colibri-globe-moire');
+
+    // A stale response for a different slug must be dropped.
+    useStore.getState().beginSelect('wayuu-kanasu-moire');
+    const stale = useStore.getState().selectPatternIfCurrent(
+      'colibri-globe-moire',
+      m,
+    );
+    expect(stale).toBe(false);
   });
 });

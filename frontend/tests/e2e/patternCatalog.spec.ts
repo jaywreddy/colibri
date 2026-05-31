@@ -9,14 +9,9 @@ import { waitForThree, waitForTexturesBound, expectCanvasNotBlank } from './help
 const SLUGS = [
   'wayuu-kanasu-moire',
   'emerald-facet-moire',
-  'sombrero-vueltiao-parallax',
-  'cafetero-iridescence',
-  'colibri-hologram',
-  'muzo-emerald-zone',
-  'tairona-talbot',
-  'caravel-latent',
-  'compass-rose-spiral',
-  'meridian-speckle',
+  'colibri-globe-lenticular',
+  'colibri-globe-moire',
+  'colibri-globe-phase',
 ];
 
 for (const slug of SLUGS) {

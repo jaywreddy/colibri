@@ -17,19 +17,6 @@ type State = {
   lightElevationDeg: number;
   tilt: [number, number]; // deg X, deg Y — driven by orbit controls
 
-  // --- near_field_carpet recipe (tairona, muzo) --------------------------
-  // zSlice is a normalized [0,1] position along the z-sweep fetched from
-  // /sim/carpet. 0.5 puts the slider at the mid-slice — for Talbot that's
-  // the revival at z_T, for the zone plate it's near the focal spot.
-  zSlice: number;
-  carpetAtlasUrl: string | null;
-
-  // --- far_field_hologram recipe (colibri, meridian) ---------------------
-  // URL of the merged-RGB Fraunhofer reconstruction PNG returned by
-  // /sim/farfield. Consumed only by SecondaryView; the plate shader keeps
-  // showing the bare mask.
-  farfieldUrl: string | null;
-
   setCatalog: (c: PatternDescriptor[]) => void;
   /** Mark `slug` as the user's latest intent. Call this BEFORE kicking off a
    * fetch so stale responses can be discarded on arrival. */
@@ -46,9 +33,6 @@ type State = {
   setLaserColor: (c: 'red' | 'green' | 'blue') => void;
   setLight: (az: number, el: number) => void;
   setTilt: (t: [number, number]) => void;
-  setZSlice: (z: number) => void;
-  setCarpetAtlasUrl: (url: string | null) => void;
-  setFarfieldUrl: (url: string | null) => void;
 };
 
 export const useStore = create<State>((set, get) => ({
@@ -62,9 +46,6 @@ export const useStore = create<State>((set, get) => ({
   lightAzimuthDeg: 35,
   lightElevationDeg: 55,
   tilt: [0, 0],
-  zSlice: 0.5,
-  carpetAtlasUrl: null,
-  farfieldUrl: null,
 
   setCatalog: (catalog) => set({ catalog }),
   beginSelect: (slug) => set({ pendingSlug: slug }),
@@ -74,9 +55,6 @@ export const useStore = create<State>((set, get) => ({
       activeSlug: slug,
       manifest,
       params: { ...(manifest.params as Record<string, unknown>) },
-      carpetAtlasUrl: null,
-      farfieldUrl: null,
-      zSlice: 0.5,
     });
     return true;
   },
@@ -86,17 +64,8 @@ export const useStore = create<State>((set, get) => ({
       pendingSlug: slug,
       manifest,
       params: { ...(manifest.params as Record<string, unknown>) },
-      carpetAtlasUrl: null,
-      farfieldUrl: null,
-      zSlice: 0.5,
     }),
-  setManifest: (manifest) =>
-    set({
-      manifest,
-      carpetAtlasUrl: null,
-      farfieldUrl: null,
-      zSlice: 0.5,
-    }),
+  setManifest: (manifest) => set({ manifest }),
   setParams: (params) => set({ params }),
   patchParams: (patch) => set((s) => ({ params: { ...s.params, ...patch } })),
   setIllumination: (illumination) => set({ illumination }),
@@ -104,7 +73,4 @@ export const useStore = create<State>((set, get) => ({
   setLight: (lightAzimuthDeg, lightElevationDeg) =>
     set({ lightAzimuthDeg, lightElevationDeg }),
   setTilt: (tilt) => set({ tilt }),
-  setZSlice: (zSlice) => set({ zSlice }),
-  setCarpetAtlasUrl: (carpetAtlasUrl) => set({ carpetAtlasUrl }),
-  setFarfieldUrl: (farfieldUrl) => set({ farfieldUrl }),
 }));

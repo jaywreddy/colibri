@@ -66,12 +66,9 @@ def _as_multipolygon(geom: BaseGeometry) -> MultiPolygon:
 
 
 RECIPE_NAMES = {
-    "iridescent_grating",
     "stereo_lenticular",
     "moire_interactive",
-    "near_field_carpet",
-    "far_field_hologram",
-    "stylized_amplitude",
+    "phase_shift_overlay",
 }
 
 
@@ -84,10 +81,9 @@ class Pattern(ABC):
     tier: ClassVar[int] = 1
     theme: ClassVar[str] = "Colombia"
     # Which shader recipe the frontend should use when rendering this
-    # pattern. "stylized_amplitude" is the current flat-mask fallback, which
-    # is what every pattern uses until it's upgraded to a physics-correct
-    # recipe. See frontend/src/shaders/plate.frag for the switch.
-    render_recipe: ClassVar[str] = "stylized_amplitude"
+    # pattern. Must be one of RECIPE_NAMES — the shader's uRecipe switch
+    # only knows the recipes the catalog actively uses.
+    render_recipe: ClassVar[str] = "moire_interactive"
 
     @classmethod
     @abstractmethod

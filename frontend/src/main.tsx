@@ -1,6 +1,9 @@
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { useStore } from './store';
+// Self-registers window.__debug under import.meta.env.DEV. See
+// tools/preview_inspect.md for the headless inspection surface.
+import './debug';
 
 // Expose the zustand store for E2E tests so they can read/write state
 // deterministically without going through the DOM (React-controlled

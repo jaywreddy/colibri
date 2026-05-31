@@ -1,8 +1,7 @@
 /**
  * Illumination path: ambient/laser/backlight each map to a specific integer
- * in uIllumination. Laser color choice maps to a specific wavelength (μm)
- * on uLaserWavelengthUm so the iridescent_grating recipe can gate its
- * diffraction order against the active laser.
+ * in uIllumination. The three render recipes all branch on uIllumination to
+ * pick their tinting model.
  */
 import { test, expect } from '@playwright/test';
 import { waitForThree, waitForTexturesBound, readUniform } from './helpers';
@@ -45,18 +44,16 @@ test.describe('illumination', () => {
     expect(await readUniform<number>(page, 'uIllumination')).toBe(2);
   });
 
-  test('laser color red/green/blue maps to uLaserWavelengthUm 0.65/0.55/0.45', async ({ page }) => {
-    await setStore(page, { laserColor: 'red' });
-    await page.waitForFunction(
-      () => (window as any).__three.material.uniforms.uLaserWavelengthUm.value === 0.65
-    );
+  test('laser color updates uLaserColor uniform', async ({ page }) => {
+    await setStore(page, { illumination: 'laser', laserColor: 'red' });
+    await page.waitForFunction(() => {
+      const c = (window as any).__three.material.uniforms.uLaserColor.value;
+      return c.r > 0.5 && c.g < 0.5;
+    });
     await setStore(page, { laserColor: 'green' });
-    await page.waitForFunction(
-      () => (window as any).__three.material.uniforms.uLaserWavelengthUm.value === 0.55
-    );
-    await setStore(page, { laserColor: 'blue' });
-    await page.waitForFunction(
-      () => (window as any).__three.material.uniforms.uLaserWavelengthUm.value === 0.45
-    );
+    await page.waitForFunction(() => {
+      const c = (window as any).__three.material.uniforms.uLaserColor.value;
+      return c.g > 0.5;
+    });
   });
 });

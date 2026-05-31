@@ -3,11 +3,10 @@
 // tangent-space along `viewTangent` (unit vector, +z = out of plate).
 //
 // Returns the UV offset to *add* to the front-face UV to sample the
-// corresponding point on the back face. Multiple recipes need this
-// (stereo_lenticular, moire_interactive, stylized_amplitude), so it lives
-// here to keep the math in one place — notably, the stylized path used to
-// compute this offset and then throw it away, which is why parallax never
-// worked.
+// corresponding point on the back face. Every recipe in the catalog uses
+// this — moire_interactive, stereo_lenticular, and phase_shift_overlay all
+// reduce to "sample two layers separated by a refracting slab", just with
+// different downstream logic.
 vec2 parallax_offset(vec3 viewTangent, float thicknessUm, float n, float extentUm) {
   // lateral shift through a slab: t · tan(θ_refracted)
   // with Snell's law sin(θ_refracted) = sin(θ_view) / n.

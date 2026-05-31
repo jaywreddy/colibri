@@ -5,7 +5,7 @@ import vert from '../shaders/plate.vert';
 import frag from '../shaders/plate.frag';
 import { log } from '../logger';
 import { useStore } from '../store';
-import { RECIPE_IDS, fetchCarpet, fetchFarfield, type RenderRecipe } from '../api';
+import { RECIPE_IDS, type RenderRecipe } from '../api';
 
 export default function PlateScene() {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -21,7 +21,6 @@ export default function PlateScene() {
     backTex: THREE.Texture;
     viewATex: THREE.Texture;
     viewBTex: THREE.Texture;
-    carpetTex: THREE.Texture;
   } | null>(null);
 
   const manifest = useStore((s) => s.manifest);
@@ -29,9 +28,6 @@ export default function PlateScene() {
   const laserColor = useStore((s) => s.laserColor);
   const lightAz = useStore((s) => s.lightAzimuthDeg);
   const lightEl = useStore((s) => s.lightElevationDeg);
-  const zSlice = useStore((s) => s.zSlice);
-  const setCarpetAtlasUrl = useStore((s) => s.setCarpetAtlasUrl);
-  const setFarfieldUrl = useStore((s) => s.setFarfieldUrl);
 
   useEffect(() => {
     const mount = mountRef.current!;
@@ -70,24 +66,17 @@ export default function PlateScene() {
         uBacklightColor: { value: new THREE.Color(0xffffff) },
         uAmbientColor: { value: new THREE.Color(0xffffff) },
         uLightWorld: { value: new THREE.Vector3(2, 3, 3) },
-        // Default to the back-compat stylized path until a manifest with a
-        // real recipe arrives. See RECIPE_IDS in src/api.ts.
-        uRecipe: { value: RECIPE_IDS.stylized_amplitude },
-        // --- iridescent_grating recipe (only read when uRecipe == 0) --------
-        uGratingPeriodUm: { value: 4.0 },
-        uGratingOrientation: { value: 0.0 },
-        uLaserWavelengthUm: { value: 0.55 },
-        // --- stereo_lenticular recipe (only read when uRecipe == 1) --------
+        // Default to moire_interactive — the most common recipe in the
+        // catalog post-rip-out. Manifests override this on bind.
+        uRecipe: { value: RECIPE_IDS.moire_interactive },
+        // --- stereo_lenticular recipe (uRecipe == 0) ----------------------
         uViewA: { value: blank },
         uViewB: { value: blank },
         uSlitOrientation: { value: 0.0 },
         uSlitPeriodUm: { value: 40.0 },
-        // --- near_field_carpet recipe (only read when uRecipe == 3) --------
-        uCarpetAtlas: { value: blank },
-        uZSlice: { value: 0.5 },
-        uCarpetRows: { value: 0 },
-        uHasCarpet: { value: false },
-        uCarpetIsStripe: { value: false },
+        // --- phase_shift_overlay recipe (uRecipe == 2) -------------------
+        uSwitchAxis: { value: 0.0 },
+        uCarrierPeriodUm: { value: 20.0 },
       },
     });
 
@@ -103,9 +92,6 @@ export default function PlateScene() {
     controls.minDistance = 0.6;
     controls.maxDistance = 4.0;
 
-    // WebGL context loss is common in headless Chromium and on driver hiccups.
-    // Logging both ends makes it possible to correlate a blank canvas in an
-    // E2E failure with the actual cause.
     const canvas = renderer.domElement;
     const onContextLost = (e: Event) => {
       e.preventDefault();
@@ -115,8 +101,6 @@ export default function PlateScene() {
     canvas.addEventListener('webglcontextlost', onContextLost);
     canvas.addEventListener('webglcontextrestored', onContextRestored);
 
-    // Emit tilt_changed when the user orbits the camera. Throttled to 50ms so
-    // a drag doesn't spam the ring buffer.
     let lastTiltLog = 0;
     const onControlsChange = () => {
       const now = performance.now();
@@ -143,7 +127,6 @@ export default function PlateScene() {
       backTex: blank,
       viewATex: blank,
       viewBTex: blank,
-      carpetTex: blank,
     };
     (window as unknown as { __three: unknown }).__three = threeRef.current;
 
@@ -161,7 +144,6 @@ export default function PlateScene() {
     let rafId = 0;
     const tick = () => {
       controls.update();
-      // Update the tangent-space light direction uniform
       renderer.render(scene, camera);
       rafId = requestAnimationFrame(tick);
     };
@@ -178,7 +160,7 @@ export default function PlateScene() {
     };
   }, []);
 
-  // React to manifest changes — reload textures + re-activate engine.
+  // React to manifest changes — reload textures + re-activate recipe.
   useEffect(() => {
     const t = threeRef.current;
     if (!t || !manifest) return;
@@ -205,40 +187,24 @@ export default function PlateScene() {
       t.material.uniforms.uExtentUm.value = manifest.extent_um[0];
       t.material.uniforms.uThicknessUm.value = manifest.substrate.thickness_um;
       t.material.uniforms.uN.value = manifest.substrate.n;
-      // Legacy manifests on disk (from before Phase A) don't carry a recipe
-      // — treat them as stylized_amplitude so every pattern keeps rendering.
-      // An unknown recipe name (backend shipped a new recipe before the
-      // frontend knew about it) would otherwise push `undefined` into an int
-      // uniform; guard explicitly so the plate never hits that state.
+
+      // Recipe selection. An unknown name (e.g. a manifest written by an old
+      // backend that still references a deleted recipe) falls back to
+      // moire_interactive — the closest surviving behavior.
       const rawRecipe = manifest.render_recipe;
       const recipe: RenderRecipe =
         rawRecipe && rawRecipe in RECIPE_IDS
           ? (rawRecipe as RenderRecipe)
-          : 'stylized_amplitude';
+          : 'moire_interactive';
       if (rawRecipe && recipe !== rawRecipe) {
         log('recipe_unknown_fallback', { slug: manifest.slug, requested: rawRecipe });
       }
       t.material.uniforms.uRecipe.value = RECIPE_IDS[recipe];
 
-      // Per-recipe uniform hookup. Pull from recipe_data (generator-supplied)
-      // and fall back to the pattern's nominal params when present.
       const rd = manifest.recipe_data ?? {};
       const params = manifest.params ?? {};
-      if (recipe === 'iridescent_grating') {
-        const period =
-          Number(rd.period_um ?? params.period_um ?? 4.0) || 4.0;
-        const orientRad =
-          ((Number(rd.orientation_deg ?? 0) || 0) * Math.PI) / 180;
-        t.material.uniforms.uGratingPeriodUm.value = period;
-        t.material.uniforms.uGratingOrientation.value = orientRad;
-      }
 
       // stereo_lenticular: load view_a / view_b textures + set slit axis.
-      // We default-bind blank then overwrite asynchronously so a slow fetch
-      // doesn't blank the canvas. The recipe_bound + texture_bound events
-      // still fire above with the synchronous front/back state, so E2E
-      // assertions that just want "binding happened" don't need to wait for
-      // view textures to arrive.
       if (recipe === 'stereo_lenticular') {
         const viewAUrl = typeof rd.view_a_png === 'string' ? rd.view_a_png : null;
         const viewBUrl = typeof rd.view_b_png === 'string' ? rd.view_b_png : null;
@@ -274,130 +240,18 @@ export default function PlateScene() {
           );
         }
       } else {
-        // Other recipes: clear any stale stereo textures so they don't bleed
-        // into the shader if uRecipe == 1 ever runs transiently.
-        t.material.uniforms.uViewA.value = t.frontTex; // harmless placeholder
+        t.material.uniforms.uViewA.value = t.frontTex;
         t.material.uniforms.uViewB.value = t.frontTex;
       }
 
-      // near_field_carpet: fetch the z-sweep atlas from /sim/carpet using the
-      // recipe_data z-range + design wavelength. Bound asynchronously so the
-      // plate renders immediately (recipe 3 falls through to runStylized when
-      // uHasCarpet=false, so the plate isn't blank while we wait).
-      if (recipe === 'near_field_carpet') {
-        t.material.uniforms.uHasCarpet.value = false;
-        t.material.uniforms.uCarpetRows.value = 0;
-        const wavelength_um = Number(rd.design_wavelength_um ?? 0.55) || 0.55;
-        const z_min_um = Number(rd.z_min_um ?? 0.0) || 0.0;
-        const z_max_um = Number(rd.z_max_um ?? 4000.0) || 4000.0;
-        const n_slices = Math.max(
-          2,
-          Math.floor(Number(rd.n_slices ?? 48) || 48)
-        );
-        // "stripe" layout = 1D x-cut per z stacked to an (x, z) diagram
-        // (tairona Talbot — canonical textbook carpet). "tiles" = 2D snapshot
-        // per z (muzo zone plate — genuine 2D focal-spot shape). Shader reads
-        // the layout from uCarpetIsStripe so it samples the atlas correctly.
-        const layout = rd.carpet_layout === 'stripe' ? 'stripe' : 'tiles';
-        t.material.uniforms.uCarpetIsStripe.value = layout === 'stripe';
-        const slugAtFetch = manifest.slug;
-        const variantAtFetch = manifest.variant;
-        fetchCarpet(slugAtFetch, variantAtFetch, {
-          wavelength_um,
-          z_min_um,
-          z_max_um,
-          n_slices,
-          downsample: layout === 'stripe' ? 2 : 8,
-          tile_size: 128,
-          layout,
-        })
-          .then((res) => {
-            // Drop the result if the user has already selected a different
-            // variant (selection race — mirrors the propagate cache guard).
-            if (
-              !threeRef.current ||
-              threeRef.current !== t ||
-              manifest.slug !== slugAtFetch ||
-              manifest.variant !== variantAtFetch
-            ) {
-              return;
-            }
-            const loader2 = new THREE.TextureLoader();
-            loader2.loadAsync(res.atlas_png).then((tex) => {
-              tex.colorSpace = THREE.LinearSRGBColorSpace;
-              tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-              tex.magFilter = THREE.LinearFilter;
-              tex.minFilter = THREE.LinearFilter;
-              tex.generateMipmaps = false;
-              tex.anisotropy = 1;
-              tex.needsUpdate = true;
-              if (t.carpetTex !== tex) t.carpetTex.dispose();
-              t.carpetTex = tex;
-              t.material.uniforms.uCarpetAtlas.value = tex;
-              t.material.uniforms.uCarpetRows.value = res.rows;
-              t.material.uniforms.uHasCarpet.value = true;
-              setCarpetAtlasUrl(res.atlas_png);
-              log('carpet_fetched', {
-                slug: slugAtFetch,
-                variant: variantAtFetch,
-                rows: res.rows,
-                cached: res.cached,
-                layout: res.layout,
-              });
-            });
-          })
-          .catch((e) => {
-            log('carpet_fetch_error', {
-              slug: slugAtFetch,
-              variant: variantAtFetch,
-              message: (e as Error).message,
-            });
-          });
-      } else {
-        // Non-carpet recipe: clear any stale carpet state so a transient
-        // uRecipe == 3 frame doesn't show the previous pattern's z-sweep.
-        t.material.uniforms.uHasCarpet.value = false;
-        t.material.uniforms.uCarpetRows.value = 0;
-        setCarpetAtlasUrl(null);
-      }
-
-      // far_field_hologram: fetch the merged-RGB Fraunhofer reconstruction
-      // and stash the URL in the store for SecondaryView to display. The
-      // plate shader doesn't consume it directly (recipe 4 falls through to
-      // runStylized), so there's no texture to bind here — just a URL hand-off.
-      if (recipe === 'far_field_hologram') {
-        const rawWl = rd.wavelengths_um;
-        const wavelengths_um: [number, number, number] = Array.isArray(rawWl) && rawWl.length === 3
-          ? [Number(rawWl[0]) || 0.65, Number(rawWl[1]) || 0.55, Number(rawWl[2]) || 0.45]
-          : [0.65, 0.55, 0.45];
-        const slugAtFetch = manifest.slug;
-        const variantAtFetch = manifest.variant;
-        fetchFarfield(slugAtFetch, variantAtFetch, { wavelengths_um })
-          .then((res) => {
-            if (
-              !threeRef.current ||
-              threeRef.current !== t ||
-              manifest.slug !== slugAtFetch ||
-              manifest.variant !== variantAtFetch
-            ) {
-              return;
-            }
-            setFarfieldUrl(res.farfield_png);
-            log('farfield_fetched', {
-              slug: slugAtFetch,
-              variant: variantAtFetch,
-              cached: res.cached,
-            });
-          })
-          .catch((e) => {
-            log('farfield_fetch_error', {
-              slug: slugAtFetch,
-              variant: variantAtFetch,
-              message: (e as Error).message,
-            });
-          });
-      } else {
-        setFarfieldUrl(null);
+      // phase_shift_overlay: configure the switch axis and carrier period
+      // so the shader knows how to project the view direction and how big
+      // a parallax shift "counts" as a full phase flip.
+      if (recipe === 'phase_shift_overlay') {
+        const axisDeg = Number(rd.switch_axis_deg ?? 0) || 0;
+        const carrier = Number(rd.carrier_period_um ?? params.period_um ?? 20.0) || 20.0;
+        t.material.uniforms.uSwitchAxis.value = (axisDeg * Math.PI) / 180;
+        t.material.uniforms.uCarrierPeriodUm.value = carrier;
       }
 
       log('recipe_bound', { slug: manifest.slug, recipe });
@@ -422,18 +276,7 @@ export default function PlateScene() {
       blue: 0x3388ff,
     };
     t.material.uniforms.uLaserColor.value.setHex(laserRgb[laserColor]);
-    // Wavelength in μm for iridescent_grating recipe (laser-spot gating).
-    const laserUm: Record<string, number> = { red: 0.65, green: 0.55, blue: 0.45 };
-    t.material.uniforms.uLaserWavelengthUm.value = laserUm[laserColor] ?? 0.55;
   }, [illumination, laserColor]);
-
-  // z-slice slider → uZSlice. Decoupled from the manifest effect so dragging
-  // the slider is a zero-cost uniform push, not a full texture rebind.
-  useEffect(() => {
-    const t = threeRef.current;
-    if (!t) return;
-    t.material.uniforms.uZSlice.value = zSlice;
-  }, [zSlice]);
 
   // Light position
   useEffect(() => {

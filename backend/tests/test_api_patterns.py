@@ -9,14 +9,9 @@ from fastapi.testclient import TestClient
 EXPECTED_SLUGS = {
     "wayuu-kanasu-moire",
     "emerald-facet-moire",
-    "sombrero-vueltiao-parallax",
-    "cafetero-iridescence",
-    "colibri-hologram",
-    "muzo-emerald-zone",
-    "tairona-talbot",
-    "caravel-latent",
-    "compass-rose-spiral",
-    "meridian-speckle",
+    "colibri-globe-lenticular",
+    "colibri-globe-moire",
+    "colibri-globe-phase",
 }
 
 
@@ -61,21 +56,15 @@ def test_unknown_slug_returns_404(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase A — render_recipe manifest round-trip.
+# Render-recipe manifest round-trip — every manifest must stamp its class
+# render_recipe and the recipe must be one of the three names the shader
+# actively switches on.
 # ---------------------------------------------------------------------------
-# Each pattern must stamp its class-level render_recipe onto every manifest
-# it materializes, and the recipe must be one of the six known names. A
-# regression here (e.g. a pattern forgetting to override render_recipe on a
-# class rename, or service.py dropping the field during migration) would
-# immediately surface as flat-gold rendering in the frontend with no error.
 
 _VALID_RECIPES = {
-    "iridescent_grating",
     "stereo_lenticular",
     "moire_interactive",
-    "near_field_carpet",
-    "far_field_hologram",
-    "stylized_amplitude",
+    "phase_shift_overlay",
 }
 
 
@@ -89,8 +78,6 @@ def test_manifest_carries_render_recipe_field(client: TestClient) -> None:
 
 
 def test_descriptor_advertises_render_recipe_for_every_pattern(client: TestClient) -> None:
-    # /patterns returns the descriptors, which should pre-advertise the
-    # recipe so the frontend can decide layout before fetching a manifest.
     r = client.get("/patterns")
     assert r.status_code == 200
     descriptors = r.json()
@@ -101,68 +88,33 @@ def test_descriptor_advertises_render_recipe_for_every_pattern(client: TestClien
         )
 
 
-def test_recipe_data_for_phase_b_c_patterns(client: TestClient) -> None:
-    # iridescent_grating patterns must supply period_um so the shader can
-    # compute dispersion; stereo_lenticular patterns must supply view_a/view_b
-    # PNG urls + slit axis. Catches generators that forget to populate
-    # recipe_data after being upgraded to a physics-correct recipe.
-    r = client.post("/patterns/generate", json={"slug": "cafetero-iridescence", "params": {}})
-    assert r.status_code == 200
-    caf = r.json()
-    assert caf["render_recipe"] == "iridescent_grating"
-    assert "period_um" in caf["recipe_data"], "cafetero missing period_um"
-
-    r = client.post("/patterns/generate", json={"slug": "sombrero-vueltiao-parallax", "params": {}})
-    assert r.status_code == 200
-    som = r.json()
-    assert som["render_recipe"] == "stereo_lenticular"
-    assert "view_a_png" in som["recipe_data"]
-    assert "view_b_png" in som["recipe_data"]
-    assert "slit_axis_deg" in som["recipe_data"]
+def test_lenticular_manifest_ships_view_a_view_b_urls(client: TestClient) -> None:
+    """stereo_lenticular patterns must publish view_a / view_b PNG URLs in
+    recipe_data so the PlateScene can fetch the interlaced scenes."""
+    r = client.post(
+        "/patterns/generate",
+        json={"slug": "colibri-globe-lenticular", "params": {}},
+    )
+    assert r.status_code == 200, r.text
+    m = r.json()
+    assert m["render_recipe"] == "stereo_lenticular"
+    rd = m["recipe_data"]
+    assert "view_a_png" in rd and "view_b_png" in rd
+    assert "slit_period_um" in rd
 
 
-def test_recipe_data_for_phase_d_patterns(client: TestClient) -> None:
-    # near_field_carpet patterns must carry the z-range and design wavelength
-    # so the frontend can fetch /sim/carpet without guessing physical scales.
-    r = client.post("/patterns/generate", json={"slug": "tairona-talbot", "params": {}})
-    assert r.status_code == 200
-    tai = r.json()
-    assert tai["render_recipe"] == "near_field_carpet"
-    rd = tai["recipe_data"]
-    for key in ("talbot_distance_um", "design_wavelength_um", "z_min_um", "z_max_um", "n_slices"):
-        assert key in rd, f"tairona missing {key}"
-    assert rd["z_max_um"] > rd["z_min_um"]
-    assert rd["n_slices"] >= 2
-
-    r = client.post("/patterns/generate", json={"slug": "muzo-emerald-zone", "params": {}})
-    assert r.status_code == 200
-    muz = r.json()
-    assert muz["render_recipe"] == "near_field_carpet"
-    rd = muz["recipe_data"]
-    for key in ("focal_length_um", "design_wavelength_um", "z_min_um", "z_max_um", "n_slices"):
-        assert key in rd, f"muzo missing {key}"
-    assert rd["z_max_um"] > rd["z_min_um"]
-
-
-def test_recipe_data_for_phase_e_patterns(client: TestClient) -> None:
-    # far_field_hologram patterns must carry a 3-element wavelengths_um list
-    # so the frontend can hit /sim/farfield with the right R/G/B trichromat.
-    r = client.post("/patterns/generate", json={"slug": "colibri-hologram", "params": {}})
-    assert r.status_code == 200
-    col = r.json()
-    assert col["render_recipe"] == "far_field_hologram"
-    assert col["recipe_data"].get("wavelengths_um") and len(col["recipe_data"]["wavelengths_um"]) == 3
-
-    r = client.post("/patterns/generate", json={"slug": "meridian-speckle", "params": {}})
-    assert r.status_code == 200
-    mer = r.json()
-    assert mer["render_recipe"] == "far_field_hologram"
-    assert mer["recipe_data"].get("wavelengths_um") and len(mer["recipe_data"]["wavelengths_um"]) == 3
+def test_phase_overlay_manifest_ships_carrier_period(client: TestClient) -> None:
+    r = client.post(
+        "/patterns/generate",
+        json={"slug": "colibri-globe-phase", "params": {}},
+    )
+    assert r.status_code == 200, r.text
+    m = r.json()
+    assert m["render_recipe"] == "phase_shift_overlay"
+    assert "carrier_period_um" in m["recipe_data"]
 
 
 def test_invalid_param_type_returns_error(client: TestClient) -> None:
-    # period_um is a float in wayuu-kanasu-moire. A string should either 422 at pydantic
-    # or 400 at the generator. Either is acceptable — just not 200.
     r = client.post(
         "/patterns/generate",
         json={"slug": "wayuu-kanasu-moire", "params": {"period_um": "not-a-number"}},

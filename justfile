@@ -37,6 +37,22 @@ test-unit:
 test-e2e:
     cd frontend; pnpm test:e2e
 
+# Visual-signature capture (Layer 2 of the visual harness).
+# Runs only the @visual-tagged spec; writes PNGs + meta.json per
+# (slug, scene) under frontend/test-results/visual/latest/.
+# No LLM calls, safe to run on every commit.
+test-visual:
+    cd frontend; pnpm test:e2e --grep "@visual"
+
+# Visual-signature capture + Claude vision grading (Layer 3 of the harness).
+# Requires ANTHROPIC_API_KEY in the environment. Writes
+# <scene>.verdict.json files and an aggregate visualReport.md.
+# NOTE: --run-dir is an absolute path because `uv run --directory backend`
+# sets cwd=backend for the Python process, which would otherwise mis-resolve
+# a relative frontend/... path.
+test-visual-verify: test-visual
+    uv run --directory backend --extra dev python ../tools/visual_verifier.py --run-dir "{{justfile_directory()}}/frontend/test-results/visual/latest"
+
 # All three test layers, sequentially
 test-all: test-backend test-unit test-e2e
 

@@ -1,4 +1,6 @@
 import { type Page, type TestInfo, expect } from '@playwright/test';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 /**
  * Shape of a single entry in the frontend log ring buffer.
@@ -181,6 +183,205 @@ export async function clickCardAndWait(page: Page, slug: string): Promise<void> 
     (e) => e.slug === slug && e.committed !== false
   );
   await expectLogEvent(page, 'texture_bound', (e) => e.slug === slug);
+}
+
+/**
+ * Lumnance sum per image quadrant, from a downsampled 64x64 readPixels.
+ * Returns sums (not averages) so ratios between quadrants are meaningful
+ * even when the image is mostly dark.
+ *
+ * Used by the visual-signature harness to detect quadrant-energy
+ * regressions across the catalog.
+ */
+export async function quadrantBrightness(
+  page: Page
+): Promise<{ ul: number; ur: number; ll: number; lr: number; total: number }> {
+  return (await page.evaluate(() => {
+    const t = (window as any).__three;
+    t.renderer.render(t.scene, t.camera);
+    const gl = t.renderer.getContext() as WebGLRenderingContext;
+    const canvas = t.renderer.domElement as HTMLCanvasElement;
+    const W = canvas.width;
+    const H = canvas.height;
+    // Sample on a 64x64 grid — O(4k) readPixels calls is still <5ms
+    // because the driver keeps the buffer resident, and we avoid the
+    // overhead of allocating and returning a full ImageData blob.
+    const N = 64;
+    const buf = new Uint8Array(4);
+    let ul = 0, ur = 0, ll = 0, lr = 0;
+    for (let iy = 0; iy < N; iy++) {
+      for (let ix = 0; ix < N; ix++) {
+        const x = Math.floor((ix + 0.5) * (W / N));
+        // readPixels origin is bottom-left; flip y so ul = visually upper-left.
+        const yGlFromTop = Math.floor((iy + 0.5) * (H / N));
+        const y = H - 1 - yGlFromTop;
+        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        const L = (buf[0] + buf[1] + buf[2]) / 3;
+        const top = iy < N / 2;
+        const left = ix < N / 2;
+        if (top && left) ul += L;
+        else if (top && !left) ur += L;
+        else if (!top && left) ll += L;
+        else lr += L;
+      }
+    }
+    return { ul, ur, ll, lr, total: ul + ur + ll + lr };
+  })) as { ul: number; ur: number; ll: number; lr: number; total: number };
+}
+
+/**
+ * Programmatic camera tilt via OrbitControls. Avoids the awkward
+ * mouse-drag simulation for E2E scenes that just need "set the camera
+ * to azimuth=X, elevation=Y". Values in degrees; elevation measured
+ * from +Y (so elevation=0 is straight down onto the plate).
+ */
+export async function setCameraAzEl(
+  page: Page,
+  azDeg: number,
+  elDeg: number
+): Promise<void> {
+  // Some three.js distributions expose get* but not set* on OrbitControls.
+  // Drive the camera directly via a Spherical around the controls' target,
+  // preserving radius, then call controls.update() so the damping/quat state
+  // catches up.
+  await page.evaluate(
+    ([az, el]) => {
+      const t = (window as any).__three;
+      const THREE = (window as any).THREE;
+      if (!t?.controls || !t?.camera) return;
+      const camera = t.camera;
+      const controls = t.controls;
+      const target = controls.target ?? { x: 0, y: 0, z: 0 };
+      const azRad = (az * Math.PI) / 180;
+      // Spherical phi is polar from +Y: 0 = overhead, pi = bottom-up.
+      const phi = ((90 - el) * Math.PI) / 180;
+      const dx = camera.position.x - target.x;
+      const dy = camera.position.y - target.y;
+      const dz = camera.position.z - target.z;
+      const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1.8;
+      // Spherical: x = r sin(phi) sin(theta); y = r cos(phi); z = r sin(phi) cos(theta)
+      const sinPhi = Math.sin(phi);
+      const nx = target.x + radius * sinPhi * Math.sin(azRad);
+      const ny = target.y + radius * Math.cos(phi);
+      const nz = target.z + radius * sinPhi * Math.cos(azRad);
+      camera.position.set(nx, ny, nz);
+      camera.lookAt(target.x, target.y, target.z);
+      if (typeof controls.update === 'function') controls.update();
+    },
+    [azDeg, elDeg]
+  );
+}
+
+export type SceneCapture = {
+  plateImagePath: string;
+  metaPath: string;
+  uniforms: Record<string, unknown>;
+  recipe: string | null;
+  slug: string | null;
+};
+
+/**
+ * Capture a visual scene: the Three.js canvas (PNG) + a JSON metadata
+ * sidecar. `outDir` must exist or be createable. `name` is the base
+ * filename — the function appends .png / .meta.json.
+ */
+export async function captureScene(
+  page: Page,
+  outDir: string,
+  name: string
+): Promise<SceneCapture> {
+  await fs.mkdir(outDir, { recursive: true });
+  const safe = name.replace(/[^a-z0-9._-]/gi, '_');
+
+  const canvasDataUrl = (await page.evaluate(() => {
+    const t = (window as any).__three;
+    t.renderer.render(t.scene, t.camera);
+    const canvas = t.renderer.domElement as HTMLCanvasElement;
+    return canvas.toDataURL('image/png');
+  })) as string;
+  const plateImagePath = path.join(outDir, `${safe}.png`);
+  const plateB64 = canvasDataUrl.split(',', 2)[1] ?? '';
+  await fs.writeFile(plateImagePath, Buffer.from(plateB64, 'base64'));
+
+  const meta = (await page.evaluate(() => {
+    const t = (window as any).__three;
+    const u = t?.material?.uniforms ?? {};
+    const unwrap = (v: any) => {
+      if (v == null) return null;
+      if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string')
+        return v;
+      if (v.isVector2 || v.isVector3 || v.isVector4)
+        return v.toArray ? v.toArray() : null;
+      if (Array.isArray(v)) return v;
+      return null;
+    };
+    const pickUniform = (k: string) => unwrap(u[k]?.value);
+    const uniforms: Record<string, unknown> = {};
+    for (const k of [
+      'uRecipe',
+      'uIllumination',
+      'uLaserColor',
+      'uThicknessUm',
+      'uSlitOrientation',
+      'uSlitPeriodUm',
+      'uSwitchAxis',
+      'uCarrierPeriodUm',
+    ]) {
+      const v = pickUniform(k);
+      if (v !== null && v !== undefined) uniforms[k] = v;
+    }
+    const manifest = (window as any).__store?.getState?.()?.manifest ?? null;
+    const az =
+      t?.controls?.getAzimuthalAngle != null
+        ? (t.controls.getAzimuthalAngle() * 180) / Math.PI
+        : null;
+    const polar =
+      t?.controls?.getPolarAngle != null
+        ? (t.controls.getPolarAngle() * 180) / Math.PI
+        : null;
+    const buf = (window as any).__log ?? [];
+    return {
+      uniforms,
+      slug: manifest?.slug ?? null,
+      recipe: manifest?.render_recipe ?? null,
+      recipe_data: manifest?.recipe_data ?? null,
+      variant: manifest?.variant ?? null,
+      camera: { az_deg: az, polar_deg: polar },
+      logTail: Array.isArray(buf) ? buf.slice(-30) : [],
+      timestamp: new Date().toISOString(),
+    };
+  })) as {
+    uniforms: Record<string, unknown>;
+    slug: string | null;
+    recipe: string | null;
+    recipe_data: unknown;
+    variant: string | null;
+    camera: { az_deg: number | null; polar_deg: number | null };
+    logTail: unknown[];
+    timestamp: string;
+  };
+
+  const metaPath = path.join(outDir, `${safe}.meta.json`);
+  await fs.writeFile(
+    metaPath,
+    JSON.stringify(
+      {
+        name: safe,
+        ...meta,
+        plateImage: path.basename(plateImagePath),
+      },
+      null,
+      2
+    )
+  );
+
+  return {
+    plateImagePath,
+    metaPath,
+    uniforms: meta.uniforms,
+    recipe: meta.recipe,
+    slug: meta.slug,
+  };
 }
 
 /**

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getDefault, listPatterns, type PatternDescriptor } from '../api';
 import { log } from '../logger';
 import { useStore } from '../store';
+import { parseSceneFromUrl } from '../debug';
 
 const THEME_ORDER: PatternDescriptor['theme'][] = ['Colombia', 'Global Travel'];
 
@@ -26,9 +27,35 @@ export default function Gallery() {
       setCatalog(pts);
       log('catalog_loaded', { count: pts.length });
       if (pts.length && !activeSlug) {
-        getDefault(pts[0].slug).then((m) => {
-          selectPattern(pts[0].slug, m);
-          log('pattern_selected', { slug: pts[0].slug, variant: m.variant, auto: true });
+        // URL deep-link: ?pattern=<slug>&illum=...&cam=az,el&light=az,el&...
+        // Schema documented in tools/preview_inspect.md. Pattern slug is
+        // honored only if it matches the catalog; everything else is
+        // applied via window.__debug.applyScene after the initial select.
+        const preset = parseSceneFromUrl();
+        const fromUrl = preset.pattern && pts.some((p) => p.slug === preset.pattern);
+        const initialSlug = fromUrl ? preset.pattern! : pts[0].slug;
+        getDefault(initialSlug).then((m) => {
+          selectPattern(initialSlug, m);
+          log('pattern_selected', {
+            slug: initialSlug,
+            variant: m.variant,
+            auto: true,
+            from_url: !!fromUrl,
+          });
+          const hasMore =
+            preset.illumination ||
+            preset.laserColor ||
+            preset.cameraAzEl ||
+            preset.light ||
+            preset.params;
+          if (hasMore) {
+            // applyScene awaits texture_bound + secondary fetch internally.
+            // Drop the redundant `pattern` field so we don't re-select.
+            const { pattern: _pattern, ...rest } = preset;
+            window.__debug?.applyScene(rest).catch((e) => {
+              log('url_preset_failed', { error: (e as Error).message });
+            });
+          }
         });
       }
     });

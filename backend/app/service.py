@@ -54,24 +54,7 @@ def materialize(
     manifest_path = out / "manifest.json"
     if manifest_path.exists() and not force:
         cached = json.loads(manifest_path.read_text())
-        # Migrate pre-recipe manifests on read. render_recipe comes from the
-        # pattern class, not the params, so it's safe to stamp onto an
-        # existing variant without regenerating pixels. For recipes that
-        # *need* recipe_data from the generator (iridescent_grating needs
-        # period_um, etc.) the cached manifest is unusable — bounce to the
-        # fresh-generate path below.
-        needs_recipe_data = cls.render_recipe in {
-            "iridescent_grating",
-            "stereo_lenticular",
-            "near_field_carpet",
-        }
-        if "render_recipe" not in cached and not needs_recipe_data:
-            cached["render_recipe"] = cls.render_recipe
-            cached.setdefault("recipe_data", {})
-            manifest_path.write_text(json.dumps(cached, indent=2))
-            _log.info("materialize migrated slug=%s variant=%s", slug, variant)
-            return cached
-        if "render_recipe" in cached and cached["render_recipe"] == cls.render_recipe:
+        if cached.get("render_recipe") == cls.render_recipe:
             _log.info("materialize cache_hit slug=%s variant=%s", slug, variant)
             return cached
         _log.info(
