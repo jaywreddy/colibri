@@ -28,7 +28,13 @@ from shapely.geometry import MultiPolygon, Polygon
 
 from .export_svg import to_svg
 from .patterns.base import GeneratedPattern, Substrate, ensure_multipolygon, registry
-from .patterns.frames import RectFrame, generate_frame, render_scene_to_image, scene_to_multipolygon
+from .patterns.frames import (
+    RectFrame,
+    generate_frame,
+    render_scene_to_image,
+    render_scene_to_svg,
+    scene_to_multipolygon,
+)
 from .patterns.frames.api import FrameParams
 from .rasterize import make_thumbnail, rasterize
 from .service import DATA_ROOT, materialize as materialize_pattern
@@ -430,9 +436,12 @@ def materialize_plate(spec: PlateSpec, force: bool = False) -> dict[str, Any]:
 def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     """Lazily build the SVG fab pair for an existing plate.
 
-    Called by the export endpoint when the user hits "download bundle". Skips
-    if SVGs already exist (subsequent exports are instant). Returns (front,
-    back) paths or None if the plate is unknown.
+    Uses the SVG-direct pen (no Shapely) so 30 mm plates with 500+ vines
+    finish in <1 s. The central pattern's polygons still go through to_svg
+    (small, cached), but the frame — the expensive layer — emits SVG
+    fragments straight from the motif vertex lists.
+
+    Returns (front, back) paths or None if the plate is unknown.
     """
     plate_dir = PLATES_ROOT / plate_id
     manifest_path = plate_dir / "manifest.json"
@@ -445,14 +454,65 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
 
     manifest = json.loads(manifest_path.read_text())
     spec = PlateSpec.from_dict(manifest["spec"])
-    composed = compose_plate(spec)  # polygon path is the SVG source
-    front_svg.write_text(to_svg(composed.front, composed.extent_um), encoding="utf-8")
-    back_svg.write_text(to_svg(composed.back, composed.extent_um), encoding="utf-8")
-    # Update manifest with the now-real SVG paths.
+
+    # 1. Central pattern via existing polygon path (small, cached).
+    central_cls = registry[spec.pattern_slug]
+    merged_params = {**central_cls.defaults(), **spec.pattern_params}
+    central = _generate_central_cached(central_cls, merged_params)
+
+    # 2. Frame scene via the fast SVG pen.
+    active_w, active_h = spec.active_dims()
+    rect = RectFrame(width_um=active_w, height_um=active_h)
+    frame_params = spec.frame.to_frame_params()
+    scene = generate_frame(rect, frame_params)
+    frame_body = render_scene_to_svg(scene, rect, frame_params)
+
+    # 3. Central pattern as SVG paths.
+    central_front_body = to_svg(central.front, central.extent_um, background=None)
+    central_back_body = to_svg(central.back, central.extent_um, background=None)
+
+    # 4. Stamp the surrounding <svg> wrapper at plate extent (μm units).
+    W, H = spec.width_um, spec.height_um
+    front_svg.write_text(_wrap_svg(W, H, [_inner_svg_paths(central_front_body), _group("frame", frame_body)]), encoding="utf-8")
+    back_svg.write_text(_wrap_svg(W, H, [_inner_svg_paths(central_back_body)]), encoding="utf-8")
+
     manifest["files"]["front_svg"] = f"/data/plates/{plate_id}/front.svg"
     manifest["files"]["back_svg"] = f"/data/plates/{plate_id}/back.svg"
     manifest_path.write_text(json.dumps(manifest, indent=2))
     return front_svg, back_svg
+
+
+def _wrap_svg(width_um: float, height_um: float, groups: list[str]) -> str:
+    body = "".join(groups)
+    return (
+        f'<?xml version="1.0" encoding="UTF-8"?>'
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{width_um:.2f}" height="{height_um:.2f}" '
+        f'viewBox="{-width_um/2:.2f} {-height_um/2:.2f} {width_um:.2f} {height_um:.2f}">'
+        f'{body}</svg>'
+    )
+
+
+def _group(layer_id: str, inner: str) -> str:
+    return f'<g id="{layer_id}">{inner}</g>'
+
+
+def _inner_svg_paths(full_svg: str) -> str:
+    """Strip the outer <svg>...</svg> wrapper off a drawsvg output so we can
+    nest it inside our wrapper. Drawsvg emits a fixed prelude that we don't
+    want twice in the same document.
+    """
+    # Drawsvg emits something like:
+    #   <?xml ...?><svg ...><defs>...</defs><rect ...>...<path .../></svg>
+    # Find the first '>' after '<svg' and the closing '</svg>'.
+    open_idx = full_svg.find("<svg")
+    if open_idx == -1:
+        return full_svg
+    open_end = full_svg.find(">", open_idx)
+    close_idx = full_svg.rfind("</svg>")
+    if open_end == -1 or close_idx == -1:
+        return full_svg
+    return _group("central", full_svg[open_end + 1 : close_idx])
 
 
 def list_plates() -> list[dict[str, Any]]:

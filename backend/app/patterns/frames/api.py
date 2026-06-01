@@ -12,6 +12,7 @@ from .motifs import FLOWERS, FLOWER_SIZE_MULT, LEAVES, LEAF_SIZE_MULT
 from .raster_pen import RasterPen
 from .scene import Scene
 from .shapely_pen import ShapelyPen
+from .svg_pen import SvgPen
 from .themes import FrameTheme, get_theme
 
 
@@ -163,3 +164,53 @@ def render_scene_to_image(
         pen.restore()
 
     return img
+
+
+def render_scene_to_svg(
+    scene: Scene,
+    rect: RectFrame,
+    params: FrameParams,
+    *,
+    fill: str = "#E6BC50",
+    stroke: str = "#E6BC50",
+) -> str:
+    """Fast SVG path — emits SVG fragments directly from vertex lists.
+
+    Same scale as ``scene_to_multipolygon`` but skips Shapely entirely. The
+    output is the body inside an ``<svg>`` element; the caller wraps it
+    (export_svg.frame_scene_to_svg_doc does this for fab bundles).
+    """
+    theme = get_theme(params.theme_slug)
+    pen = SvgPen(fill=fill, stroke=stroke)
+
+    # Vine segments as stroked polylines
+    for seg in scene.segments:
+        pen.move_to(seg.x1, seg.y1)
+        pen.line_to(seg.x2, seg.y2)
+        pen.stroke_path(seg.w)
+
+    # Leaves
+    for leaf in scene.leaves:
+        drawer = LEAVES.get(leaf.type)
+        if drawer is None:
+            continue
+        size = leaf.size * LEAF_SIZE_MULT.get(leaf.type, 1.0)
+        pen.save()
+        pen.translate(leaf.x, leaf.y)
+        pen.rotate(leaf.angle)
+        drawer(pen, size, leaf.seed)
+        pen.restore()
+
+    # Flowers
+    for flower in scene.flowers:
+        drawer = FLOWERS.get(flower.type)
+        if drawer is None:
+            continue
+        size = flower.size * FLOWER_SIZE_MULT.get(flower.type, 1.0)
+        pen.save()
+        pen.translate(flower.x, flower.y)
+        pen.rotate(flower.rot)
+        drawer(pen, size, flower.seed)
+        pen.restore()
+
+    return pen.finish()

@@ -22,9 +22,9 @@ router = APIRouter(prefix="/export", tags=["export"])
 def _plate_files_to_zip(zf: zipfile.ZipFile, plate_id: str, prefix: str = "") -> None:
     """Stream every file in a plate's data dir into ``zf`` under ``prefix``.
 
-    Builds the SVGs lazily if they haven't been generated yet — the
-    interactive materialize path skips the slow polygon SVG to keep edits
-    snappy, so the fab bundle is the first time we pay that cost.
+    Builds the SVGs lazily if they haven't been generated yet, and rewrites
+    the manifest to drop ``frame_scene`` (the live-preview blob; ~MB of
+    segment dicts that the engraver doesn't need).
     """
     plate_dir = PLATES_ROOT / plate_id
     if not plate_dir.exists():
@@ -32,6 +32,17 @@ def _plate_files_to_zip(zf: zipfile.ZipFile, plate_id: str, prefix: str = "") ->
     ensure_plate_svg(plate_id)
     for f in sorted(plate_dir.iterdir()):
         if not f.is_file():
+            continue
+        if f.name == "manifest.json":
+            try:
+                m = json.loads(f.read_text())
+            except Exception:  # noqa: BLE001
+                zf.write(f, arcname=f"{prefix}{f.name}")
+                continue
+            rd = m.get("recipe_data") or {}
+            rd.pop("frame_scene", None)
+            m["recipe_data"] = rd
+            zf.writestr(f"{prefix}{f.name}", json.dumps(m, indent=2))
             continue
         zf.write(f, arcname=f"{prefix}{f.name}")
 
@@ -80,7 +91,13 @@ def box_fab_zip(box_id: str) -> StreamingResponse:
         for face_id, face in box_manifest.get("faces", {}).items():
             plate_id = face["id"]
             _plate_files_to_zip(zf, plate_id, prefix=f"{face_id}/")
-        zf.writestr("box.json", json.dumps(box_manifest, indent=2))
+        # Strip frame_scene from each face manifest in the box snapshot too.
+        bm_lean = json.loads(json.dumps(box_manifest))  # cheap deep copy
+        for face in bm_lean.get("faces", {}).values():
+            rd = face.get("recipe_data") or {}
+            rd.pop("frame_scene", None)
+            face["recipe_data"] = rd
+        zf.writestr("box.json", json.dumps(bm_lean, indent=2))
         dims = box_manifest["dimensions_um"]
         zf.writestr(
             "README.txt",
