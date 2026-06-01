@@ -45,7 +45,7 @@ def generate(
     band_um: float | None = None,
     flower_types: Sequence[str] = ("orchid",),
     leaf_types: Sequence[str] = ("fern",),
-    max_iter: int = 600,
+    max_iter: int = 500,
 ) -> Scene:
     """Run the colonization and return a renderer-agnostic Scene.
 
@@ -68,7 +68,10 @@ def generate(
     noise = ValueNoise2D(seed ^ 0x9E3779B1)
 
     # --- scatter attractors in the perimeter band ----------------------------
-    n_attractors = int(560 * max(0.05, density))
+    # Attractor count matches the spec's reference of ~560 attractors at
+    # density 1.0. With the raster-pen path the cost is negligible (μs per
+    # motif) so we can stay close to the spec for natural density.
+    n_attractors = min(800, int(560 * max(0.05, density)))
     attractors: list[tuple[float, float]] = []
     # Hard cap on attempts so degenerate inputs don't spin forever.
     max_attempts = max(n_attractors * 10, 200)
@@ -168,15 +171,19 @@ def generate(
             nodes.append(_Node(x=new_x, y=new_y, parent=parent_idx, t=float(iteration)))
             nodes[parent_idx].children.append(child_idx)
 
-        # Kill attractors within kill_r of any node (use only fresh nodes for speed,
-        # but in practice we re-check all — n is small enough at this scale).
+        # Kill attractors within kill_r of any FRESH node from this iteration.
+        # Old nodes already killed their neighbors in prior iterations, so
+        # re-checking the whole node list every iteration is wasted work
+        # (and made the algorithm O(iter * N_attractors * N_nodes) — the
+        # OOM-er at default density on a 6-face box).
         kr2 = kill_r * kill_r
+        fresh_xy = [(nx, ny) for _, nx, ny in new_node_positions]
         surviving: list[tuple[float, float]] = []
         for ax, ay in attractors_live:
             killed = False
-            for n in nodes:
-                dx = ax - n.x
-                dy = ay - n.y
+            for nx, ny in fresh_xy:
+                dx = ax - nx
+                dy = ay - ny
                 if dx * dx + dy * dy < kr2:
                     killed = True
                     break

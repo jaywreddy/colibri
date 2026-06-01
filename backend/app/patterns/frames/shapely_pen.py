@@ -13,8 +13,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from shapely import affinity
-from shapely.geometry import LineString, MultiPolygon, Point, Polygon
+from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
@@ -71,9 +70,14 @@ class ShapelyPen(Pen):
 
     def __init__(self) -> None:
         self._tx_stack: list[_Affine] = [_Affine()]
-        # Accumulators — flushed by ``finish``.
-        self._stroke_lines: list[tuple[LineString, float]] = []  # (line, world-space width)
-        self._fill_polys: list[Polygon] = []
+        # Accumulators — flushed by ``finish``. Stored as raw vertex lists
+        # (not shapely objects) so the per-stroke / per-fill cost is just a
+        # Python list append; the shapely allocation happens once at finish().
+        self._stroke_paths: list[tuple[list[tuple[float, float]], float]] = []
+        self._fill_paths: list[list[tuple[float, float]]] = []
+        # Disks come in a separate bucket so we can buffer them as Points in
+        # one batch (motifs use them for berries, centers, etc).
+        self._disks: list[tuple[float, float, float]] = []  # (cx, cy, r)
         # Current subpath, in *world* coords (already transformed).
         self._path: list[tuple[float, float]] = []
 
@@ -153,53 +157,119 @@ class ShapelyPen(Pen):
         # Width is in *local* units when the motif sets it; scale through to
         # world units so consistent stroke gauges hold across save/scale layers.
         world_w = max(width * self._tx().uniform_scale(), 1e-6)
-        try:
-            line = LineString(self._path)
-        except Exception:
-            self._path = []
-            return
-        self._stroke_lines.append((line, world_w))
+        self._stroke_paths.append((self._path, world_w))
         self._path = []
 
     def fill_path(self) -> None:
         if len(self._path) < 3:
             self._path = []
             return
-        # Ensure closed ring for shapely.
+        # Ensure closed ring.
         if self._path[0] != self._path[-1]:
             self._path.append(self._path[0])
-        try:
-            poly = Polygon(self._path)
-            if not poly.is_valid:
-                poly = poly.buffer(0)
-            if isinstance(poly, Polygon) and not poly.is_empty:
-                self._fill_polys.append(poly)
-            elif isinstance(poly, MultiPolygon):
-                self._fill_polys.extend(p for p in poly.geoms if not p.is_empty)
-        except Exception:
-            pass
+        self._fill_paths.append(self._path)
         self._path = []
 
     def circle(self, cx: float, cy: float, r: float, *, fill: bool = True, stroke: float = 0.0) -> None:
         center_world = self._w(cx, cy)
         r_world = max(r * self._tx().uniform_scale(), 1e-6)
-        disk = Point(center_world).buffer(r_world, quad_segs=18)
         if fill:
-            self._fill_polys.append(disk)
-        if stroke > 0:
+            self._disks.append((center_world[0], center_world[1], r_world))
+        # Stroked-only circles are rare in the current motif set; treat them
+        # as a fat disk minus a thin disk by adding two entries.
+        if stroke > 0 and not fill:
             stroke_world = max(stroke * self._tx().uniform_scale(), 1e-6)
-            ring = disk.boundary.buffer(stroke_world / 2, cap_style=2)
-            if isinstance(ring, Polygon):
-                self._fill_polys.append(ring)
-            elif isinstance(ring, MultiPolygon):
-                self._fill_polys.extend(ring.geoms)
+            self._disks.append((center_world[0], center_world[1], r_world + stroke_world / 2))
 
     # --- output ------------------------------------------------------------
-    def finish(self) -> MultiPolygon:
-        polys: list[BaseGeometry] = list(self._fill_polys)
-        for line, w in self._stroke_lines:
-            polys.append(line.buffer(w / 2, cap_style=2, join_style=2))  # flat cap, mitre join
-        if not polys:
+    def finish(self, *, merge: bool = False) -> MultiPolygon:
+        """Materialize accumulated paths into a MultiPolygon.
+
+        The pen accumulates raw vertex lists during draw, so this is the only
+        place we pay GEOS/Shapely costs:
+          - Strokes: bucketed by width into MultiLineStrings → one buffer per
+            bucket.
+          - Fills: constructed in a single MultiPolygon from all rings at once.
+          - Disks: bucketed by radius into MultiPoints → one buffer per bucket.
+
+        ``merge=False`` (default) skips the final ``unary_union``; overlapping
+        polygons rasterize identically and the union step is the most
+        expensive op in the pipeline. Set ``merge=True`` for SVG export when
+        clean topology matters.
+        """
+        out: list[Polygon] = []
+
+        # --- strokes — bucket by width ---
+        if self._stroke_paths:
+            widths = [w for _, w in self._stroke_paths]
+            w_min, w_max = min(widths), max(widths)
+            n_bins = 32 if w_max > w_min else 1
+            bins: dict[int, list[list[tuple[float, float]]]] = {}
+            for path, w in self._stroke_paths:
+                if n_bins == 1:
+                    key = 0
+                else:
+                    key = min(n_bins - 1, int((w - w_min) / (w_max - w_min) * n_bins))
+                bins.setdefault(key, []).append(path)
+            for key, paths in bins.items():
+                if n_bins == 1:
+                    width = (w_min + w_max) / 2
+                else:
+                    width = w_min + (key + 0.5) * (w_max - w_min) / n_bins
+                # Filter out degenerate paths (< 2 points) before LineString
+                # construction; shapely throws on them.
+                lines = [LineString(p) for p in paths if len(p) >= 2]
+                if not lines:
+                    continue
+                buf = MultiLineString(lines).buffer(width / 2, cap_style=2, join_style=2)
+                if isinstance(buf, Polygon) and not buf.is_empty:
+                    out.append(buf)
+                elif isinstance(buf, MultiPolygon):
+                    out.extend(g for g in buf.geoms if not g.is_empty)
+
+        # --- fills — batch-construct polygons; ``buffer(0)`` repairs any
+        # invalid self-intersecting rings in one pass.
+        for ring in self._fill_paths:
+            if len(ring) < 4:
+                continue
+            try:
+                poly = Polygon(ring)
+                if not poly.is_valid:
+                    poly = poly.buffer(0)
+                if isinstance(poly, Polygon) and not poly.is_empty:
+                    out.append(poly)
+                elif isinstance(poly, MultiPolygon):
+                    out.extend(g for g in poly.geoms if not g.is_empty)
+            except Exception:  # noqa: BLE001 — drop malformed rings
+                continue
+
+        # --- disks — bucket by radius and buffer each MultiPoint once ---
+        if self._disks:
+            radii = [r for _, _, r in self._disks]
+            r_min, r_max = min(radii), max(radii)
+            n_r_bins = 8 if r_max > r_min else 1
+            r_buckets: dict[int, list[tuple[float, float]]] = {}
+            for cx, cy, r in self._disks:
+                if n_r_bins == 1:
+                    key = 0
+                else:
+                    key = min(n_r_bins - 1, int((r - r_min) / (r_max - r_min) * n_r_bins))
+                r_buckets.setdefault(key, []).append((cx, cy))
+            for key, centers in r_buckets.items():
+                if n_r_bins == 1:
+                    r = (r_min + r_max) / 2
+                else:
+                    r = r_min + (key + 0.5) * (r_max - r_min) / n_r_bins
+                from shapely.geometry import MultiPoint
+                buf = MultiPoint(centers).buffer(r, quad_segs=12)
+                if isinstance(buf, Polygon) and not buf.is_empty:
+                    out.append(buf)
+                elif isinstance(buf, MultiPolygon):
+                    out.extend(g for g in buf.geoms if not g.is_empty)
+
+        if not out:
             return MultiPolygon()
-        merged = unary_union(polys)
-        return ensure_multipolygon(merged)
+        if merge:
+            merged = unary_union(out)
+            return ensure_multipolygon(merged)
+        return MultiPolygon(out)

@@ -113,3 +113,171 @@ export async function generatePattern(
   if (!r.ok) throw new Error(`generatePattern: ${r.status} ${await r.text()}`);
   return r.json();
 }
+
+// -----------------------------------------------------------------------------
+// Plates + boxes — Phase I.5 / J. These wrap composed PlateSpec / BoxSpec
+// objects; manifests share the recipe + texture surface of PatternManifest so
+// existing scene code can render them unchanged.
+// -----------------------------------------------------------------------------
+
+export type FaceId = 'front' | 'back' | 'top' | 'bottom' | 'left' | 'right';
+export const FACE_IDS: FaceId[] = ['front', 'back', 'top', 'bottom', 'left', 'right'];
+
+export type FrameSpec = {
+  algorithm: 'colonize';
+  theme: 'esmeralda';
+  density: number;
+  bloom: number;
+  foliage: number;
+  seed: number;
+  band_um: number | null;
+};
+
+export type GlassSpec = {
+  thickness_um: number;
+  material: string;
+  n: number;
+};
+
+export type PlateSpec = {
+  pattern_slug: string;
+  pattern_params: Record<string, unknown>;
+  frame: FrameSpec;
+  glass: GlassSpec;
+  width_um: number;
+  height_um: number;
+  label: string;
+};
+
+export type PlateManifest = {
+  kind: 'plate';
+  id: string;
+  spec: PlateSpec;
+  name: string;
+  description: string;
+  tags: string[];
+  substrate: { thickness_um: number; material: string; n: number };
+  extent_um: [number, number];
+  pixel_pitch_um: number;
+  min_feature_um: number;
+  extra: Record<string, unknown>;
+  render_recipe?: RenderRecipe;
+  recipe_data?: Record<string, unknown>;
+  files: {
+    front_png: string;
+    back_png: string;
+    front_svg: string;
+    back_svg: string;
+    thumbnail: string;
+  };
+};
+
+export type BoxSpec = {
+  width_um: number;
+  height_um: number;
+  depth_um: number;
+  faces: Partial<Record<FaceId, PlateSpec>>;
+  label: string;
+};
+
+export type BoxManifest = {
+  kind: 'box';
+  id: string;
+  spec: BoxSpec;
+  name: string;
+  faces: Partial<Record<FaceId, PlateManifest>>;
+  dimensions_um: { width: number; height: number; depth: number };
+  content_hash: string;
+};
+
+export function defaultFrameSpec(seed = 1): FrameSpec {
+  return {
+    algorithm: 'colonize',
+    theme: 'esmeralda',
+    density: 1.0,
+    bloom: 0.6,
+    foliage: 0.6,
+    seed,
+    band_um: null,
+  };
+}
+
+export function defaultGlassSpec(): GlassSpec {
+  return { thickness_um: 500.0, material: 'fused silica', n: 1.46 };
+}
+
+export function defaultPlateSpec(patternSlug: string, seed = 1): PlateSpec {
+  return {
+    pattern_slug: patternSlug,
+    pattern_params: {},
+    frame: defaultFrameSpec(seed),
+    glass: defaultGlassSpec(),
+    // 3 mm default — central aperture lands near 2 mm, which matches the
+    // existing patterns' native extents. Bigger plates work but compose-time
+    // scales with central-pattern raster area, so leave the user to push it.
+    width_um: 3000,
+    height_um: 3000,
+    label: '',
+  };
+}
+
+export function defaultBoxSpec(patternSlug: string): BoxSpec {
+  const faces: Partial<Record<FaceId, PlateSpec>> = {};
+  FACE_IDS.forEach((fid, i) => {
+    faces[fid] = defaultPlateSpec(patternSlug, 100 + i);
+  });
+  return {
+    width_um: 3000,
+    height_um: 3000,
+    depth_um: 3000,
+    faces,
+    label: '',
+  };
+}
+
+export async function listPlates(): Promise<PlateManifest[]> {
+  const r = await tracedFetch('/plates');
+  if (!r.ok) throw new Error(`listPlates: ${r.status}`);
+  return r.json();
+}
+
+export async function generatePlate(spec: PlateSpec, force = false): Promise<PlateManifest> {
+  const r = await tracedFetch('/plates/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ spec, force }),
+  });
+  if (!r.ok) throw new Error(`generatePlate: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+export async function listBoxes(): Promise<BoxManifest[]> {
+  const r = await tracedFetch('/boxes');
+  if (!r.ok) throw new Error(`listBoxes: ${r.status}`);
+  return r.json();
+}
+
+export async function getBox(boxId: string): Promise<BoxManifest> {
+  const r = await tracedFetch(`/boxes/${boxId}`);
+  if (!r.ok) throw new Error(`getBox: ${r.status}`);
+  return r.json();
+}
+
+export async function generateBox(
+  spec: BoxSpec,
+  opts: { boxId?: string; force?: boolean } = {}
+): Promise<BoxManifest> {
+  const body = { ...spec, box_id: opts.boxId, force: opts.force ?? false };
+  const r = await tracedFetch('/boxes/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`generateBox: ${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+export async function deleteBox(boxId: string): Promise<void> {
+  const r = await tracedFetch(`/boxes/${boxId}`, { method: 'DELETE' });
+  if (!r.ok) throw new Error(`deleteBox: ${r.status}`);
+}

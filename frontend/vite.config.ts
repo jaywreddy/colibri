@@ -10,6 +10,9 @@ export default defineConfig({
       '/patterns': 'http://127.0.0.1:8765',
       '/sim': 'http://127.0.0.1:8765',
       '/data': 'http://127.0.0.1:8765',
+      '/plates': 'http://127.0.0.1:8765',
+      '/boxes': 'http://127.0.0.1:8765',
+      '/export': 'http://127.0.0.1:8765',
     },
   },
 });

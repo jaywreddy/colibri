@@ -1,46 +1,76 @@
 import { create } from 'zustand';
-import type { PatternDescriptor, PatternManifest } from './api';
+import type {
+  BoxManifest,
+  BoxSpec,
+  FaceId,
+  PatternDescriptor,
+  PatternManifest,
+  PlateSpec,
+} from './api';
+import { FACE_IDS, defaultBoxSpec } from './api';
 
 export type Illumination = 'ambient' | 'laser' | 'backlight';
+export type StudioMode = 'plate' | 'box';
 
 type State = {
+  // --- shared catalogue ---
   catalog: PatternDescriptor[];
+  setCatalog: (c: PatternDescriptor[]) => void;
+
+  // --- studio mode ---
+  mode: StudioMode;
+  setMode: (m: StudioMode) => void;
+
+  // --- single-pattern (legacy / Plate mode) ---
   activeSlug: string | null;
-  /** Slug the user most recently clicked — selection races use this to ignore
-   * late-arriving responses for a slug that's no longer wanted. */
   pendingSlug: string | null;
   manifest: PatternManifest | null;
   params: Record<string, unknown>;
-  illumination: Illumination;
-  laserColor: 'red' | 'green' | 'blue';
-  lightAzimuthDeg: number;
-  lightElevationDeg: number;
-  tilt: [number, number]; // deg X, deg Y — driven by orbit controls
-
-  setCatalog: (c: PatternDescriptor[]) => void;
-  /** Mark `slug` as the user's latest intent. Call this BEFORE kicking off a
-   * fetch so stale responses can be discarded on arrival. */
   beginSelect: (slug: string) => void;
-  /** Commit a selection only if `slug` still matches `pendingSlug`. Returns
-   * `true` if the write happened, `false` if the response was stale. */
   selectPatternIfCurrent: (slug: string, manifest: PatternManifest) => boolean;
-  /** Unconditional select — useful for tests and for the initial auto-load. */
   selectPattern: (slug: string, manifest: PatternManifest) => void;
   setManifest: (m: PatternManifest) => void;
   setParams: (p: Record<string, unknown>) => void;
   patchParams: (p: Record<string, unknown>) => void;
+
+  // --- Box mode ---
+  boxSpec: BoxSpec;
+  boxManifest: BoxManifest | null;
+  selectedFaceId: FaceId;
+  setBoxSpec: (b: BoxSpec) => void;
+  patchBoxSpec: (patch: Partial<BoxSpec>) => void;
+  setBoxManifest: (m: BoxManifest | null) => void;
+  setSelectedFace: (id: FaceId) => void;
+  patchFace: (faceId: FaceId, patch: Partial<PlateSpec>) => void;
+  patchFaceFrame: (
+    faceId: FaceId,
+    patch: Partial<PlateSpec['frame']>
+  ) => void;
+
+  // --- viewer state (shared across modes) ---
+  illumination: Illumination;
+  laserColor: 'red' | 'green' | 'blue';
+  lightAzimuthDeg: number;
+  lightElevationDeg: number;
+  tilt: [number, number];
   setIllumination: (i: Illumination) => void;
   setLaserColor: (c: 'red' | 'green' | 'blue') => void;
   setLight: (az: number, el: number) => void;
   setTilt: (t: [number, number]) => void;
 };
 
+const INITIAL_BOX_SLUG = 'wayuu-kanasu-moire';
+
 export const useStore = create<State>((set, get) => ({
   catalog: [],
+  mode: 'box',  // Box is the new default studio surface.
   activeSlug: null,
   pendingSlug: null,
   manifest: null,
   params: {},
+  boxSpec: defaultBoxSpec(INITIAL_BOX_SLUG),
+  boxManifest: null,
+  selectedFaceId: 'front',
   illumination: 'ambient',
   laserColor: 'green',
   lightAzimuthDeg: 35,
@@ -48,6 +78,8 @@ export const useStore = create<State>((set, get) => ({
   tilt: [0, 0],
 
   setCatalog: (catalog) => set({ catalog }),
+  setMode: (mode) => set({ mode }),
+
   beginSelect: (slug) => set({ pendingSlug: slug }),
   selectPatternIfCurrent: (slug, manifest) => {
     if (get().pendingSlug !== slug) return false;
@@ -68,9 +100,44 @@ export const useStore = create<State>((set, get) => ({
   setManifest: (manifest) => set({ manifest }),
   setParams: (params) => set({ params }),
   patchParams: (patch) => set((s) => ({ params: { ...s.params, ...patch } })),
+
+  setBoxSpec: (boxSpec) => set({ boxSpec }),
+  patchBoxSpec: (patch) =>
+    set((s) => ({ boxSpec: { ...s.boxSpec, ...patch } })),
+  setBoxManifest: (boxManifest) => set({ boxManifest }),
+  setSelectedFace: (selectedFaceId) => set({ selectedFaceId }),
+  patchFace: (faceId, patch) =>
+    set((s) => {
+      const cur = s.boxSpec.faces[faceId];
+      if (!cur) return s;
+      return {
+        boxSpec: {
+          ...s.boxSpec,
+          faces: { ...s.boxSpec.faces, [faceId]: { ...cur, ...patch } },
+        },
+      };
+    }),
+  patchFaceFrame: (faceId, patch) =>
+    set((s) => {
+      const cur = s.boxSpec.faces[faceId];
+      if (!cur) return s;
+      return {
+        boxSpec: {
+          ...s.boxSpec,
+          faces: {
+            ...s.boxSpec.faces,
+            [faceId]: { ...cur, frame: { ...cur.frame, ...patch } },
+          },
+        },
+      };
+    }),
+
   setIllumination: (illumination) => set({ illumination }),
   setLaserColor: (laserColor) => set({ laserColor }),
   setLight: (lightAzimuthDeg, lightElevationDeg) =>
     set({ lightAzimuthDeg, lightElevationDeg }),
   setTilt: (tilt) => set({ tilt }),
 }));
+
+// Re-export FACE_IDS for convenience.
+export { FACE_IDS };

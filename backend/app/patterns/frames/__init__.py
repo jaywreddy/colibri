@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .geometry import RectFrame
 from .scene import Scene, FlowerSprite, LeafSprite, Segment
-from .api import generate_frame, scene_to_multipolygon
+from .api import generate_frame, scene_to_multipolygon, render_scene_to_image
 
 __all__ = [
     "RectFrame",
@@ -24,4 +24,5 @@ __all__ = [
     "Segment",
     "generate_frame",
     "scene_to_multipolygon",
+    "render_scene_to_image",
 ]

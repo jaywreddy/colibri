@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from shapely.geometry import MultiPolygon, box
-from shapely.ops import unary_union
+from PIL import Image
+from shapely.geometry import MultiPolygon
 
-from ..base import ensure_multipolygon
 from .algorithms import ALGORITHMS
 from .geometry import RectFrame
 from .motifs import FLOWERS, FLOWER_SIZE_MULT, LEAVES, LEAF_SIZE_MULT
+from .raster_pen import RasterPen
 from .scene import Scene
 from .shapely_pen import ShapelyPen
 from .themes import FrameTheme, get_theme
@@ -98,7 +98,68 @@ def scene_to_multipolygon(
         drawer(pen, size, flower.seed)
         pen.restore()
 
-    mp = pen.finish()
-    # Crop to the rectangle so any motif overshoot is trimmed cleanly.
-    crop = box(rect.left, rect.bottom, rect.right, rect.top)
-    return ensure_multipolygon(mp.intersection(crop))
+    # No union, no crop — both are O(N²) on dense motif scenes and OOM GEOS
+    # at default density. The rasterizer paints polygons individually (overlap
+    # = same gold color) and ImageDraw clips to the image bounds for free.
+    return pen.finish(merge=False)
+
+
+def render_scene_to_image(
+    scene: Scene,
+    rect: RectFrame,
+    params: FrameParams,
+    pixel_pitch_um: float,
+) -> Image.Image:
+    """Fast raster path — paints the scene directly into a PIL ``L`` image.
+
+    Bypasses Shapely entirely. ~100× faster than ``scene_to_multipolygon``
+    followed by ``rasterize`` because there's no Polygon construction or
+    validity-checking overhead per motif primitive.
+    """
+    short = min(rect.width_um, rect.height_um)
+    extent_um = (rect.width_um, rect.height_um)
+    w_px = max(1, int(round(rect.width_um / pixel_pitch_um)))
+    h_px = max(1, int(round(rect.height_um / pixel_pitch_um)))
+    img = Image.new("L", (w_px, h_px), 0)
+    pen = RasterPen(img, extent_um, pixel_pitch_um)
+
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img)
+
+    def to_px(x: float, y: float) -> tuple[float, float]:
+        px = (x + rect.width_um / 2.0) / pixel_pitch_um
+        py = (rect.height_um / 2.0 - y) / pixel_pitch_um
+        return px, py
+
+    # --- vine segments — paint as wide lines directly (no pen overhead) ---
+    for seg in scene.segments:
+        p1 = to_px(seg.x1, seg.y1)
+        p2 = to_px(seg.x2, seg.y2)
+        w_px_seg = max(1, int(round(seg.w / pixel_pitch_um)))
+        draw.line([p1, p2], fill=255, width=w_px_seg)
+
+    # --- leaves ---
+    for leaf in scene.leaves:
+        drawer = LEAVES.get(leaf.type)
+        if drawer is None:
+            continue
+        size = leaf.size * LEAF_SIZE_MULT.get(leaf.type, 1.0)
+        pen.save()
+        pen.translate(leaf.x, leaf.y)
+        pen.rotate(leaf.angle)
+        drawer(pen, size, leaf.seed)
+        pen.restore()
+
+    # --- flowers ---
+    for flower in scene.flowers:
+        drawer = FLOWERS.get(flower.type)
+        if drawer is None:
+            continue
+        size = flower.size * FLOWER_SIZE_MULT.get(flower.type, 1.0)
+        pen.save()
+        pen.translate(flower.x, flower.y)
+        pen.rotate(flower.rot)
+        drawer(pen, size, flower.seed)
+        pen.restore()
+
+    return img
