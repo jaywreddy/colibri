@@ -28,21 +28,55 @@ def test_compose_plate_unions_frame_and_pattern(isolated_data):
 
     spec = PlateSpec(
         pattern_slug="colibri-globe-phase",
-        pattern_params={"period_um": 30.0, "extent_um": 1000.0},  # overridden by aperture
+        pattern_params={"period_um": 30.0, "extent_um": 1000.0},
         frame=FrameSpec(seed=7),
-        width_um=2400.0,
-        height_um=1600.0,
+        width_um=10000.0,
+        height_um=8000.0,
+        weld_margin_um=500.0,
     )
     composed = compose_plate(spec)
-    assert composed.extent_um == (2400.0, 1600.0)
-    # Front layer should now include both the central pattern and the frame band.
-    # The frame band hugs the perimeter; central pattern lives in the aperture.
-    # So the front mask's bounds should span the full plate.
+    assert composed.extent_um == (10000.0, 8000.0)
+    # Front layer = central pattern + frame band. The frame hugs the *active*
+    # rectangle (inset by weld), so its outer edge lands at width - 2·weld.
     fx0, fy0, fx1, fy1 = composed.front.bounds
-    assert fx1 - fx0 > 1800.0, "front mask should span the plate width (frame extends to edges)"
-    # Back layer is unchanged from the central pattern — bounded by the aperture.
+    active_w = spec.width_um - 2 * spec.weld_margin_um
+    assert fx1 - fx0 > active_w * 0.6, "front mask should span most of the active rect"
+    # No front pixel may overshoot the active rect (no gold in weld zone).
+    assert fx0 >= -active_w / 2 - 1.0, "front mask leaks past the weld boundary on the left"
+    assert fx1 <= active_w / 2 + 1.0, "front mask leaks past the weld boundary on the right"
+    # Back layer is unchanged from the central pattern — bounded by its extent.
     bx0, by0, bx1, by1 = composed.back.bounds
-    assert bx1 - bx0 < 1700.0, "back layer should stay within the aperture, not span the frame"
+    assert bx1 - bx0 < 1100.0, "back layer should stay within the central pattern extent"
+
+
+def test_weld_margin_zeroes_border_in_raster(isolated_data):
+    """No gold pixels may appear inside the weld zone of either layer."""
+    from PIL import Image
+    from app.plates import FrameSpec, PlateSpec, PLATES_ROOT, materialize_plate
+
+    spec = PlateSpec(
+        pattern_slug="wayuu-kanasu-moire",
+        frame=FrameSpec(seed=11),
+        width_um=8000.0,
+        height_um=8000.0,
+        weld_margin_um=600.0,
+    )
+    m = materialize_plate(spec)
+    pitch = m["pixel_pitch_um"]
+    weld_px = int(round(spec.weld_margin_um / pitch))
+
+    for fname in ("front.png", "back.png"):
+        img = Image.open(PLATES_ROOT / m["id"] / fname).convert("L")
+        w, h = img.size
+        # Check each border strip — sum of pixel values must be 0.
+        # Top, bottom, left, right rectangles.
+        top = img.crop((0, 0, w, weld_px))
+        bottom = img.crop((0, h - weld_px, w, h))
+        left = img.crop((0, 0, weld_px, h))
+        right = img.crop((w - weld_px, 0, w, h))
+        for region, name in [(top, "top"), (bottom, "bottom"), (left, "left"), (right, "right")]:
+            stats = region.getextrema()
+            assert stats == (0, 0), f"{fname} {name} weld zone has gold: extrema={stats}"
 
 
 def test_materialize_plate_writes_manifest(isolated_data):
@@ -51,12 +85,13 @@ def test_materialize_plate_writes_manifest(isolated_data):
     spec = PlateSpec(
         pattern_slug="wayuu-kanasu-moire",
         frame=FrameSpec(seed=3),
-        width_um=2000.0,
-        height_um=1500.0,
+        width_um=8000.0,
+        height_um=6000.0,
+        weld_margin_um=400.0,
     )
     manifest = materialize_plate(spec)
     assert manifest["kind"] == "plate"
-    assert manifest["extent_um"] == [2000.0, 1500.0]
+    assert manifest["extent_um"] == [8000.0, 6000.0]
     # Files exist on disk.
     pid = manifest["id"]
     assert (PLATES_ROOT / pid / "manifest.json").exists()
@@ -73,8 +108,9 @@ def test_materialize_plate_is_cached(isolated_data):
     spec = PlateSpec(
         pattern_slug="wayuu-kanasu-moire",
         frame=FrameSpec(seed=4),
-        width_um=1800.0,
-        height_um=1800.0,
+        width_um=6000.0,
+        height_um=6000.0,
+        weld_margin_um=300.0,
     )
     m1 = materialize_plate(spec)
     m2 = materialize_plate(spec)
@@ -100,7 +136,7 @@ def test_materialize_box_fans_out(isolated_data):
     # Build 6 faces all sharing the same central pattern slug but different
     # frame seeds, so the per-face plate hashes differ and the cache key
     # actually goes through fan-out.
-    spec = BoxSpec(width_um=20000.0, height_um=15000.0, depth_um=10000.0)
+    spec = BoxSpec(width_um=20000.0, height_um=15000.0, depth_um=10000.0, weld_margin_um=800.0)
     for i, fid in enumerate(FACE_IDS):
         spec.faces[fid] = PlateSpec(
             pattern_slug="wayuu-kanasu-moire",

@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 from shapely.geometry import MultiPolygon, Polygon
 
 from .export_svg import to_svg
@@ -98,8 +98,12 @@ class PlateSpec:
     pattern_params: dict[str, Any] = field(default_factory=dict)
     frame: FrameSpec = field(default_factory=FrameSpec)
     glass: GlassSpec = field(default_factory=GlassSpec)
-    width_um: float = 3000.0
-    height_um: float = 3000.0
+    width_um: float = 30000.0
+    height_um: float = 30000.0
+    # Blank rim around the plate edges reserved for assembly welds — no
+    # gold patterned anywhere inside this border. Default 1 mm matches a
+    # typical UV-cure / solder joint allowance.
+    weld_margin_um: float = 1000.0
     label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -110,6 +114,7 @@ class PlateSpec:
             "glass": asdict(self.glass),
             "width_um": self.width_um,
             "height_um": self.height_um,
+            "weld_margin_um": self.weld_margin_um,
             "label": self.label,
         }
 
@@ -122,9 +127,17 @@ class PlateSpec:
             pattern_params=dict(data.get("pattern_params", {})),
             frame=FrameSpec(**frame_data),
             glass=GlassSpec(**glass_data),
-            width_um=float(data.get("width_um", 2400.0)),
-            height_um=float(data.get("height_um", 1600.0)),
+            width_um=float(data.get("width_um", 30000.0)),
+            height_um=float(data.get("height_um", 30000.0)),
+            weld_margin_um=float(data.get("weld_margin_um", 1000.0)),
             label=data.get("label", ""),
+        )
+
+    def active_dims(self) -> tuple[float, float]:
+        """(W, H) of the patterned area inside the weld border, in μm."""
+        return (
+            max(0.0, self.width_um - 2.0 * self.weld_margin_um),
+            max(0.0, self.height_um - 2.0 * self.weld_margin_um),
         )
 
 
@@ -136,7 +149,8 @@ def plate_hash(spec: PlateSpec) -> str:
 def _band_um(spec: PlateSpec) -> float:
     if spec.frame.band_um is not None:
         return spec.frame.band_um
-    return 0.12 * min(spec.width_um, spec.height_um)
+    aw, ah = spec.active_dims()
+    return 0.12 * max(0.0, min(aw, ah))
 
 
 # In-process cache of (slug, params-hash) -> GeneratedPattern. The full
@@ -165,9 +179,14 @@ def _generate_central_cached(cls: type, params: dict[str, Any]) -> GeneratedPatt
 
 
 def _aperture(spec: PlateSpec) -> float:
-    """Side length (μm) of the square central aperture inside the frame band."""
+    """Side length (μm) of the square central aperture inside the frame band.
+
+    Sits inside *both* the weld margin and the frame band, so the central
+    optical pattern has clean glass on every side.
+    """
     band = _band_um(spec)
-    return max(0.0, min(spec.width_um, spec.height_um) - 2.0 * band)
+    aw, ah = spec.active_dims()
+    return max(0.0, min(aw, ah) - 2.0 * band)
 
 
 def compose_plate(spec: PlateSpec) -> GeneratedPattern:
@@ -193,7 +212,13 @@ def compose_plate(spec: PlateSpec) -> GeneratedPattern:
 
     central = _generate_central_cached(central_cls, merged_params)
 
-    rect = RectFrame(width_um=spec.width_um, height_um=spec.height_um)
+    # Frame is generated on the inset active rect so vines stop at the
+    # weld boundary. The polygons come out in *active-rect coords* (origin
+    # at active-rect center, which happens to be the same as plate center
+    # since the inset is symmetric), so they drop into the plate frame
+    # without any translation.
+    active_w, active_h = spec.active_dims()
+    rect = RectFrame(width_um=active_w, height_um=active_h)
     frame_params = spec.frame.to_frame_params()
     scene = generate_frame(rect, frame_params)
     frame_mask = scene_to_multipolygon(scene, rect, frame_params)
@@ -244,21 +269,38 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     central_front_path = DATA_ROOT / central_manifest["files"]["front_png"].lstrip("/").removeprefix("data/")
     central_back_path = DATA_ROOT / central_manifest["files"]["back_png"].lstrip("/").removeprefix("data/")
 
-    # Plate canvas — pitch chosen so the longest plate side is ≤ 4000 px,
-    # which keeps the raster under the rasterize cap (16M px) at any aspect.
-    plate_pitch = max(central_pitch, max(spec.width_um, spec.height_um) / 4000.0)
+    # Plate canvas — pitch chosen so the longest plate side caps at ~1500 px.
+    # We deliberately stay below the rasterize cap (16M px) by a wide margin
+    # so the *six* face textures uploaded together to the WebGL preview don't
+    # exhaust VRAM (3 mm cube was fine at 4000 px; 30 mm cube needs the cap).
+    # The fab SVG export goes through the polygon path at full precision, so
+    # this only bounds the live raster, not the actual mask.
+    plate_pitch = max(central_pitch, max(spec.width_um, spec.height_um) / 1500.0)
     plate_w = max(1, int(round(spec.width_um / plate_pitch)))
     plate_h = max(1, int(round(spec.height_um / plate_pitch)))
 
     central_front = Image.open(central_front_path).convert("L")
     central_back = Image.open(central_back_path).convert("L")
 
-    # Resize central from its native pitch into plate-canvas pixels — at the
-    # aperture size (smaller than the full plate by the frame band).
-    aperture_w = max(1, int(round(central_extent[0] / plate_pitch)))
-    aperture_h = max(1, int(round(central_extent[1] / plate_pitch)))
-    central_front_r = central_front.resize((aperture_w, aperture_h), Image.Resampling.LANCZOS)
-    central_back_r = central_back.resize((aperture_w, aperture_h), Image.Resampling.LANCZOS)
+    # Resize the central pattern's raster up to fill the plate's aperture —
+    # the optically-active opening between the weld margin and the frame
+    # band. The central pattern itself was generated at its own native μm
+    # extent (small, fast, cached); we upscale here so a 3 cm plate doesn't
+    # render a 2 mm dot in the middle of empty glass.
+    aperture_um = _aperture(spec)
+    aperture_w_px = max(1, int(round(aperture_um / plate_pitch)))
+    aperture_h_px = max(1, int(round(aperture_um / plate_pitch)))
+    # Preserve aspect ratio of the native central raster — if a pattern ever
+    # ships non-square output, scale-to-fit and center on the long axis.
+    src_aspect = central_front.size[0] / max(1, central_front.size[1])
+    if src_aspect >= 1:
+        aperture_h_px = max(1, int(round(aperture_w_px / src_aspect)))
+    else:
+        aperture_w_px = max(1, int(round(aperture_h_px * src_aspect)))
+    central_front_r = central_front.resize((aperture_w_px, aperture_h_px), Image.Resampling.LANCZOS)
+    central_back_r = central_back.resize((aperture_w_px, aperture_h_px), Image.Resampling.LANCZOS)
+    # Reuse the same names below for the paste-offset math.
+    aperture_w, aperture_h = aperture_w_px, aperture_h_px
 
     front = Image.new("L", (plate_w, plate_h), 0)
     back = Image.new("L", (plate_w, plate_h), 0)
@@ -268,13 +310,40 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     front.paste(central_front_r, (paste_x, paste_y))
     back.paste(central_back_r, (paste_x, paste_y))
 
-    # Generate frame scene + paint directly into a PIL image (skips Shapely).
-    rect = RectFrame(width_um=spec.width_um, height_um=spec.height_um)
-    frame_params = spec.frame.to_frame_params()
-    scene = generate_frame(rect, frame_params)
-    frame_png = render_scene_to_image(scene, rect, frame_params, plate_pitch)
-    # Composite frame ON TOP of the central pattern on the front layer.
-    front.paste(255, mask=frame_png)
+    # Generate frame on the *active rect* — inset from the plate boundary by
+    # the weld margin on every side, so vines + motifs can't bleed into the
+    # weld zone. The render then composes onto a buffer the same size as the
+    # active area; we paste that into the plate canvas centered.
+    active_w, active_h = spec.active_dims()
+    if active_w > 0 and active_h > 0:
+        rect = RectFrame(width_um=active_w, height_um=active_h)
+        frame_params = spec.frame.to_frame_params()
+        scene = generate_frame(rect, frame_params)
+        frame_png = render_scene_to_image(scene, rect, frame_params, plate_pitch)
+        active_w_px = max(1, int(round(active_w / plate_pitch)))
+        active_h_px = max(1, int(round(active_h / plate_pitch)))
+        weld_x_px = (plate_w - active_w_px) // 2
+        weld_y_px = (plate_h - active_h_px) // 2
+        # `paste(255, mask=…)` only writes where the mask is non-zero, so
+        # we offset the frame buffer by the weld border and the rest of the
+        # plate stays untouched.
+        front.paste(255, box=(weld_x_px, weld_y_px), mask=frame_png)
+    else:
+        scene = None  # weld swallowed the active area — degenerate but legal
+
+    # Belt-and-suspenders: zero out the weld border on BOTH layers, so any
+    # central-pattern overshoot (the raster step rounds half-pixels) can't
+    # leak into the weld zone. The central pattern is paste-centered above
+    # at aperture size, which is already inside the active rect, so this is
+    # only defense in depth.
+    if spec.weld_margin_um > 0:
+        weld_px = max(1, int(round(spec.weld_margin_um / plate_pitch)))
+        for img in (front, back):
+            # top, bottom, left, right rectangles
+            ImageDraw.Draw(img).rectangle((0, 0, plate_w, weld_px), fill=0)
+            ImageDraw.Draw(img).rectangle((0, plate_h - weld_px, plate_w, plate_h), fill=0)
+            ImageDraw.Draw(img).rectangle((0, 0, weld_px, plate_h), fill=0)
+            ImageDraw.Draw(img).rectangle((plate_w - weld_px, 0, plate_w, plate_h), fill=0)
 
     front.save(out_dir / "front.png")
     back.save(out_dir / "back.png")
@@ -283,7 +352,7 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 
     return {
         "central_manifest": central_manifest,
-        "frame_scene": scene.to_dict(),
+        "frame_scene": scene.to_dict() if scene is not None else {"segments": [], "flowers": [], "leaves": [], "max_t": 0.0},
         "pixel_pitch_um": plate_pitch,
         "min_feature_um": central_manifest["min_feature_um"],
     }

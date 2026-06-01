@@ -32,8 +32,9 @@ class PlateSpecBody(BaseModel):
     pattern_params: dict[str, Any] = Field(default_factory=dict)
     frame: FrameSpecBody = Field(default_factory=FrameSpecBody)
     glass: GlassSpecBody = Field(default_factory=GlassSpecBody)
-    width_um: float = 3000.0
-    height_um: float = 3000.0
+    width_um: float = 30000.0
+    height_um: float = 30000.0
+    weld_margin_um: float = 1000.0
     label: str = ""
 
     def to_spec(self) -> PlateSpec:

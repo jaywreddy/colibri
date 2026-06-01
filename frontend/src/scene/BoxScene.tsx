@@ -58,8 +58,10 @@ export default function BoxScene({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b0d10);
 
-    const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
-    camera.position.set(2.2, 1.6, 2.4);
+    // 45° FOV is a more forgiving default for portrait viewports — the
+    // narrower 35° was clipping the cube on tall canvases.
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+    camera.position.set(1.8, 1.3, 1.9);
 
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -210,9 +212,9 @@ export default function BoxScene({
     // is ~1.4 (fits comfortably in the camera's default zoom).
     const dims = manifest.dimensions_um;
     const maxDim = Math.max(dims.width, dims.height, dims.depth);
-    const sx = (dims.width / maxDim) * 1.4;
-    const sy = (dims.height / maxDim) * 1.4;
-    const sz = (dims.depth / maxDim) * 1.4;
+    const sx = (dims.width / maxDim) * 0.9;
+    const sy = (dims.height / maxDim) * 0.9;
+    const sz = (dims.depth / maxDim) * 0.9;
     layoutBox(t.faces, t.flat, sx, sy, sz);
 
     const loader = new THREE.TextureLoader();

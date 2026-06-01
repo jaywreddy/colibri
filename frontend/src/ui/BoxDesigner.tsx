@@ -191,19 +191,38 @@ export default function BoxDesigner() {
               <span>
                 {k.replace('_um', '').toUpperCase()}
                 <span style={{ float: 'right', opacity: 0.7, fontSize: 10 }}>
-                  {boxSpec[k].toFixed(0)}
+                  {(boxSpec[k] / 1000).toFixed(1)} mm
                 </span>
               </span>
               <input
                 type="range"
-                min={1500}
-                max={12000}
-                step={250}
+                min={5000}
+                max={60000}
+                step={500}
                 value={boxSpec[k]}
                 onChange={(e) => patchBoxSpec({ [k]: parseFloat(e.target.value) })}
               />
             </label>
           ))}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12 }}>
+            <span>
+              WELD MARGIN
+              <span style={{ float: 'right', opacity: 0.7, fontSize: 10 }}>
+                {(boxSpec.weld_margin_um / 1000).toFixed(2)} mm
+              </span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={3000}
+              step={50}
+              value={boxSpec.weld_margin_um}
+              onChange={(e) => patchBoxSpec({ weld_margin_um: parseFloat(e.target.value) })}
+            />
+            <span style={{ fontSize: 10, opacity: 0.55, lineHeight: 1.3 }}>
+              Blank rim for assembly bonds — no gold patterned inside this border.
+            </span>
+          </label>
         </div>
 
         <div style={{ borderTop: '1px solid #22262d', paddingTop: 12 }}>

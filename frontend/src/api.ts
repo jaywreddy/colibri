@@ -146,6 +146,9 @@ export type PlateSpec = {
   glass: GlassSpec;
   width_um: number;
   height_um: number;
+  /** Blank rim around every edge reserved for assembly welds — no gold
+   * is patterned inside this border. Default 1 mm. */
+  weld_margin_um: number;
   label: string;
 };
 
@@ -176,6 +179,7 @@ export type BoxSpec = {
   width_um: number;
   height_um: number;
   depth_um: number;
+  weld_margin_um: number;
   faces: Partial<Record<FaceId, PlateSpec>>;
   label: string;
 };
@@ -212,11 +216,11 @@ export function defaultPlateSpec(patternSlug: string, seed = 1): PlateSpec {
     pattern_params: {},
     frame: defaultFrameSpec(seed),
     glass: defaultGlassSpec(),
-    // 3 mm default — central aperture lands near 2 mm, which matches the
-    // existing patterns' native extents. Bigger plates work but compose-time
-    // scales with central-pattern raster area, so leave the user to push it.
-    width_um: 3000,
-    height_um: 3000,
+    // 30 mm (3 cm) plate edge — a hand-size piece with plenty of room for
+    // the central optical pattern + decorative frame + 1 mm weld border.
+    width_um: 30000,
+    height_um: 30000,
+    weld_margin_um: 1000,
     label: '',
   };
 }
@@ -227,9 +231,10 @@ export function defaultBoxSpec(patternSlug: string): BoxSpec {
     faces[fid] = defaultPlateSpec(patternSlug, 100 + i);
   });
   return {
-    width_um: 3000,
-    height_um: 3000,
-    depth_um: 3000,
+    width_um: 30000,
+    height_um: 30000,
+    depth_um: 30000,
+    weld_margin_um: 1000,
     faces,
     label: '',
   };

@@ -12,9 +12,10 @@ router = APIRouter(prefix="/boxes", tags=["boxes"])
 
 
 class BoxSpecBody(BaseModel):
-    width_um: float = 3000.0
-    height_um: float = 3000.0
-    depth_um: float = 3000.0
+    width_um: float = 30000.0
+    height_um: float = 30000.0
+    depth_um: float = 30000.0
+    weld_margin_um: float = 1000.0
     faces: dict[str, PlateSpecBody] = Field(default_factory=dict)
     label: str = ""
 

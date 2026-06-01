@@ -44,11 +44,18 @@ def face_dimensions(face_id: str, width_um: float, height_um: float, depth_um: f
 
 @dataclass
 class BoxSpec:
-    """A full box: 6 plate specs + shared box dimensions."""
+    """A full box: 6 plate specs + shared box dimensions.
 
-    width_um: float = 3000.0   # 3 mm cube — central aperture lands ~2 mm
-    height_um: float = 3000.0
-    depth_um: float = 3000.0
+    The weld margin is a *box-level* constraint — every face shares the same
+    blank rim around its edges so the assembly bonds register correctly.
+    ``normalize_face_dims`` collapses the box value onto each face's PlateSpec
+    before materialize so the per-face cache key reflects the chosen weld.
+    """
+
+    width_um: float = 30000.0   # 30 mm cube — a fist-size desk object
+    height_um: float = 30000.0
+    depth_um: float = 30000.0
+    weld_margin_um: float = 1000.0
     faces: dict[str, PlateSpec] = field(default_factory=dict)
     label: str = ""
 
@@ -57,6 +64,7 @@ class BoxSpec:
             "width_um": self.width_um,
             "height_um": self.height_um,
             "depth_um": self.depth_um,
+            "weld_margin_um": self.weld_margin_um,
             "faces": {fid: p.to_dict() for fid, p in self.faces.items()},
             "label": self.label,
         }
@@ -64,20 +72,21 @@ class BoxSpec:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BoxSpec":
         return cls(
-            width_um=float(data.get("width_um", 24000.0)),
-            height_um=float(data.get("height_um", 24000.0)),
-            depth_um=float(data.get("depth_um", 24000.0)),
+            width_um=float(data.get("width_um", 30000.0)),
+            height_um=float(data.get("height_um", 30000.0)),
+            depth_um=float(data.get("depth_um", 30000.0)),
+            weld_margin_um=float(data.get("weld_margin_um", 1000.0)),
             faces={fid: PlateSpec.from_dict(p) for fid, p in data.get("faces", {}).items()},
             label=data.get("label", ""),
         )
 
     def normalize_face_dims(self) -> None:
-        """Force every face's plate dimensions to match the derived face shape.
+        """Stamp box dims + weld margin onto every face's plate spec.
 
-        Users edit ``BoxSpec.width/height/depth`` and per-face pattern/frame
-        choices; the face-plate dimensions are *not* an independent degree of
-        freedom — opposing faces must stay congruent. We re-stamp them here
-        before materializing.
+        Per-face dimensions and welds are not an independent degree of freedom
+        — opposing faces must stay congruent and welds register at assembly.
+        We collapse the values here so the per-face cache key reflects what
+        actually gets materialized.
         """
         for fid in FACE_IDS:
             if fid not in self.faces:
@@ -85,6 +94,7 @@ class BoxSpec:
             w, h = face_dimensions(fid, self.width_um, self.height_um, self.depth_um)
             self.faces[fid].width_um = w
             self.faces[fid].height_um = h
+            self.faces[fid].weld_margin_um = self.weld_margin_um
 
 
 def box_hash(spec: BoxSpec) -> str:
