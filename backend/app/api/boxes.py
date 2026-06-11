@@ -6,16 +6,36 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ..boxes import BoxSpec, delete_box, get_box, list_boxes, materialize_box
-from .plates import PlateSpecBody
+from .plates import GlassSpecBody, PlateSpecBody
 
 router = APIRouter(prefix="/boxes", tags=["boxes"])
 
 
+class FoilSpecBody(BaseModel):
+    tape_width_um: float = 6350.0
+    safety_um: float = 500.0
+    bead_um: float = 2000.0
+    finish: str = "bright"
+
+
+class HingeSpecBody(BaseModel):
+    style: str = "tube"
+    tube_od_um: float = 2400.0
+    rod_od_um: float = 1600.0
+    segments: int = 5
+    coverage: float = 0.8
+
+
 class BoxSpecBody(BaseModel):
-    width_um: float = 30000.0
-    height_um: float = 30000.0
-    depth_um: float = 30000.0
-    weld_margin_um: float = 1000.0
+    """BoxSpec v2 — defaults MUST mirror the backend dataclasses and the
+    frontend ``defaultBoxSpec()`` exactly."""
+
+    width_um: float = 50000.0
+    depth_um: float = 50000.0
+    height_um: float = 40000.0
+    glass: GlassSpecBody = Field(default_factory=GlassSpecBody)
+    foil: FoilSpecBody = Field(default_factory=FoilSpecBody)
+    hinge: HingeSpecBody = Field(default_factory=HingeSpecBody)
     faces: dict[str, PlateSpecBody] = Field(default_factory=dict)
     label: str = ""
 
@@ -46,6 +66,9 @@ def generate(req: GenerateBoxRequest) -> dict[str, Any]:
     spec = req.to_spec()
     try:
         return materialize_box(spec, box_id=req.box_id, force=req.force)
+    except ValueError as e:
+        # Assembly validation failures carry actionable, user-facing text.
+        raise HTTPException(400, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"Box generation failed: {e!r}") from e
 

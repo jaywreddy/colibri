@@ -10,7 +10,7 @@ varying vec3 vNormalWorld;
 uniform sampler2D uFront;
 uniform sampler2D uBack;
 
-uniform float uExtentUm;       // physical width of the plate surface (μm)
+uniform vec2 uExtentUm;        // physical (width, height) of the plate surface (μm)
 uniform float uThicknessUm;    // substrate thickness
 uniform float uN;              // refractive index of substrate
 

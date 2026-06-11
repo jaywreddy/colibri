@@ -3,8 +3,9 @@ that binary silhouettes convert to non-empty MultiPolygons via raster_to_polygon
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from app.patterns._helpers import raster_to_polygons
+from app.patterns._helpers import MAX_LATTICE_CELLS, raster_to_polygons
 from app.patterns.motifs import (
     colibri,
     emerald,
@@ -23,6 +24,19 @@ def test_shapely_motifs_produce_nonempty_geometry():
     for name, mp in checks:
         assert not mp.is_empty, f"{name} produced empty geometry"
         assert mp.area > 0, f"{name} produced zero-area geometry"
+
+
+def test_lattice_budget_guard_rejects_machine_killing_params():
+    """extent 5000 um at period 4 um is inside the UI slider ranges but would
+    build ~15M GEOS polygons (~tens of GB commit) — it froze and bugchecked
+    the dev machine on 2026-06-10. The guard must refuse with an actionable
+    ValueError instead of building the lattice."""
+    with pytest.raises(ValueError, match="lattice cells"):
+        wayuu.kanasu_diamonds((5000.0, 5000.0), period_um=4.0)
+    with pytest.raises(ValueError, match="lattice cells"):
+        emerald.hex_facets((5000.0, 5000.0), period_um=2.0)
+    # Defaults stay comfortably inside the budget.
+    assert (2 * (int(np.hypot(2000, 2000) * 1.1 / 20.0) + 3) + 1) ** 2 < MAX_LATTICE_CELLS
 
 
 def test_binary_silhouettes_are_non_trivial():

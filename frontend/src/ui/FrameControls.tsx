@@ -1,27 +1,13 @@
 import { useStore } from '../store';
 import { log } from '../logger';
 import type { FaceId, FrameSpec } from '../api';
-
-const ROW: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-  fontSize: 12,
-};
-
-const INPUT: React.CSSProperties = {
-  background: '#141820',
-  border: '1px solid #2a2f36',
-  color: '#e8eaed',
-  borderRadius: 4,
-  padding: '4px 6px',
-  fontSize: 12,
-};
+import { NumberRow, SelectRow, SliderRow, SubHeader } from './kit';
 
 /**
  * Frame dials for one face — algorithm picker, theme picker, density/bloom/
- * foliage sliders, and the seed control. All edits go to `patchFaceFrame`;
- * the parent (FaceEditor) debounces regeneration of the box manifest.
+ * foliage sliders, frame band, and the seed control. All edits go to
+ * `patchFaceFrame`; App debounces regeneration of the box manifest. (The
+ * one-click seed shuffle lives next to "Apply to all faces" in FaceEditor.)
  */
 export default function FrameControls({ faceId }: { faceId: FaceId }) {
   const face = useStore((s) => s.boxSpec.faces[faceId]);
@@ -38,115 +24,70 @@ export default function FrameControls({ faceId }: { faceId: FaceId }) {
   };
 
   return (
-    <div data-testid="frame-controls" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ fontSize: 11, letterSpacing: 1.5, opacity: 0.7 }}>FRAME</div>
+    <div data-testid="frame-controls">
+      <SubHeader>FRAME</SubHeader>
 
-      <label style={ROW}>
-        <span>Algorithm</span>
-        <select
-          value={f.algorithm}
-          onChange={(e) =>
-            patchFaceFrame(faceId, { algorithm: e.target.value as FrameSpec['algorithm'] })
-          }
-          style={INPUT}
-        >
-          <option value="colonize">Space colonization</option>
-        </select>
-      </label>
+      <SelectRow
+        label="Algorithm"
+        value={f.algorithm}
+        options={[{ value: 'colonize', label: 'Space colonization' }]}
+        onChange={(v) => patchFaceFrame(faceId, { algorithm: v as FrameSpec['algorithm'] })}
+      />
 
-      <label style={ROW}>
-        <span>Theme</span>
-        <select
-          value={f.theme}
-          onChange={(e) =>
-            patchFaceFrame(faceId, { theme: e.target.value as FrameSpec['theme'] })
-          }
-          style={INPUT}
-        >
-          <option value="esmeralda">Esmeralda (Colombian)</option>
-        </select>
-      </label>
+      <SelectRow
+        label="Theme"
+        value={f.theme}
+        options={[{ value: 'esmeralda', label: 'Esmeralda (Colombian)' }]}
+        onChange={(v) => patchFaceFrame(faceId, { theme: v as FrameSpec['theme'] })}
+      />
 
-      <label style={ROW}>
-        <span>
-          Density
-          <span style={{ float: 'right', opacity: 0.7, fontSize: 10 }}>{f.density.toFixed(2)}</span>
-        </span>
-        <input
-          type="range"
-          min={0.4}
-          max={1.8}
-          step={0.05}
-          value={f.density}
-          onChange={(e) => setNum('density', parseFloat(e.target.value))}
-        />
-      </label>
+      <SliderRow
+        label="Density"
+        value={f.density}
+        min={0.4}
+        max={1.8}
+        step={0.05}
+        decimals={2}
+        onChange={(v) => setNum('density', v)}
+      />
 
-      <label style={ROW}>
-        <span>
-          Bloom
-          <span style={{ float: 'right', opacity: 0.7, fontSize: 10 }}>{f.bloom.toFixed(2)}</span>
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={1.6}
-          step={0.05}
-          value={f.bloom}
-          onChange={(e) => setNum('bloom', parseFloat(e.target.value))}
-        />
-      </label>
+      <SliderRow
+        label="Bloom"
+        value={f.bloom}
+        min={0}
+        max={1.6}
+        step={0.05}
+        decimals={2}
+        onChange={(v) => setNum('bloom', v)}
+      />
 
-      <label style={ROW}>
-        <span>
-          Foliage
-          <span style={{ float: 'right', opacity: 0.7, fontSize: 10 }}>{f.foliage.toFixed(2)}</span>
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={1.4}
-          step={0.05}
-          value={f.foliage}
-          onChange={(e) => setNum('foliage', parseFloat(e.target.value))}
-        />
-      </label>
+      <SliderRow
+        label="Foliage"
+        value={f.foliage}
+        min={0}
+        max={1.4}
+        step={0.05}
+        decimals={2}
+        onChange={(v) => setNum('foliage', v)}
+      />
 
-      <label style={ROW}>
-        <span>
-          Frame band (μm){' '}
-          <span style={{ float: 'right', opacity: 0.7, fontSize: 10 }}>
-            {f.band_um == null ? 'auto' : f.band_um.toFixed(0)}
-          </span>
-        </span>
-        <input
-          type="range"
-          min={500}
-          max={6000}
-          step={100}
-          value={f.band_um ?? Math.round(0.12 * Math.min(face.width_um, face.height_um))}
-          onChange={(e) => setNum('band_um', parseFloat(e.target.value))}
-        />
-      </label>
+      <SliderRow
+        label={f.band_um == null ? 'Frame band (auto)' : 'Frame band'}
+        value={f.band_um ?? Math.round(0.12 * Math.min(face.width_um, face.height_um))}
+        min={500}
+        max={6000}
+        step={100}
+        unit="μm"
+        decimals={0}
+        onChange={(v) => setNum('band_um', v)}
+      />
 
-      <label style={ROW}>
-        <span>Seed</span>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <input
-            type="number"
-            value={f.seed}
-            onChange={(e) => setNum('seed', parseInt(e.target.value, 10) || 0)}
-            style={{ ...INPUT, flex: 1 }}
-          />
-          <button
-            onClick={() => setNum('seed', Math.floor(Math.random() * 0x7fffffff))}
-            style={{ ...INPUT, cursor: 'pointer', padding: '4px 10px' }}
-            title="Random seed"
-          >
-            🎲
-          </button>
-        </div>
-      </label>
+      <NumberRow
+        label="Seed"
+        value={f.seed}
+        onChange={(v) => setNum('seed', Math.floor(v))}
+        testId="frame-seed"
+      />
     </div>
   );
 }

@@ -4,14 +4,24 @@ A ``PlateSpec`` is the user-level recipe for one glass plate:
   * a central pattern slug + params (any existing Pattern subclass), and
   * a frame spec (theme, algorithm, dials, seed) wrapping it.
 
-``compose_plate`` runs the central pattern's generator at the aperture extent,
-then unions the rendered frame onto the front gold layer. The back layer is
-untouched — frames are decorative metallization on the viewer-facing side.
+The runtime path is ``materialize_plate`` -> ``_raster_compose_plate``: the
+cached central-pattern PNGs and a RasterPen-rendered frame composite straight
+into PIL images (no Shapely on the hot path). ``compose_plate`` is the
+polygon-space equivalent, kept for tests; it CONCATENATES the frame polygons
+onto the front gold layer (never ``unary_union`` — see ``_concat_polygons``).
+The back layer is untouched — frames are decorative metallization on the
+viewer-facing side.
 
-The plate's total extent is ``(width_um, height_um)``; the inner aperture is
-``(width - 2·band, height - 2·band)``. The central pattern always generates
-square at ``min(aperture)`` so existing patterns (all of which take a single
-``extent_um`` scalar) drop in without changes.
+SVGs are NOT built at materialize time: ``ensure_plate_svg`` builds the fab
+pair lazily on first export request (the polygon/SVG path is ~40× slower
+than raster and the interactive UI never needs it).
+
+Plate layout: the ``weld_margin_um`` rim around the plate edge stays blank
+glass (reserved for copper foil + solder); the frame band sits inside that
+on the *active rect*; the square central aperture sits inside the band at
+``min(active) - 2·band``. The central pattern always generates square so
+existing patterns (all of which take a single ``extent_um`` scalar) drop in
+without changes.
 """
 from __future__ import annotations
 
@@ -36,7 +46,7 @@ from .patterns.frames import (
     scene_to_multipolygon,
 )
 from .patterns.frames.api import FrameParams
-from .rasterize import make_thumbnail, rasterize
+from .rasterize import make_thumbnail
 from .service import DATA_ROOT, materialize as materialize_pattern
 
 
@@ -270,7 +280,6 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     merged_params = {**central_cls.defaults(), **spec.pattern_params}
 
     central_manifest = materialize_pattern(spec.pattern_slug, merged_params)
-    central_extent = central_manifest["extent_um"]
     central_pitch = central_manifest["pixel_pitch_um"]
     central_front_path = DATA_ROOT / central_manifest["files"]["front_png"].lstrip("/").removeprefix("data/")
     central_back_path = DATA_ROOT / central_manifest["files"]["back_png"].lstrip("/").removeprefix("data/")
@@ -356,9 +365,18 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     thumb = make_thumbnail(front, back, size=320)
     thumb.save(out_dir / "thumbnail.png")
 
+    # The frame scene (potentially MBs of segment dicts) goes to a sidecar,
+    # NOT into manifest.json: embedding it made every plate manifest 0.4-2.3
+    # MB and dominated both the warm box regen (6 × json decode) and the cold
+    # compose's manifest encode. Nothing at runtime consumes it — the
+    # frontend never reads it, export strips it, and ensure_plate_svg
+    # regenerates the scene deterministically from the spec — so the sidecar
+    # is purely for debugging/inspection.
+    frame_scene = scene.to_dict() if scene is not None else {"segments": [], "flowers": [], "leaves": [], "max_t": 0.0}
+    (out_dir / "scene.json").write_text(json.dumps(frame_scene))
+
     return {
         "central_manifest": central_manifest,
-        "frame_scene": scene.to_dict() if scene is not None else {"segments": [], "flowers": [], "leaves": [], "max_t": 0.0},
         "pixel_pitch_um": plate_pitch,
         "min_feature_um": central_manifest["min_feature_um"],
     }
@@ -408,10 +426,9 @@ def materialize_plate(spec: PlateSpec, force: bool = False) -> dict[str, Any]:
             "aperture_um": _aperture(spec),
         },
         "render_recipe": central_cls.render_recipe,
-        "recipe_data": {
-            **central_manifest.get("recipe_data", {}),
-            "frame_scene": raster_result["frame_scene"],
-        },
+        # frame_scene deliberately NOT embedded — see _raster_compose_plate
+        # (scene.json sidecar keeps the manifest ~20 KB instead of ~MBs).
+        "recipe_data": dict(central_manifest.get("recipe_data", {})),
         "files": {
             "front_png": f"/data/plates/{pid}/front.png",
             "back_png": f"/data/plates/{pid}/back.png",

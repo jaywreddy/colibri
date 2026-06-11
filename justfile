@@ -25,9 +25,17 @@ frontend:
 seed:
     cd backend; uv run python -c "from app.service import seed_defaults; seed_defaults()"
 
-# Backend pytest (Layer 1)
-test-backend:
-    cd backend; uv run --extra dev pytest -q
+# Run as 4 SEQUENTIAL chunks, never the whole suite in one process: each
+# chunk peaks ~1 GB and the 13.7 GB host has bugchecked under heavy parallel
+# compute (see CLAUDE.md). Chunk order keeps the heavy files
+# (plates_and_boxes, api_patterns, frames, patterns_roundtrip) paired with at
+# most one other file; chunk 2 is six light/fast files.
+# Backend pytest (Layer 1) — 4 sequential memory-safe chunks
+test-backend flags="":
+    cd backend; uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_export_gds_stub.py tests/test_theme_metadata.py tests/test_variant_hash.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_sim_numerics.py -q {{flags}}
 
 # Frontend vitest (Layer 2)
 test-unit:
@@ -56,9 +64,10 @@ test-visual-verify: test-visual
 # All three test layers, sequentially
 test-all: test-backend test-unit test-e2e
 
+# Backend runs the same safe chunk order as test-backend, with --maxfail=1
+# inside each chunk.
 # CI variant — fail-fast, machine-readable reporters
-test-ci:
-    cd backend; uv run --extra dev pytest -q --maxfail=1
+test-ci: (test-backend "--maxfail=1")
     cd frontend; pnpm test:unit --reporter=verbose
     cd frontend; $env:CI='1'; pnpm test:e2e --reporter=dot
 

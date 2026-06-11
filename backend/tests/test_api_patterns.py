@@ -40,14 +40,33 @@ def test_generate_is_idempotent_on_same_params(client: TestClient) -> None:
     assert r1.json()["variant"] == r2.json()["variant"]
 
 
-def test_generate_writes_front_back_svg_png_and_thumbnail(
+def test_generate_writes_pngs_and_thumbnail_with_lazy_svg(
     client: TestClient, isolated_data_root: Path
 ) -> None:
     r = client.post("/patterns/generate", json={"slug": "wayuu-kanasu-moire", "params": {}})
     m = r.json()
     variant_dir = isolated_data_root / m["slug"] / m["variant"]
-    for name in ("front.png", "back.png", "front.svg", "back.svg", "thumbnail.png", "manifest.json"):
+    for name in ("front.png", "back.png", "thumbnail.png", "manifest.json"):
         assert (variant_dir / name).exists(), f"missing {name}"
+    # SVG is lazy (mirrors the plate manifest contract): empty URL fields and
+    # no files on disk until the on-demand endpoint is hit.
+    assert m["files"]["front_svg"] == ""
+    assert m["files"]["back_svg"] == ""
+    assert not (variant_dir / "front.svg").exists()
+    assert not (variant_dir / "back.svg").exists()
+
+    r2 = client.get(f"/patterns/{m['slug']}/{m['variant']}/svg")
+    assert r2.status_code == 200, r2.text
+    m2 = r2.json()
+    assert m2["files"]["front_svg"] == f"/data/{m['slug']}/{m['variant']}/front.svg"
+    assert m2["files"]["back_svg"] == f"/data/{m['slug']}/{m['variant']}/back.svg"
+    assert (variant_dir / "front.svg").exists()
+    assert (variant_dir / "back.svg").exists()
+
+
+def test_svg_endpoint_404s_for_unknown_variant(client: TestClient) -> None:
+    r = client.get("/patterns/wayuu-kanasu-moire/no-such-variant/svg")
+    assert r.status_code == 404
 
 
 def test_unknown_slug_returns_404(client: TestClient) -> None:

@@ -6,7 +6,8 @@ raster path is ~100× faster because PIL's ImageDraw is implemented in C and
 takes raw vertex tuples without object construction.
 
 Frames don't need vector output for the live preview / fab PNG, so we feed
-this pen during materialize_plate. SVG export still uses ShapelyPen.
+this pen during materialize_plate. The lazy SVG export uses ``SvgPen``
+(svg_pen.py); ``ShapelyPen`` remains for polygon-space consumers/tests.
 """
 from __future__ import annotations
 

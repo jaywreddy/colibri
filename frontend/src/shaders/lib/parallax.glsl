@@ -7,7 +7,12 @@
 // this — moire_interactive, stereo_lenticular, and phase_shift_overlay all
 // reduce to "sample two layers separated by a refracting slab", just with
 // different downstream logic.
-vec2 parallax_offset(vec3 viewTangent, float thicknessUm, float n, float extentUm) {
+//
+// `extentUm` is the plate's physical (width, height): UV u spans the width
+// and UV v the height, so the um shift converts to UV per-axis. Ring-box
+// wall plates are non-square — a scalar extent would distort the v-axis
+// fringe motion by width/height.
+vec2 parallax_offset(vec3 viewTangent, float thicknessUm, float n, vec2 extentUm) {
   // lateral shift through a slab: t · tan(θ_refracted)
   // with Snell's law sin(θ_refracted) = sin(θ_view) / n.
   vec2 lateral = viewTangent.xy;
@@ -17,5 +22,5 @@ vec2 parallax_offset(vec3 viewTangent, float thicknessUm, float n, float extentU
   float cosSub = sqrt(max(0.0, 1.0 - sinSub * sinSub));
   vec2 dirSub = lateral / sinV;              // unit vector along the lateral axis
   vec2 shiftUm = dirSub * (thicknessUm * sinSub / max(0.05, cosSub));
-  return shiftUm / extentUm;
+  return shiftUm / extentUm;                 // componentwise um -> UV
 }

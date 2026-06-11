@@ -21,6 +21,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Sequence
 
+import numpy as np
+
 from ..geometry import Mulberry32, RectFrame, ValueNoise2D
 from ..scene import FlowerSprite, LeafSprite, Scene, Segment
 
@@ -98,40 +100,47 @@ def generate(
         rect.perim_info(2 * rect.width_um + 1.5 * rect.height_um),     # left mid
     ]
     nodes: list[_Node] = []
+    node_xy: list[tuple[float, float]] = []  # parallel coords for numpy
     for (px, py), _, (nx, ny) in perim_anchors:
         # Nudge inward by one segment so the first growth step doesn't try
         # to leave the rectangle through the frame.
-        nodes.append(_Node(
-            x=px + nx * segment_len * 0.5,
-            y=py + ny * segment_len * 0.5,
-            parent=None,
-            t=0.0,
-        ))
+        x = px + nx * segment_len * 0.5
+        y = py + ny * segment_len * 0.5
+        nodes.append(_Node(x=x, y=y, parent=None, t=0.0))
+        node_xy.append((x, y))
 
     # --- iterate -------------------------------------------------------------
-    attractors_live = list(attractors)
+    # The attraction scan is numpy-vectorized: an (A × N) distance matrix with
+    # np.argmin replaces the O(attractors × nodes) Python loop (the dominant
+    # cost of a cold plate compose). np.argmin's first-occurrence tie-break
+    # matches the loop's strict-< first-index semantics, and elementwise
+    # dx*dx+dy*dy is IEEE-identical to the scalar code, so output scenes are
+    # byte-identical to the original implementation. The per-attractor pull
+    # accumulation stays a (short) Python loop in attractor order to preserve
+    # float accumulation order and dict insertion order (hence RNG call order).
+    A = np.asarray(attractors, dtype=np.float64)  # (A, 2), live attractors
+    ar2 = attraction_r * attraction_r
+    kr2 = kill_r * kill_r
     iteration = 0
-    while iteration < max_iter and attractors_live:
-        # For each attractor, find the nearest node within attraction_r.
+    while iteration < max_iter and len(A):
+        N = np.asarray(node_xy, dtype=np.float64)  # (N, 2)
+        dx_m = A[:, 0, None] - N[None, :, 0]       # (A, N)
+        dy_m = A[:, 1, None] - N[None, :, 1]
+        d2_m = dx_m * dx_m + dy_m * dy_m
+        best_idx = np.argmin(d2_m, axis=1)
+        best_d2 = d2_m[np.arange(len(A)), best_idx]
+        influenced = best_d2 < ar2
+
         node_pull: dict[int, list[float]] = {}  # node_idx -> [vx, vy, count]
-        for ax, ay in attractors_live:
-            best_idx = -1
-            best_d2 = attraction_r * attraction_r
-            for idx, n in enumerate(nodes):
-                dx = ax - n.x
-                dy = ay - n.y
-                d2 = dx * dx + dy * dy
-                if d2 < best_d2:
-                    best_d2 = d2
-                    best_idx = idx
-            if best_idx >= 0:
-                dx = ax - nodes[best_idx].x
-                dy = ay - nodes[best_idx].y
-                inv = 1.0 / max(math.hypot(dx, dy), 1e-9)
-                bucket = node_pull.setdefault(best_idx, [0.0, 0.0, 0.0])
-                bucket[0] += dx * inv
-                bucket[1] += dy * inv
-                bucket[2] += 1.0
+        for ai in np.nonzero(influenced)[0]:
+            bi = int(best_idx[ai])
+            dx = A[ai, 0] - nodes[bi].x
+            dy = A[ai, 1] - nodes[bi].y
+            inv = 1.0 / max(math.hypot(dx, dy), 1e-9)
+            bucket = node_pull.setdefault(bi, [0.0, 0.0, 0.0])
+            bucket[0] += dx * inv
+            bucket[1] += dy * inv
+            bucket[2] += 1.0
 
         if not node_pull:
             break
@@ -169,27 +178,20 @@ def generate(
         for parent_idx, new_x, new_y in new_node_positions:
             child_idx = len(nodes)
             nodes.append(_Node(x=new_x, y=new_y, parent=parent_idx, t=float(iteration)))
+            node_xy.append((new_x, new_y))
             nodes[parent_idx].children.append(child_idx)
 
         # Kill attractors within kill_r of any FRESH node from this iteration.
         # Old nodes already killed their neighbors in prior iterations, so
         # re-checking the whole node list every iteration is wasted work
         # (and made the algorithm O(iter * N_attractors * N_nodes) — the
-        # OOM-er at default density on a 6-face box).
-        kr2 = kill_r * kill_r
-        fresh_xy = [(nx, ny) for _, nx, ny in new_node_positions]
-        surviving: list[tuple[float, float]] = []
-        for ax, ay in attractors_live:
-            killed = False
-            for nx, ny in fresh_xy:
-                dx = ax - nx
-                dy = ay - ny
-                if dx * dx + dy * dy < kr2:
-                    killed = True
-                    break
-            if not killed:
-                surviving.append((ax, ay))
-        attractors_live = surviving
+        # OOM-er at default density on a 6-face box). Vectorized: boolean
+        # any() over the (A × fresh) distance matrix is order-independent.
+        F = np.asarray([(fx, fy) for _, fx, fy in new_node_positions], dtype=np.float64)
+        fdx = A[:, 0, None] - F[None, :, 0]
+        fdy = A[:, 1, None] - F[None, :, 1]
+        killed = ((fdx * fdx + fdy * fdy) < kr2).any(axis=1)
+        A = A[~killed]
 
     # --- compute subtree sizes for line-width modulation ---------------------
     # Post-order traversal: children first, then parent.
@@ -203,7 +205,7 @@ def generate(
     base_w = 0.0035 * short   # μm, thinnest tip stroke
     max_w = 0.011 * short     # μm, trunk
     max_subtree = max((n.subtree for n in nodes), default=1)
-    for i, n in enumerate(nodes):
+    for n in nodes:
         if n.parent is None:
             continue
         p = nodes[n.parent]
@@ -224,7 +226,7 @@ def generate(
     flower_types = list(flower_types) or ["orchid"]
     leaf_types = list(leaf_types) or ["fern"]
 
-    for i, n in enumerate(nodes):
+    for n in nodes:
         is_tip = not n.children and n.parent is not None
         if is_tip:
             roll = rng.next_float()

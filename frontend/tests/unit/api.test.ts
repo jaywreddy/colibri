@@ -52,4 +52,57 @@ describe('api', () => {
     );
     await expect(api.listPatterns()).rejects.toThrow(/500/);
   });
+
+  it('generateBox POSTs the v2 spec envelope with box_id and force', async () => {
+    const spy = mockFetchOk({ kind: 'box', id: 'x' });
+    vi.stubGlobal('fetch', spy);
+    await api.generateBox(api.defaultBoxSpec(), { boxId: 'my-box', force: true });
+    const [url, opts] = spy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/boxes/generate');
+    expect(opts.method).toBe('POST');
+    const body = JSON.parse(opts.body as string);
+    expect(body.box_id).toBe('my-box');
+    expect(body.force).toBe(true);
+    expect(body.width_um).toBe(50000);
+    expect(body.glass.n).toBe(1.46);
+    expect(body.foil.tape_width_um).toBe(6350);
+    expect(body.hinge.style).toBe('tube');
+    expect(Object.keys(body.faces)).toHaveLength(6);
+  });
+});
+
+describe('defaultBoxSpec (contract defaults)', () => {
+  it('matches the v2 contract exactly', () => {
+    const s = api.defaultBoxSpec();
+    expect(s.width_um).toBe(50000);
+    expect(s.depth_um).toBe(50000);
+    expect(s.height_um).toBe(40000);
+    expect(s.glass).toEqual({ thickness_um: 500, material: 'fused silica', n: 1.46 });
+    expect(s.foil).toEqual({
+      tape_width_um: 6350,
+      safety_um: 500,
+      bead_um: 2000,
+      finish: 'bright',
+    });
+    expect(s.hinge).toEqual({
+      style: 'tube',
+      tube_od_um: 2400,
+      rod_od_um: 1600,
+      segments: 5,
+      coverage: 0.8,
+    });
+    expect(s.label).toBe('');
+  });
+
+  it('puts wayuu-kanasu-moire with frame seeds 100+i on all six faces', () => {
+    const s = api.defaultBoxSpec();
+    api.FACE_IDS.forEach((fid, i) => {
+      const f = s.faces[fid]!;
+      expect(f.pattern_slug).toBe('wayuu-kanasu-moire');
+      expect(f.frame.seed).toBe(100 + i);
+      expect(f.glass).toEqual(s.glass);
+      // stamped keep-out: (6350-500)/2 + 500
+      expect(f.weld_margin_um).toBe(3425);
+    });
+  });
 });

@@ -1,4 +1,7 @@
 import { log } from './logger';
+// NOTE: assembly.ts imports only *types* from this module, so this is not a
+// runtime cycle — stampFaces keeps fresh BoxSpecs internally consistent.
+import { stampFaces } from './assembly';
 
 export type ParamSpec = {
   name: string;
@@ -115,13 +118,15 @@ export async function generatePattern(
 }
 
 // -----------------------------------------------------------------------------
-// Plates + boxes — Phase I.5 / J. These wrap composed PlateSpec / BoxSpec
-// objects; manifests share the recipe + texture surface of PatternManifest so
-// existing scene code can render them unchanged.
+// Ring Box Studio — BoxSpec / BoxManifest v2 per the design contract.
+// All stored/API values in micrometers (um). UI displays mm (1 decimal).
 // -----------------------------------------------------------------------------
 
 export type FaceId = 'front' | 'back' | 'top' | 'bottom' | 'left' | 'right';
 export const FACE_IDS: FaceId[] = ['front', 'back', 'top', 'bottom', 'left', 'right'];
+
+/** Default pattern slug stamped onto all six faces of a fresh box. */
+export const DEFAULT_PATTERN_SLUG = 'wayuu-kanasu-moire';
 
 export type FrameSpec = {
   algorithm: 'colonize';
@@ -139,6 +144,40 @@ export type GlassSpec = {
   n: number;
 };
 
+export type FoilFinish = 'bright' | 'copper' | 'patina';
+
+export type FoilSpec = {
+  /** Copper foil tape width. Presets: 4763 (3/16"), 5556 (7/32"), 6350 (1/4"). */
+  tape_width_um: number;
+  /** Extra pattern keep-out beyond the tape overlap. */
+  safety_um: number;
+  /** Solder bead DIAMETER for the preview render. */
+  bead_um: number;
+  finish: FoilFinish;
+};
+
+export const FOIL_TAPE_PRESETS_UM = [
+  { label: '3/16″', um: 4763 },
+  { label: '7/32″', um: 5556 },
+  { label: '1/4″', um: 6350 },
+] as const;
+
+export type HingeSpec = {
+  /** Brass tube-and-rod. */
+  style: 'tube';
+  tube_od_um: number;
+  rod_od_um: number;
+  /** Odd, >= 3; segments alternate body,lid,body,... (both ends body). */
+  segments: number;
+  /** Fraction of box width W spanned by the tube run, centered. */
+  coverage: number;
+};
+
+/**
+ * PlateSpec keeps its pre-box shape, BUT glass, width/height and weld_margin
+ * are STAMPED from box level by normalization — they are not independent
+ * degrees of freedom inside a box.
+ */
 export type PlateSpec = {
   pattern_slug: string;
   pattern_params: Record<string, unknown>;
@@ -146,8 +185,7 @@ export type PlateSpec = {
   glass: GlassSpec;
   width_um: number;
   height_um: number;
-  /** Blank rim around every edge reserved for assembly welds — no gold
-   * is patterned inside this border. Default 1 mm. */
+  /** Blank rim reserved for foil overlap + safety — no gold patterned inside. */
   weld_margin_um: number;
   label: string;
 };
@@ -176,12 +214,35 @@ export type PlateManifest = {
 };
 
 export type BoxSpec = {
+  /** Outer X. */
   width_um: number;
-  height_um: number;
+  /** Outer Z. */
   depth_um: number;
-  weld_margin_um: number;
+  /** Outer Y. */
+  height_um: number;
+  /** Box-level glass — applies to all six plates. */
+  glass: GlassSpec;
+  foil: FoilSpec;
+  hinge: HingeSpec;
   faces: Partial<Record<FaceId, PlateSpec>>;
   label: string;
+};
+
+export type CutListEntry = {
+  face: FaceId;
+  width_um: number;
+  height_um: number;
+  width_mm: number;
+  height_mm: number;
+};
+
+export type BoxAssemblyInfo = {
+  keepout_um: number;
+  overlap_um: number;
+  glass_thickness_um: number;
+  cut_list: CutListEntry[];
+  seams: number | unknown[];
+  hinge: HingeSpec & { run_length_um: number; segment_length_um: number };
 };
 
 export type BoxManifest = {
@@ -189,10 +250,16 @@ export type BoxManifest = {
   id: string;
   spec: BoxSpec;
   name: string;
+  /** Per-face manifests with recipe_data slimmed (no "frame_scene"). */
   faces: Partial<Record<FaceId, PlateManifest>>;
   dimensions_um: { width: number; height: number; depth: number };
+  assembly: BoxAssemblyInfo;
   content_hash: string;
 };
+
+// -----------------------------------------------------------------------------
+// Defaults — MUST match the backend dataclass defaults exactly.
+// -----------------------------------------------------------------------------
 
 export function defaultFrameSpec(seed = 1): FrameSpec {
   return {
@@ -210,50 +277,45 @@ export function defaultGlassSpec(): GlassSpec {
   return { thickness_um: 500.0, material: 'fused silica', n: 1.46 };
 }
 
+export function defaultFoilSpec(): FoilSpec {
+  return { tape_width_um: 6350.0, safety_um: 500.0, bead_um: 2000.0, finish: 'bright' };
+}
+
+export function defaultHingeSpec(): HingeSpec {
+  return { style: 'tube', tube_od_um: 2400.0, rod_od_um: 1600.0, segments: 5, coverage: 0.8 };
+}
+
 export function defaultPlateSpec(patternSlug: string, seed = 1): PlateSpec {
   return {
     pattern_slug: patternSlug,
     pattern_params: {},
     frame: defaultFrameSpec(seed),
     glass: defaultGlassSpec(),
-    // 30 mm (3 cm) plate edge — a hand-size piece with plenty of room for
-    // the central optical pattern + decorative frame + 1 mm weld border.
-    width_um: 30000,
-    height_um: 30000,
+    width_um: 50000,
+    height_um: 50000,
     weld_margin_um: 1000,
     label: '',
   };
 }
 
-export function defaultBoxSpec(patternSlug: string): BoxSpec {
+export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxSpec {
   const faces: Partial<Record<FaceId, PlateSpec>> = {};
   FACE_IDS.forEach((fid, i) => {
     faces[fid] = defaultPlateSpec(patternSlug, 100 + i);
   });
-  return {
-    width_um: 30000,
-    height_um: 30000,
-    depth_um: 30000,
-    weld_margin_um: 1000,
+  const spec: BoxSpec = {
+    width_um: 50000.0,
+    depth_um: 50000.0,
+    height_um: 40000.0,
+    glass: defaultGlassSpec(),
+    foil: defaultFoilSpec(),
+    hinge: defaultHingeSpec(),
     faces,
     label: '',
   };
-}
-
-export async function listPlates(): Promise<PlateManifest[]> {
-  const r = await tracedFetch('/plates');
-  if (!r.ok) throw new Error(`listPlates: ${r.status}`);
-  return r.json();
-}
-
-export async function generatePlate(spec: PlateSpec, force = false): Promise<PlateManifest> {
-  const r = await tracedFetch('/plates/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ spec, force }),
-  });
-  if (!r.ok) throw new Error(`generatePlate: ${r.status} ${await r.text()}`);
-  return r.json();
+  // Stamp glass / cut dims / keep-out into the faces so the spec is
+  // internally consistent before it ever reaches the backend.
+  return stampFaces(spec);
 }
 
 export async function listBoxes(): Promise<BoxManifest[]> {
@@ -280,9 +342,4 @@ export async function generateBox(
   });
   if (!r.ok) throw new Error(`generateBox: ${r.status} ${await r.text()}`);
   return r.json();
-}
-
-export async function deleteBox(boxId: string): Promise<void> {
-  const r = await tracedFetch(`/boxes/${boxId}`, { method: 'DELETE' });
-  if (!r.ok) throw new Error(`deleteBox: ${r.status}`);
 }

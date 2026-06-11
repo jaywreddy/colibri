@@ -1,8 +1,6 @@
 """Anthurium: glossy heart-shaped spathe with a protruding spadix."""
 from __future__ import annotations
 
-import math
-
 from ...geometry import Mulberry32
 from ...pen import Pen
 

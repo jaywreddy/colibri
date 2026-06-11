@@ -1,0 +1,315 @@
+/**
+ * Client-side mirror of the Ring Box assembly contract (v2).
+ *
+ * Pure functions over a BoxSpec — no three.js, no React. The formulas here
+ * are IDENTICAL to backend/app/assembly.py per the design contract; both
+ * sides must produce the same numbers for the same spec. The 3D scene
+ * (src/scene/BoxScene.tsx) and the cut-list UI (src/ui/BuildPanel.tsx) both
+ * consume this module so geometry updates are instant and never wait on the
+ * backend.
+ *
+ * All values are micrometers (um) unless suffixed _mm. Coordinates are
+ * Y-up with the origin at the box center.
+ */
+import type { BoxSpec, FaceId, FoilFinish, PlateSpec } from './api';
+
+/** Gap between hinge tube segments along the axis (um). */
+export const SEGMENT_GAP_UM = 400;
+
+/**
+ * Minimum patternable aperture (um) a plate must keep after the keep-out rim
+ * is subtracted from both sides — "a few mm" per the contract.
+ */
+export const MIN_APERTURE_UM = 3000;
+
+/** Preview colors for the three solder/foil finish options. */
+export const FOIL_COLORS: Record<FoilFinish, string> = {
+  bright: '#c9ced6',
+  copper: '#b87333',
+  patina: '#34343a',
+};
+
+/** mm rounding for derived cut-list fields — 3 decimals, matching backend
+ * ``round(x / 1000.0, 3)`` exactly. Display formatting stays in the UI. */
+const round3 = (x: number): number => Math.round(x * 1000) / 1000;
+
+// -----------------------------------------------------------------------------
+// Foil overlap + pattern keep-out
+// -----------------------------------------------------------------------------
+
+/** Copper tape overlap onto each plate face: (tape_width - t) / 2, floored at 0. */
+export function overlapUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
+  return Math.max(0, (spec.foil.tape_width_um - spec.glass.thickness_um) / 2);
+}
+
+/** Pattern keep-out margin per edge: foil overlap + safety. */
+export function keepoutUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
+  return overlapUm(spec) + spec.foil.safety_um;
+}
+
+// -----------------------------------------------------------------------------
+// Cut list — walls sit ON the bottom plate; lid rests on the wall rim.
+// Local dims are width x height of each rectangular plate.
+// -----------------------------------------------------------------------------
+
+export type CutPlate = {
+  face: FaceId;
+  width_um: number;
+  height_um: number;
+  width_mm: number;
+  height_mm: number;
+};
+
+export function cutList(spec: BoxSpec): CutPlate[] {
+  const t = spec.glass.thickness_um;
+  const W = spec.width_um;
+  const D = spec.depth_um;
+  const H = spec.height_um;
+  const mk = (face: FaceId, w: number, h: number): CutPlate => ({
+    face,
+    width_um: w,
+    height_um: h,
+    width_mm: round3(w / 1000),
+    height_mm: round3(h / 1000),
+  });
+  return [
+    mk('bottom', W, D),
+    mk('top', W, D),
+    mk('front', W, H - 2 * t),
+    mk('back', W, H - 2 * t),
+    mk('left', D - 2 * t, H - 2 * t),
+    mk('right', D - 2 * t, H - 2 * t),
+  ];
+}
+
+/**
+ * Estimated copper-foil tape length: every plate edge is wrapped once, so
+ * this is simply the sum of all 6 plate perimeters. Returned in centimeters
+ * for the BuildPanel readout. Pure — no rounding beyond float math.
+ */
+export function copperTapeLengthCm(spec: BoxSpec): number {
+  let totalUm = 0;
+  for (const c of cutList(spec)) totalUm += 2 * (c.width_um + c.height_um);
+  return totalUm / 10_000; // 1 cm = 10,000 um
+}
+
+/**
+ * Return a copy of the spec with the box-level degrees of freedom stamped
+ * into every face's PlateSpec: glass, cut-list width/height, and
+ * weld_margin (= keep-out). Mirrors backend normalization so the spec the
+ * frontend holds always agrees with what the backend will materialize.
+ */
+export function stampFaces(spec: BoxSpec): BoxSpec {
+  const ko = keepoutUm(spec);
+  const cuts = new Map(cutList(spec).map((c) => [c.face, c]));
+  const faces: Partial<Record<FaceId, PlateSpec>> = {};
+  for (const [fid, face] of Object.entries(spec.faces) as [FaceId, PlateSpec][]) {
+    const cut = cuts.get(fid);
+    if (!cut) continue;
+    faces[fid] = {
+      ...face,
+      glass: { ...spec.glass },
+      width_um: cut.width_um,
+      height_um: cut.height_um,
+      weld_margin_um: ko,
+    };
+  }
+  return { ...spec, faces };
+}
+
+// -----------------------------------------------------------------------------
+// Assembly positions (Y up, origin at box center)
+// -----------------------------------------------------------------------------
+
+export type PlatePlacement = {
+  face: FaceId;
+  /** Plate center in box coordinates (um). */
+  center_um: [number, number, number];
+  /** Plate-local width (along local +X) in um. */
+  width_um: number;
+  /** Plate-local height (along local +Y) in um. */
+  height_um: number;
+  thickness_um: number;
+  /**
+   * Euler rotation (radians, XYZ order) mapping plate-local axes
+   * (+X = width, +Y = height, +Z = outward normal) into box coordinates.
+   */
+  rotation: [number, number, number];
+  /** Outward normal in box coordinates. */
+  outward: [number, number, number];
+};
+
+export function platePlacements(spec: BoxSpec): PlatePlacement[] {
+  const t = spec.glass.thickness_um;
+  const hw = spec.width_um / 2;
+  const hd = spec.depth_um / 2;
+  const hh = spec.height_um / 2;
+  const cuts = new Map(cutList(spec).map((c) => [c.face, c]));
+  const mk = (
+    face: FaceId,
+    center: [number, number, number],
+    rotation: [number, number, number],
+    outward: [number, number, number]
+  ): PlatePlacement => {
+    const cut = cuts.get(face)!;
+    return {
+      face,
+      center_um: center,
+      width_um: cut.width_um,
+      height_um: cut.height_um,
+      thickness_um: t,
+      rotation,
+      outward,
+    };
+  };
+  const HALF_PI = Math.PI / 2;
+  return [
+    mk('bottom', [0, -hh + t / 2, 0], [HALF_PI, 0, 0], [0, -1, 0]),
+    mk('top', [0, hh - t / 2, 0], [-HALF_PI, 0, 0], [0, 1, 0]),
+    mk('front', [0, 0, hd - t / 2], [0, 0, 0], [0, 0, 1]),
+    mk('back', [0, 0, -hd + t / 2], [0, Math.PI, 0], [0, 0, -1]),
+    mk('left', [-hw + t / 2, 0, 0], [0, -HALF_PI, 0], [-1, 0, 0]),
+    mk('right', [hw - t / 2, 0, 0], [0, HALF_PI, 0], [1, 0, 0]),
+  ];
+}
+
+// -----------------------------------------------------------------------------
+// Soldered seams — 8 beads (4 bottom + 4 vertical corners)
+// -----------------------------------------------------------------------------
+
+export type SeamSegment = {
+  id: string;
+  axis: 'x' | 'y' | 'z';
+  start_um: [number, number, number];
+  end_um: [number, number, number];
+};
+
+export function seamSegments(spec: BoxSpec): SeamSegment[] {
+  const t = spec.glass.thickness_um;
+  const hw = spec.width_um / 2;
+  const hd = spec.depth_um / 2;
+  const hh = spec.height_um / 2;
+  const yBottom = -hh + t;
+  const yTop = hh - t;
+  return [
+    // 4 bottom seams at y = -hh + t
+    { id: 'bottom-front', axis: 'x', start_um: [-hw, yBottom, hd], end_um: [hw, yBottom, hd] },
+    { id: 'bottom-back', axis: 'x', start_um: [-hw, yBottom, -hd], end_um: [hw, yBottom, -hd] },
+    { id: 'bottom-left', axis: 'z', start_um: [-hw, yBottom, -hd], end_um: [-hw, yBottom, hd] },
+    { id: 'bottom-right', axis: 'z', start_um: [hw, yBottom, -hd], end_um: [hw, yBottom, hd] },
+    // 4 vertical corner seams, y in [-hh + t, hh - t]
+    { id: 'corner-front-left', axis: 'y', start_um: [-hw, yBottom, hd], end_um: [-hw, yTop, hd] },
+    { id: 'corner-front-right', axis: 'y', start_um: [hw, yBottom, hd], end_um: [hw, yTop, hd] },
+    { id: 'corner-back-left', axis: 'y', start_um: [-hw, yBottom, -hd], end_um: [-hw, yTop, -hd] },
+    { id: 'corner-back-right', axis: 'y', start_um: [hw, yBottom, -hd], end_um: [hw, yTop, -hd] },
+  ];
+}
+
+// -----------------------------------------------------------------------------
+// Hinge — brass tube-and-rod along the back top edge
+// -----------------------------------------------------------------------------
+
+export type HingeSegment = {
+  owner: 'body' | 'lid';
+  center_x_um: number;
+  length_um: number;
+};
+
+export type HingeLayout = {
+  tube_r_um: number;
+  rod_r_um: number;
+  /** Hinge axis: parallel to X at (axis_y, axis_z). */
+  axis_y_um: number;
+  axis_z_um: number;
+  run_length_um: number;
+  segment_length_um: number;
+  gap_um: number;
+  rod_length_um: number;
+  segments: HingeSegment[];
+};
+
+export function hingeLayout(spec: BoxSpec): HingeLayout {
+  const t = spec.glass.thickness_um;
+  const r = spec.hinge.tube_od_um / 2;
+  const n = spec.hinge.segments;
+  const L = spec.hinge.coverage * spec.width_um;
+  const segLen = (L - (n - 1) * SEGMENT_GAP_UM) / n;
+  const segments: HingeSegment[] = [];
+  for (let i = 0; i < n; i++) {
+    segments.push({
+      // Alternating body,lid,body,... — both ends body (n is odd).
+      owner: i % 2 === 0 ? 'body' : 'lid',
+      center_x_um: -L / 2 + segLen / 2 + i * (segLen + SEGMENT_GAP_UM),
+      length_um: segLen,
+    });
+  }
+  return {
+    tube_r_um: r,
+    rod_r_um: spec.hinge.rod_od_um / 2,
+    axis_y_um: spec.height_um / 2 - t / 2,
+    axis_z_um: -spec.depth_um / 2 - r,
+    run_length_um: L,
+    segment_length_um: segLen,
+    gap_um: SEGMENT_GAP_UM,
+    rod_length_um: L + 2 * spec.hinge.rod_od_um,
+    segments,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Validation
+// -----------------------------------------------------------------------------
+
+/**
+ * Validate that every plate keeps a positive patternable aperture after the
+ * keep-out rim, and that the hinge layout is realizable. Returns a list of
+ * human-readable errors; empty list = valid.
+ *
+ * MUST accept/reject exactly the same specs as the backend's
+ * ``validate_assembly`` (app/assembly.py) — anything that passes here but
+ * 400s on POST /boxes/generate is a contract bug.
+ */
+export function validateBox(spec: BoxSpec): string[] {
+  const errors: string[] = [];
+  const ko = keepoutUm(spec);
+  for (const cut of cutList(spec)) {
+    const minSide = Math.min(cut.width_um, cut.height_um);
+    if (minSide <= 0) {
+      errors.push(`Plate '${cut.face}' has non-positive size — box too small for glass thickness.`);
+      continue;
+    }
+    // Backend: min_side <= 2*ko + MIN_APERTURE_UM fails (exact boundary too).
+    const aperture = minSide - 2 * ko;
+    if (aperture <= MIN_APERTURE_UM) {
+      errors.push(
+        `Plate '${cut.face}': patternable aperture ${(aperture / 1000).toFixed(1)} mm ` +
+          `<= ${(MIN_APERTURE_UM / 1000).toFixed(1)} mm minimum ` +
+          `(keep-out ${(ko / 1000).toFixed(1)} mm per edge).`
+      );
+    }
+  }
+  const { segments: n, coverage, tube_od_um, rod_od_um } = spec.hinge;
+  if (n < 3 || n % 2 === 0) {
+    errors.push(`Hinge segments must be odd and >= 3 (got ${n}).`);
+  }
+  if (!(coverage > 0 && coverage <= 1)) {
+    errors.push(`Hinge coverage must be in (0, 1] of the box width (got ${coverage}).`);
+  }
+  if (rod_od_um >= tube_od_um) {
+    errors.push(
+      `Hinge rod OD (${(rod_od_um / 1000).toFixed(2)} mm) must be smaller than the tube OD ` +
+        `(${(tube_od_um / 1000).toFixed(2)} mm) so the rod can pass through the tube.`
+    );
+  }
+  if (n >= 3 && n % 2 === 1 && coverage > 0 && coverage <= 1) {
+    const h = hingeLayout(spec);
+    if (h.segment_length_um <= tube_od_um) {
+      errors.push(
+        `Hinge tube segments come out ${(h.segment_length_um / 1000).toFixed(2)} mm — ` +
+          `shorter than the tube OD (${(tube_od_um / 1000).toFixed(2)} mm) and uncuttable. ` +
+          'Reduce the segment count or increase hinge coverage.'
+      );
+    }
+  }
+  return errors;
+}

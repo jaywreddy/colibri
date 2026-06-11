@@ -4,8 +4,7 @@ import math
 
 import numpy as np
 from shapely import affinity
-from shapely.geometry import box
-from shapely.ops import unary_union
+from shapely.geometry import MultiPolygon
 
 from .._helpers import crop, linear_grating, raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, ensure_multipolygon, register
@@ -74,11 +73,13 @@ class ColibriGlobeLenticular(Pattern):
         view_a = raster_to_polygons(bird_strips.astype(np.uint8), cell_um, extent)
         view_b = raster_to_polygons(globe_strips.astype(np.uint8), cell_um, extent)
 
-        # Legacy back layer is the union of the two interlace channels — kept
-        # so the stylized fallback (in case a recipe binding drops to flat)
-        # still has something visible behind the slits.
-        back = ensure_multipolygon(unary_union([view_a, view_b]))
-        back = crop(back, extent)
+        # Legacy back layer combines the two interlace channels — kept so the
+        # stylized fallback (in case a recipe binding drops to flat) still has
+        # something visible behind the slits. The channels occupy complementary
+        # column sets (they can share edges but never overlap) and everything
+        # downstream is fill-only, so plain concatenation replaces the old
+        # unary_union + no-op crop (the strips already live inside the extent).
+        back = MultiPolygon([*view_a.geoms, *view_b.geoms])
 
         return GeneratedPattern(
             front=front,

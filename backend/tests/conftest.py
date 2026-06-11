@@ -8,6 +8,43 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(scope="session")
+def shared_pattern_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Session-wide central-pattern cache shared by all plate/box tests.
+
+    Pattern variants are content-addressed (slug + params hash), so sharing
+    the cache across tests is safe — and essential for speed: generating the
+    wayuu central pattern from scratch costs ~90 s, and without sharing every
+    plate/box test pays it again in its own tmp dir.
+    """
+    return tmp_path_factory.mktemp("pattern-cache")
+
+
+@pytest.fixture
+def isolated_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shared_pattern_cache: Path,
+) -> Path:
+    """Per-test plate/box roots + the session-shared central-pattern cache.
+
+    PLATES_ROOT/BOXES_ROOT stay per-test (listing/caching tests rely on a
+    fresh dir), while DATA_ROOT points at the shared pattern cache so the
+    expensive central patterns generate once per session, not once per test.
+    Patches the modules that snapshot DATA_ROOT-derived paths at import time
+    so reads land where service.materialize writes.
+    """
+    from app import boxes, plates, service
+    from app.api import export as export_api
+
+    monkeypatch.setattr(service, "DATA_ROOT", shared_pattern_cache)
+    monkeypatch.setattr(plates, "DATA_ROOT", shared_pattern_cache)
+    monkeypatch.setattr(plates, "PLATES_ROOT", tmp_path / "plates")
+    monkeypatch.setattr(boxes, "BOXES_ROOT", tmp_path / "boxes")
+    monkeypatch.setattr(export_api, "PLATES_ROOT", tmp_path / "plates")
+    return tmp_path
+
+
 @pytest.fixture
 def isolated_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point DATA_ROOT at a per-test tmp directory AND patch the module-level

@@ -1,12 +1,13 @@
 """Pen abstraction — the drawing interface every motif uses.
 
 Each motif (flowers/leaves) takes a Pen + the sprite's local size and emits
-strokes/fills against the pen's current transform. Two backends:
+strokes/fills against the pen's current transform. Backends in this package:
 
-- ``ShapelyPen`` (this package, in shapely_pen.py): collects strokes and fills
-  into a ``MultiPolygon`` for the lithography mask.
-- ``Canvas2DPen`` (frontend): paints to the preview canvas with the 3-pass
-  gold look (dark base + highlight + faint fill).
+- ``RasterPen`` (raster_pen.py): paints straight into a PIL image — the hot
+  path for ``materialize_plate``.
+- ``SvgPen`` (svg_pen.py): emits SVG fragments — the lazy fab-export path.
+- ``ShapelyPen`` (shapely_pen.py): collects strokes and fills into a
+  ``MultiPolygon`` — polygon-space consumers and tests.
 
 This file defines only the abstract surface. Concrete pens implement it.
 """

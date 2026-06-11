@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from PIL import Image
 from shapely.geometry import MultiPolygon
 
+from .._helpers import crop_parts
 from .algorithms import ALGORITHMS
 from .geometry import RectFrame
 from .motifs import FLOWERS, FLOWER_SIZE_MULT, LEAVES, LEAF_SIZE_MULT
@@ -13,7 +14,7 @@ from .raster_pen import RasterPen
 from .scene import Scene
 from .shapely_pen import ShapelyPen
 from .svg_pen import SvgPen
-from .themes import FrameTheme, get_theme
+from .themes import get_theme
 
 
 @dataclass
@@ -61,10 +62,9 @@ def scene_to_multipolygon(
     """Render a Scene to a single-color gold MultiPolygon for fab.
 
     Strokes turn into buffered polylines; flowers/leaves run their motif
-    drawers against a ``ShapelyPen``. Everything unions into one front-layer
-    mask, cropped to the rectangle.
+    drawers against a ``ShapelyPen``. Everything CONCATENATES into one
+    front-layer mask (no union — see below), cropped to the rectangle.
     """
-    short = min(rect.width_um, rect.height_um)
     pen = ShapelyPen()
 
     # --- vine segments ---
@@ -99,10 +99,14 @@ def scene_to_multipolygon(
         drawer(pen, size, flower.seed)
         pen.restore()
 
-    # No union, no crop — both are O(N²) on dense motif scenes and OOM GEOS
-    # at default density. The rasterizer paints polygons individually (overlap
-    # = same gold color) and ImageDraw clips to the image bounds for free.
-    return pen.finish(merge=False)
+    # No union — O(N²) on dense motif scenes and the raster/SVG consumers are
+    # fill-only, so overlap is free. The crop, however, is load-bearing for
+    # the VECTOR consumers: boundary motifs overhang the rect by up to their
+    # own size, and gold must never reach the foil keep-out. ``crop_parts``
+    # clips only the boundary-crossing members (vectorized, linear) — no
+    # whole-geometry GEOS overlay, which OOMed at default density.
+    parts = pen.finish(merge=False)
+    return crop_parts(parts.geoms, (rect.width_um, rect.height_um))
 
 
 def render_scene_to_image(
@@ -117,7 +121,6 @@ def render_scene_to_image(
     followed by ``rasterize`` because there's no Polygon construction or
     validity-checking overhead per motif primitive.
     """
-    short = min(rect.width_um, rect.height_um)
     extent_um = (rect.width_um, rect.height_um)
     w_px = max(1, int(round(rect.width_um / pixel_pitch_um)))
     h_px = max(1, int(round(rect.height_um / pixel_pitch_um)))
@@ -178,9 +181,8 @@ def render_scene_to_svg(
 
     Same scale as ``scene_to_multipolygon`` but skips Shapely entirely. The
     output is the body inside an ``<svg>`` element; the caller wraps it
-    (export_svg.frame_scene_to_svg_doc does this for fab bundles).
+    (``plates.ensure_plate_svg`` does this for fab bundles).
     """
-    theme = get_theme(params.theme_slug)
     pen = SvgPen(fill=fill, stroke=stroke)
 
     # Vine segments as stroked polylines

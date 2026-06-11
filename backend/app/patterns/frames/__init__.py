@@ -1,14 +1,17 @@
 """Frame generator: vines + foliage + flowers wrapped around a rectangular frame.
 
 Public surface:
-- ``generate_frame(rect, theme, params, seed) -> Scene``: run the chosen
-  algorithm and emit a renderer-agnostic Scene of strokes + flower/leaf sprites.
-- ``scene_to_multipolygon(scene, theme, ...) -> MultiPolygon``: rasterize a
-  Scene into the gold lithography mask for the front layer.
+- ``generate_frame(rect, params) -> Scene``: run the chosen algorithm and
+  emit a renderer-agnostic Scene of strokes + flower/leaf sprites.
+- ``render_scene_to_image(scene, rect, params, pitch) -> PIL.Image``: the
+  fast raster path used by ``plates.materialize_plate`` (no Shapely).
+- ``render_scene_to_svg(scene, rect, params) -> str``: the fast SVG path
+  used by the lazy fab export (``plates.ensure_plate_svg``).
+- ``scene_to_multipolygon(scene, rect, params) -> MultiPolygon``: polygon-
+  space render via ShapelyPen, kept for ``plates.compose_plate`` and tests.
 
-The Scene contract is intentionally minimal so the same generator output drives
-both the fab mask (via ShapelyPen) and the in-browser preview (Canvas2D pen on
-the frontend, fed the same JSON).
+The Scene contract is intentionally minimal (plain serializable dataclasses)
+so one generator output can drive every renderer backend identically.
 """
 from __future__ import annotations
 

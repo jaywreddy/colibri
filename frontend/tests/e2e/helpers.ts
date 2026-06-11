@@ -13,27 +13,24 @@ export type LogEvent = {
 };
 
 /**
- * Wait for the Three.js global debug hook to be installed by PlateScene
- * AND for the WebGL context to be live. In headless Chromium the context
- * briefly drops (webglcontextlost / webglcontextrestored) shortly after
- * creation — sampling pixels during that window returns zeros. We arm a
- * one-shot webglcontextrestored listener and wait for a stretch of
- * uninterrupted good state before returning.
+ * Wait for the Ring Box Studio debug hook (window.__studio, installed by
+ * BoxScene) AND for the WebGL context to be live. In headless Chromium the
+ * context briefly drops shortly after creation — sampling pixels during that
+ * window returns zeros. We arm a one-shot webglcontextrestored listener and
+ * wait for a stretch of uninterrupted good state before returning.
  */
-export async function waitForThree(page: Page): Promise<void> {
-  await page.waitForFunction(() => !!(window as any).__three?.material, null, {
+export async function waitForStudio(page: Page): Promise<void> {
+  await page.waitForFunction(() => !!(window as any).__studio?.renderer, null, {
     timeout: 20_000,
   });
   await page.evaluate(
     () =>
       new Promise<void>((resolve) => {
-        const t = (window as any).__three;
-        const canvas = t.renderer.domElement as HTMLCanvasElement;
-        const gl = t.renderer.getContext() as WebGLRenderingContext;
+        const s = (window as any).__studio;
+        const canvas = s.renderer.domElement as HTMLCanvasElement;
+        const gl = s.renderer.getContext() as WebGLRenderingContext;
         const onRestored = () => resolve();
         canvas.addEventListener('webglcontextrestored', onRestored, { once: true });
-        // If the context hasn't been lost by the time we've given it a
-        // settling window, assume it won't be lost during the test.
         setTimeout(() => {
           if (!gl.isContextLost()) resolve();
         }, 2500);
@@ -41,35 +38,39 @@ export async function waitForThree(page: Page): Promise<void> {
   );
 }
 
-/** Wait for the first pattern's textures to be bound (front/back !== blank 1x1). */
-export async function waitForTexturesBound(page: Page): Promise<void> {
+/** Wait for the box manifest's pattern textures to bind (front !== blank 1x1). */
+export async function waitForBoxTextures(page: Page): Promise<void> {
   await page.waitForFunction(
     () => {
-      const t = (window as any).__three;
-      if (!t?.material) return false;
-      const front = t.material.uniforms.uFront.value;
+      const s = (window as any).__studio;
+      if (!s?.faces) return false;
+      const front = s.faces.front?.shader?.uniforms?.uFront?.value;
       return !!front && (front.image?.width ?? 1) > 1;
     },
     null,
-    { timeout: 30_000 }
+    { timeout: 60_000 }
   );
 }
 
-/** Read a uniform by name from the active ShaderMaterial. */
-export async function readUniform<T = unknown>(page: Page, name: string): Promise<T> {
-  return (await page.evaluate((n) => {
-    const t = (window as any).__three;
-    return t.material.uniforms[n].value;
-  }, name)) as T;
+/** Read a uniform by name from one face's pattern ShaderMaterial. */
+export async function readFaceUniform<T = unknown>(
+  page: Page,
+  faceId: string,
+  name: string
+): Promise<T> {
+  return (await page.evaluate(
+    ([fid, n]) => {
+      const s = (window as any).__studio;
+      return s.faces[fid].shader.uniforms[n].value;
+    },
+    [faceId, name]
+  )) as T;
 }
 
 /**
  * Sample a pixel from the Three.js canvas. Returns [r, g, b, a] in 0..255.
- *
- * The WebGL default framebuffer is cleared/swapped after each render in the
- * RAF loop, so readPixels from an unrelated task returns zeros. We render
- * + readPixels atomically inside a single evaluate to catch the back buffer
- * between write and swap.
+ * Render + readPixels are done atomically inside a single evaluate to catch
+ * the back buffer between write and swap.
  */
 export async function sampleCanvasPixel(
   page: Page,
@@ -78,9 +79,9 @@ export async function sampleCanvasPixel(
 ): Promise<[number, number, number, number]> {
   return (await page.evaluate(
     ([px, py]) => {
-      const t = (window as any).__three;
-      t.renderer.render(t.scene, t.camera);
-      const gl = t.renderer.getContext() as WebGLRenderingContext;
+      const s = (window as any).__studio;
+      s.renderer.render(s.scene, s.camera);
+      const gl = s.renderer.getContext() as WebGLRenderingContext;
       const buf = new Uint8Array(4);
       gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
       return [buf[0], buf[1], buf[2], buf[3]] as [number, number, number, number];
@@ -89,15 +90,12 @@ export async function sampleCanvasPixel(
   )) as [number, number, number, number];
 }
 
-/** Sample many pixels in a single round-trip. Avoids per-pixel evaluate cost. */
-export async function sampleMany(
-  page: Page,
-  pts: [number, number][]
-): Promise<number[]> {
+/** Sample many pixels in a single round-trip. Returns mean luminance per point. */
+export async function sampleMany(page: Page, pts: [number, number][]): Promise<number[]> {
   return (await page.evaluate((coords) => {
-    const t = (window as any).__three;
-    t.renderer.render(t.scene, t.camera);
-    const gl = t.renderer.getContext() as WebGLRenderingContext;
+    const s = (window as any).__studio;
+    s.renderer.render(s.scene, s.camera);
+    const gl = s.renderer.getContext() as WebGLRenderingContext;
     const buf = new Uint8Array(4);
     const out: number[] = [];
     for (const [x, y] of coords) {
@@ -132,7 +130,9 @@ export async function expectCanvasNotBlank(page: Page): Promise<void> {
 
 /** Snapshot the frontend log ring buffer. Returns [] before the app boots. */
 export async function readLog(page: Page): Promise<LogEvent[]> {
-  return (await page.evaluate(() => (window as unknown as { __log?: LogEvent[] }).__log ?? [])) as LogEvent[];
+  return (await page.evaluate(
+    () => (window as unknown as { __log?: LogEvent[] }).__log ?? []
+  )) as LogEvent[];
 }
 
 /** Clear the frontend log ring buffer — handy between assertions in one spec. */
@@ -169,102 +169,29 @@ export async function expectLogEvent(
 }
 
 /**
- * Canonical "click card → wait for render" helper. Clicks the Gallery
- * button with the given slug, waits for a `pattern_selected` event with
- * `committed: true` for that slug, then waits for `texture_bound` to fire
- * for the same slug. This is the minimum guarantee that the user's click
- * actually reached the GPU.
+ * Programmatic camera placement via the studio handles. Values in degrees;
+ * elevation measured from +Y (0 = overhead).
  */
-export async function clickCardAndWait(page: Page, slug: string): Promise<void> {
-  await page.locator(`button[data-slug="${slug}"]`).click();
-  await expectLogEvent(
-    page,
-    'pattern_selected',
-    (e) => e.slug === slug && e.committed !== false
-  );
-  await expectLogEvent(page, 'texture_bound', (e) => e.slug === slug);
-}
-
-/**
- * Lumnance sum per image quadrant, from a downsampled 64x64 readPixels.
- * Returns sums (not averages) so ratios between quadrants are meaningful
- * even when the image is mostly dark.
- *
- * Used by the visual-signature harness to detect quadrant-energy
- * regressions across the catalog.
- */
-export async function quadrantBrightness(
-  page: Page
-): Promise<{ ul: number; ur: number; ll: number; lr: number; total: number }> {
-  return (await page.evaluate(() => {
-    const t = (window as any).__three;
-    t.renderer.render(t.scene, t.camera);
-    const gl = t.renderer.getContext() as WebGLRenderingContext;
-    const canvas = t.renderer.domElement as HTMLCanvasElement;
-    const W = canvas.width;
-    const H = canvas.height;
-    // Sample on a 64x64 grid — O(4k) readPixels calls is still <5ms
-    // because the driver keeps the buffer resident, and we avoid the
-    // overhead of allocating and returning a full ImageData blob.
-    const N = 64;
-    const buf = new Uint8Array(4);
-    let ul = 0, ur = 0, ll = 0, lr = 0;
-    for (let iy = 0; iy < N; iy++) {
-      for (let ix = 0; ix < N; ix++) {
-        const x = Math.floor((ix + 0.5) * (W / N));
-        // readPixels origin is bottom-left; flip y so ul = visually upper-left.
-        const yGlFromTop = Math.floor((iy + 0.5) * (H / N));
-        const y = H - 1 - yGlFromTop;
-        gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-        const L = (buf[0] + buf[1] + buf[2]) / 3;
-        const top = iy < N / 2;
-        const left = ix < N / 2;
-        if (top && left) ul += L;
-        else if (top && !left) ur += L;
-        else if (!top && left) ll += L;
-        else lr += L;
-      }
-    }
-    return { ul, ur, ll, lr, total: ul + ur + ll + lr };
-  })) as { ul: number; ur: number; ll: number; lr: number; total: number };
-}
-
-/**
- * Programmatic camera tilt via OrbitControls. Avoids the awkward
- * mouse-drag simulation for E2E scenes that just need "set the camera
- * to azimuth=X, elevation=Y". Values in degrees; elevation measured
- * from +Y (so elevation=0 is straight down onto the plate).
- */
-export async function setCameraAzEl(
-  page: Page,
-  azDeg: number,
-  elDeg: number
-): Promise<void> {
-  // Some three.js distributions expose get* but not set* on OrbitControls.
-  // Drive the camera directly via a Spherical around the controls' target,
-  // preserving radius, then call controls.update() so the damping/quat state
-  // catches up.
+export async function setCameraAzEl(page: Page, azDeg: number, elDeg: number): Promise<void> {
   await page.evaluate(
     ([az, el]) => {
-      const t = (window as any).__three;
-      const THREE = (window as any).THREE;
-      if (!t?.controls || !t?.camera) return;
-      const camera = t.camera;
-      const controls = t.controls;
+      const s = (window as any).__studio;
+      if (!s?.controls || !s?.camera) return;
+      const camera = s.camera;
+      const controls = s.controls;
       const target = controls.target ?? { x: 0, y: 0, z: 0 };
       const azRad = (az * Math.PI) / 180;
-      // Spherical phi is polar from +Y: 0 = overhead, pi = bottom-up.
       const phi = ((90 - el) * Math.PI) / 180;
       const dx = camera.position.x - target.x;
       const dy = camera.position.y - target.y;
       const dz = camera.position.z - target.z;
-      const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1.8;
-      // Spherical: x = r sin(phi) sin(theta); y = r cos(phi); z = r sin(phi) cos(theta)
+      const radius = Math.sqrt(dx * dx + dy * dy + dz * dz) || 2.5;
       const sinPhi = Math.sin(phi);
-      const nx = target.x + radius * sinPhi * Math.sin(azRad);
-      const ny = target.y + radius * Math.cos(phi);
-      const nz = target.z + radius * sinPhi * Math.cos(azRad);
-      camera.position.set(nx, ny, nz);
+      camera.position.set(
+        target.x + radius * sinPhi * Math.sin(azRad),
+        target.y + radius * Math.cos(phi),
+        target.z + radius * sinPhi * Math.cos(azRad)
+      );
       camera.lookAt(target.x, target.y, target.z);
       if (typeof controls.update === 'function') controls.update();
     },
@@ -273,17 +200,14 @@ export async function setCameraAzEl(
 }
 
 export type SceneCapture = {
-  plateImagePath: string;
+  imagePath: string;
   metaPath: string;
-  uniforms: Record<string, unknown>;
-  recipe: string | null;
-  slug: string | null;
+  state: Record<string, unknown>;
 };
 
 /**
  * Capture a visual scene: the Three.js canvas (PNG) + a JSON metadata
- * sidecar. `outDir` must exist or be createable. `name` is the base
- * filename — the function appends .png / .meta.json.
+ * sidecar describing the studio state (box dims, lid angle, layout).
  */
 export async function captureScene(
   page: Page,
@@ -294,100 +218,48 @@ export async function captureScene(
   const safe = name.replace(/[^a-z0-9._-]/gi, '_');
 
   const canvasDataUrl = (await page.evaluate(() => {
-    const t = (window as any).__three;
-    t.renderer.render(t.scene, t.camera);
-    const canvas = t.renderer.domElement as HTMLCanvasElement;
+    const s = (window as any).__studio;
+    s.renderer.render(s.scene, s.camera);
+    const canvas = s.renderer.domElement as HTMLCanvasElement;
     return canvas.toDataURL('image/png');
   })) as string;
-  const plateImagePath = path.join(outDir, `${safe}.png`);
-  const plateB64 = canvasDataUrl.split(',', 2)[1] ?? '';
-  await fs.writeFile(plateImagePath, Buffer.from(plateB64, 'base64'));
+  const imagePath = path.join(outDir, `${safe}.png`);
+  const b64 = canvasDataUrl.split(',', 2)[1] ?? '';
+  await fs.writeFile(imagePath, Buffer.from(b64, 'base64'));
 
-  const meta = (await page.evaluate(() => {
-    const t = (window as any).__three;
-    const u = t?.material?.uniforms ?? {};
-    const unwrap = (v: any) => {
-      if (v == null) return null;
-      if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string')
-        return v;
-      if (v.isVector2 || v.isVector3 || v.isVector4)
-        return v.toArray ? v.toArray() : null;
-      if (Array.isArray(v)) return v;
-      return null;
-    };
-    const pickUniform = (k: string) => unwrap(u[k]?.value);
-    const uniforms: Record<string, unknown> = {};
-    for (const k of [
-      'uRecipe',
-      'uIllumination',
-      'uLaserColor',
-      'uThicknessUm',
-      'uSlitOrientation',
-      'uSlitPeriodUm',
-      'uSwitchAxis',
-      'uCarrierPeriodUm',
-    ]) {
-      const v = pickUniform(k);
-      if (v !== null && v !== undefined) uniforms[k] = v;
-    }
-    const manifest = (window as any).__store?.getState?.()?.manifest ?? null;
-    const az =
-      t?.controls?.getAzimuthalAngle != null
-        ? (t.controls.getAzimuthalAngle() * 180) / Math.PI
-        : null;
-    const polar =
-      t?.controls?.getPolarAngle != null
-        ? (t.controls.getPolarAngle() * 180) / Math.PI
-        : null;
+  const state = (await page.evaluate(() => {
+    const s = (window as any).__studio;
+    const st = s?.store?.getState?.() ?? {};
+    const spec = st.boxSpec ?? {};
     const buf = (window as any).__log ?? [];
     return {
-      uniforms,
-      slug: manifest?.slug ?? null,
-      recipe: manifest?.render_recipe ?? null,
-      recipe_data: manifest?.recipe_data ?? null,
-      variant: manifest?.variant ?? null,
-      camera: { az_deg: az, polar_deg: polar },
+      dims_um: { width: spec.width_um, depth: spec.depth_um, height: spec.height_um },
+      foilFinish: spec.foil?.finish ?? null,
+      hingeSegments: spec.hinge?.segments ?? null,
+      lidTargetDeg: st.lidTargetDeg ?? null,
+      lidCurrentDeg: s?.getLidDeg?.() ?? null,
+      lidPivotRotX: s?.lidPivot?.rotation?.x ?? null,
+      layout: st.layout ?? null,
+      illumination: st.illumination ?? null,
+      manifestId: st.boxManifest?.id ?? null,
+      contentHash: st.boxManifest?.content_hash ?? null,
       logTail: Array.isArray(buf) ? buf.slice(-30) : [],
       timestamp: new Date().toISOString(),
     };
-  })) as {
-    uniforms: Record<string, unknown>;
-    slug: string | null;
-    recipe: string | null;
-    recipe_data: unknown;
-    variant: string | null;
-    camera: { az_deg: number | null; polar_deg: number | null };
-    logTail: unknown[];
-    timestamp: string;
-  };
+  })) as Record<string, unknown>;
 
   const metaPath = path.join(outDir, `${safe}.meta.json`);
   await fs.writeFile(
     metaPath,
-    JSON.stringify(
-      {
-        name: safe,
-        ...meta,
-        plateImage: path.basename(plateImagePath),
-      },
-      null,
-      2
-    )
+    JSON.stringify({ name: safe, ...state, image: path.basename(imagePath) }, null, 2)
   );
 
-  return {
-    plateImagePath,
-    metaPath,
-    uniforms: meta.uniforms,
-    recipe: meta.recipe,
-    slug: meta.slug,
-  };
+  return { imagePath, metaPath, state };
 }
 
 /**
- * Attach the frontend log (and any backend-log hint) to a failing test.
- * Call from `test.afterEach` in fixtures.ts. Safe to call on pass too —
- * bails out when the test didn't fail.
+ * Attach the frontend log to a failing test. Call from `test.afterEach` in
+ * fixtures.ts. Safe to call on pass too — bails out when the test passed.
  */
 export async function dumpLogOnFailure(page: Page, testInfo: TestInfo): Promise<void> {
   if (testInfo.status === testInfo.expectedStatus) return;

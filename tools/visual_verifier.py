@@ -128,7 +128,9 @@ def discover_scenes(run_dir: Path) -> list[SceneMeta]:
 
         scene = data.get("scene") or {}
         nc = data.get("native_checks") or {}
-        plate_rel = data.get("plateImage")
+        # captureScene (frontend/tests/e2e/helpers.ts) writes the canvas PNG
+        # under "image"; older sidecars used "plateImage". Accept both.
+        plate_rel = data.get("plateImage") or data.get("image")
         sec_rel = data.get("secondaryImage")
         if not plate_rel:
             continue
@@ -145,7 +147,11 @@ def discover_scenes(run_dir: Path) -> list[SceneMeta]:
                 name=str(scene.get("name") or meta_path.stem.replace(".meta", "")),
                 required=bool(scene.get("required", False)),
                 claim=str(scene.get("claim") or ""),
-                plate_signature=str(scene.get("plateSignature") or ""),
+                # writeEnrichedMeta (visualSignatures.spec.ts) emits
+                # scene.signature; older sidecars used scene.plateSignature.
+                plate_signature=str(
+                    scene.get("plateSignature") or scene.get("signature") or ""
+                ),
                 secondary_signature=(
                     str(scene.get("secondarySignature"))
                     if scene.get("secondarySignature")

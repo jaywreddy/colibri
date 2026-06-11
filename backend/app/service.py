@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .export_svg import to_svg
-from .patterns.base import GeneratedPattern, Pattern, registry
+from .patterns.base import registry
 from .rasterize import make_thumbnail, rasterize
 
 
@@ -74,9 +74,9 @@ def materialize(
     front_png.save(out / "front.png")
     back_png.save(out / "back.png")
 
-    # SVG exports
-    (out / "front.svg").write_text(to_svg(gp.front, gp.extent_um), encoding="utf-8")
-    (out / "back.svg").write_text(to_svg(gp.back, gp.extent_um), encoding="utf-8")
+    # SVG is built on demand (see ensure_pattern_svg) — eager to_svg cost
+    # ~4-8 s per cold variant and nothing at runtime ever fetched the files.
+    svg_ok = (out / "front.svg").exists() and (out / "back.svg").exists()
 
     # Recipe-specific extra layers (e.g. view_a / view_b for stereo_lenticular).
     # Each gets rasterized and its URL stamped into recipe_data[<name>_png] so
@@ -117,8 +117,10 @@ def materialize(
         "files": {
             "front_png": f"/data/{slug}/{variant}/front.png",
             "back_png": f"/data/{slug}/{variant}/back.png",
-            "front_svg": f"/data/{slug}/{variant}/front.svg",
-            "back_svg": f"/data/{slug}/{variant}/back.svg",
+            # Lazy (mirrors the plate manifest contract): empty until
+            # ensure_pattern_svg builds the files on demand.
+            "front_svg": f"/data/{slug}/{variant}/front.svg" if svg_ok else "",
+            "back_svg": f"/data/{slug}/{variant}/back.svg" if svg_ok else "",
             "thumbnail": f"/data/{slug}/{variant}/thumbnail.png",
         },
     }
@@ -136,5 +138,45 @@ def materialize(
     return manifest
 
 
+def ensure_pattern_svg(slug: str, variant: str) -> tuple[Path, Path] | None:
+    """Lazily build the SVG pair for an existing pattern variant.
+
+    Mirrors ``plates.ensure_plate_svg``: the materialize path skips the
+    eager ``to_svg`` (it cost seconds per cold variant with zero runtime
+    consumers); callers that genuinely want the authoritative vector form
+    (fab/export tooling) hit this instead. Regenerates the polygons from the
+    manifest's params (deterministic), writes front.svg/back.svg, stamps the
+    URLs back into the manifest.
+
+    Returns (front, back) paths or None if the variant is unknown.
+    """
+    out = pattern_dir(slug, variant)
+    manifest_path = out / "manifest.json"
+    if slug not in registry or not manifest_path.exists():
+        return None
+    front_svg = out / "front.svg"
+    back_svg = out / "back.svg"
+    if front_svg.exists() and back_svg.exists():
+        return front_svg, back_svg
+
+    manifest = json.loads(manifest_path.read_text())
+    cls = registry[slug]
+    gp = cls.generate(**{**cls.defaults(), **manifest.get("params", {})})
+    front_svg.write_text(to_svg(gp.front, gp.extent_um), encoding="utf-8")
+    back_svg.write_text(to_svg(gp.back, gp.extent_um), encoding="utf-8")
+
+    manifest["files"]["front_svg"] = f"/data/{slug}/{variant}/front.svg"
+    manifest["files"]["back_svg"] = f"/data/{slug}/{variant}/back.svg"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    return front_svg, back_svg
+
+
 def seed_defaults() -> list[dict]:
+    """Materialize every registered pattern's default variant.
+
+    NOT called at startup anymore (it cost minutes of cold wall clock before
+    the first request could be answered) — the box/plate path materializes
+    central patterns lazily with a disk cache. Kept as the explicit warm
+    command (``just seed``).
+    """
     return [materialize(slug) for slug in registry]

@@ -7,9 +7,12 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..sim.fraunhofer import fraunhofer_far_field
-from ..sim.angular_spectrum import propagate as asm_propagate
 from ..service import DATA_ROOT
+
+# NOTE: the wave-optics sim modules (fraunhofer / angular_spectrum) are
+# imported lazily inside the endpoint handlers — they drag in scipy/FFT
+# machinery that costs ~0.3 s at import and is never needed by the moiré
+# pattern/plate/box hot path.
 
 router = APIRouter(prefix="/sim", tags=["sim"])
 _log = logging.getLogger("optics.sim")
@@ -25,6 +28,8 @@ class FftRequest(BaseModel):
 
 @router.post("/fft")
 def fft_sim(req: FftRequest) -> dict:
+    from ..sim.fraunhofer import fraunhofer_far_field
+
     root = DATA_ROOT / req.slug / req.variant
     if not root.exists():
         raise HTTPException(404, f"Variant not found: {req.slug}/{req.variant}")
@@ -73,6 +78,8 @@ class PropagateRequest(BaseModel):
 
 @router.post("/propagate")
 def propagate(req: PropagateRequest) -> dict:
+    from ..sim.angular_spectrum import propagate as asm_propagate
+
     root = DATA_ROOT / req.slug / req.variant
     if not root.exists():
         raise HTTPException(404, f"Variant not found: {req.slug}/{req.variant}")

@@ -1,43 +1,40 @@
+import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { log } from '../logger';
-import type { FaceId } from '../api';
 import FrameControls from './FrameControls';
-
-const ROW: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-  fontSize: 12,
-};
-
-const INPUT: React.CSSProperties = {
-  background: '#141820',
-  border: '1px solid #2a2f36',
-  color: '#e8eaed',
-  borderRadius: 4,
-  padding: '4px 6px',
-  fontSize: 12,
-};
-
-const FACE_LABELS: Record<FaceId, string> = {
-  front: 'Front',
-  back: 'Back',
-  top: 'Top',
-  bottom: 'Bottom',
-  left: 'Left',
-  right: 'Right',
-};
+import ParameterPanel from './ParameterPanel';
+import { FACE_LABELS } from './FacesPanel';
+import { Button, Disclosure, KIT, Shimmer, SubHeader } from './kit';
 
 /**
- * Right-rail editor for one face: pattern picker + the central pattern's
- * params + frame dials. Parameter changes write to the store; the parent
- * BoxDesigner debounces regeneration.
+ * Editor for the selected face: visual pattern picker (thumbnail cards) +
+ * apply-to-all / shuffle-seed actions + the central pattern's params
+ * (ParameterPanel) + frame dials (FrameControls). Parameter changes write to
+ * the store; App debounces the box regeneration.
+ *
+ * Pattern thumbnails are fetched lazily whenever the picker opens (GET
+ * /patterns/{slug}/default materializes server-side in ~2 s, then caches).
+ * The store skips slugs that already loaded or are in flight, so repeat
+ * calls are free — calling on EVERY open (plus when the catalog arrives
+ * while the picker is open) is what retries slugs that failed earlier.
  */
 export default function FaceEditor() {
   const selectedFaceId = useStore((s) => s.selectedFaceId);
   const face = useStore((s) => s.boxSpec.faces[selectedFaceId]);
   const catalog = useStore((s) => s.catalog);
+  const thumbnails = useStore((s) => s.thumbnails);
+  const loadThumbnails = useStore((s) => s.loadThumbnails);
   const patchFace = useStore((s) => s.patchFace);
+  const applyFaceToAll = useStore((s) => s.applyFaceToAll);
+  const shuffleFaceSeed = useStore((s) => s.shuffleFaceSeed);
+
+  // True once the picker has been opened at least once this session. Covers
+  // the boot race: picker opened before GET /patterns populated the catalog
+  // (loadThumbnails no-ops on an empty catalog), so refetch when it lands.
+  const [pickerOpened, setPickerOpened] = useState(false);
+  useEffect(() => {
+    if (pickerOpened && catalog.length > 0) void loadThumbnails();
+  }, [pickerOpened, catalog.length, loadThumbnails]);
 
   if (!face) {
     return <div style={{ padding: 12, opacity: 0.6 }}>No face selected.</div>;
@@ -50,118 +47,109 @@ export default function FaceEditor() {
       data-testid="face-editor"
       style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 12 }}
     >
-      <div style={{ fontSize: 11, letterSpacing: 1.5, opacity: 0.7 }}>
-        EDITING: {FACE_LABELS[selectedFaceId].toUpperCase()}
-      </div>
+      <SubHeader>EDITING: {FACE_LABELS[selectedFaceId].toUpperCase()}</SubHeader>
 
-      <label style={ROW}>
-        <span>Central pattern</span>
-        <select
-          value={face.pattern_slug}
-          onChange={(e) => {
-            const slug = e.target.value;
-            log('face_pattern_changed', { faceId: selectedFaceId, slug });
-            // Reset central pattern params on pattern change to defaults; the
-            // backend will re-merge with class defaults during materialize.
-            patchFace(selectedFaceId, { pattern_slug: slug, pattern_params: {} });
+      <Disclosure
+        label={`Pattern — ${descriptor?.name ?? face.pattern_slug}`}
+        testId="pattern-picker"
+        onOpen={() => {
+          setPickerOpened(true);
+          void loadThumbnails();
+        }}
+      >
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 6,
           }}
-          style={INPUT}
         >
-          {catalog.map((c) => (
-            <option key={c.slug} value={c.slug}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      {descriptor && (
-        <div style={{ fontSize: 11, opacity: 0.6, lineHeight: 1.4 }}>{descriptor.description}</div>
-      )}
-
-      {/* Central pattern params */}
-      {descriptor && descriptor.params.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ fontSize: 11, letterSpacing: 1.5, opacity: 0.7 }}>PATTERN</div>
-          {descriptor.params.map((p) => {
-            const v =
-              (face.pattern_params[p.name] as number | string | boolean | undefined) ??
-              (p.default as number | string | boolean);
-            if (p.type === 'choice') {
-              return (
-                <label key={p.name} style={ROW}>
-                  <span>
-                    {p.label}
-                    {p.unit ? <em style={{ opacity: 0.5 }}> ({p.unit})</em> : null}
-                  </span>
-                  <select
-                    value={String(v)}
-                    onChange={(e) =>
-                      patchFace(selectedFaceId, {
-                        pattern_params: {
-                          ...face.pattern_params,
-                          [p.name]: e.target.value,
-                        },
-                      })
-                    }
-                    style={INPUT}
-                  >
-                    {p.choices?.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              );
-            }
-            if (p.type === 'bool') {
-              return (
-                <label key={p.name} style={ROW}>
-                  <span>{p.label}</span>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(v)}
-                    onChange={(e) =>
-                      patchFace(selectedFaceId, {
-                        pattern_params: {
-                          ...face.pattern_params,
-                          [p.name]: e.target.checked,
-                        },
-                      })
-                    }
-                  />
-                </label>
-              );
-            }
+          {catalog.map((c) => {
+            const active = c.slug === face.pattern_slug;
+            const thumb = thumbnails[c.slug];
             return (
-              <label key={p.name} style={ROW}>
-                <span>
-                  {p.label}
-                  {p.unit ? <em style={{ opacity: 0.5 }}> ({p.unit})</em> : null}
-                  <span style={{ float: 'right', opacity: 0.7, fontSize: 10 }}>
-                    {Number(v).toFixed(p.type === 'int' ? 0 : 2)}
-                  </span>
-                </span>
-                <input
-                  type="range"
-                  min={p.min}
-                  max={p.max}
-                  step={p.step ?? (p.type === 'int' ? 1 : 0.01)}
-                  value={Number(v)}
-                  onChange={(e) => {
-                    const raw = e.target.value;
-                    const value = p.type === 'int' ? parseInt(raw, 10) : parseFloat(raw);
-                    patchFace(selectedFaceId, {
-                      pattern_params: { ...face.pattern_params, [p.name]: value },
-                    });
-                  }}
-                />
-              </label>
+              <button
+                key={c.slug}
+                data-testid={`pattern-card-${c.slug}`}
+                title={c.description}
+                aria-pressed={active}
+                onClick={() => {
+                  log('face_pattern_changed', { faceId: selectedFaceId, slug: c.slug });
+                  // Reset central pattern params on pattern change; the
+                  // backend re-merges class defaults during materialize.
+                  patchFace(selectedFaceId, { pattern_slug: c.slug, pattern_params: {} });
+                }}
+                style={{
+                  padding: 4,
+                  border: `1px solid ${active ? KIT.accent : KIT.border}`,
+                  background: active ? KIT.raised : KIT.field,
+                  borderRadius: 6,
+                  color: KIT.text,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  fontSize: 11,
+                  textAlign: 'center',
+                }}
+              >
+                {typeof thumb === 'string' ? (
+                  <img
+                    src={thumb}
+                    alt={c.name}
+                    style={{
+                      width: '100%',
+                      aspectRatio: '1 / 1',
+                      objectFit: 'cover',
+                      borderRadius: 4,
+                      background: '#0b0d10',
+                    }}
+                  />
+                ) : (
+                  <Shimmer style={{ width: '100%', aspectRatio: '1 / 1' }} />
+                )}
+                <div style={{ lineHeight: 1.25 }}>{c.name}</div>
+              </button>
             );
           })}
         </div>
+      </Disclosure>
+
+      {descriptor && (
+        <div style={{ fontSize: 11, opacity: 0.6, lineHeight: 1.4 }}>
+          {descriptor.description}
+        </div>
       )}
+
+      <div style={{ display: 'flex', gap: 6 }}>
+        <Button
+          testId="apply-all-faces"
+          title="Copy this face's pattern + dials to all 6 faces (each keeps its own seed)"
+          onClick={() => {
+            log('face_apply_all', { from: selectedFaceId });
+            applyFaceToAll(selectedFaceId);
+          }}
+          style={{ flex: 1 }}
+        >
+          Apply to all faces
+        </Button>
+        <Button
+          testId="shuffle-seed"
+          title="Randomize this face's frame seed"
+          onClick={() => {
+            shuffleFaceSeed(selectedFaceId);
+            log('face_seed_shuffled', {
+              faceId: selectedFaceId,
+              seed: useStore.getState().boxSpec.faces[selectedFaceId]?.frame.seed,
+            });
+          }}
+          style={{ flex: 1 }}
+        >
+          🎲 Shuffle seed
+        </Button>
+      </div>
+
+      <ParameterPanel faceId={selectedFaceId} />
 
       <FrameControls faceId={selectedFaceId} />
     </div>

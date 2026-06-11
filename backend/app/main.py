@@ -14,7 +14,7 @@ from .api import export as export_api
 from .api import patterns as patterns_api
 from .api import plates as plates_api
 from .api import sim as sim_api
-from .service import DATA_ROOT, seed_defaults
+from .service import DATA_ROOT
 
 log = logging.getLogger("optics")
 http_log = logging.getLogger("optics.http")
@@ -23,9 +23,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Seeding default pattern variants...")
-    manifests = seed_defaults()
-    log.info("Seeded %d patterns into %s", len(manifests), DATA_ROOT)
+    # No eager seeding: materializing every pattern default took minutes of
+    # cold startup and nothing requires it — GET /patterns serves class
+    # descriptors with zero materialization, and /patterns/generate +
+    # /boxes/generate materialize variants lazily with a disk cache.
+    # To pre-warm explicitly, run `just seed` (service.seed_defaults).
+    log.info("Startup complete — pattern variants materialize lazily into %s", DATA_ROOT)
     yield
 
 

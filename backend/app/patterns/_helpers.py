@@ -1,14 +1,42 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable
 
 import numpy as np
+import shapely
 from shapely import affinity
 from shapely.geometry import MultiPolygon, Point, Polygon, box
 from shapely.ops import unary_union
 
 from .base import ensure_multipolygon
+
+
+# Hard ceiling on the lattice cells a single generator call may BUILD
+# (pre-crop). GEOS polygon memory is ~4-5 kB per cell, and cell count grows
+# quadratically with extent/period — extent 5000 um at period 4 um (both
+# inside the UI slider ranges) is ~15M cells ≈ tens of GB of commit, which
+# froze and bugchecked the dev machine three times on 2026-06-10. 400k cells
+# is ~1.8 GB transient and a few seconds of build: generous for every
+# legitimate moire use (defaults build ~100k), tight enough that no request
+# can take down the host.
+MAX_LATTICE_CELLS = 400_000
+
+
+def check_lattice_budget(n_cells: int, what: str, **dials: float) -> None:
+    """Refuse pattern builds whose lattice would not fit in memory.
+
+    Raises ValueError with an actionable message (the /patterns and /boxes
+    routes surface it verbatim as an HTTP 400 in the UI).
+    """
+    if n_cells <= MAX_LATTICE_CELLS:
+        return
+    knobs = ", ".join(f"{k}={v:g}" for k, v in dials.items())
+    raise ValueError(
+        f"{what} would build {n_cells:,} lattice cells ({knobs}); the cap is "
+        f"{MAX_LATTICE_CELLS:,}. Increase period_um or shrink extent_um — the "
+        "plate compositor upscales the pattern raster to fill the aperture, "
+        "so patterns never need multi-mm extents at micron periods."
+    )
 
 
 def crop_box(extent_um: tuple[float, float]) -> Polygon:
@@ -17,7 +45,46 @@ def crop_box(extent_um: tuple[float, float]) -> Polygon:
 
 
 def crop(polys, extent_um: tuple[float, float]) -> MultiPolygon:
+    """Whole-geometry boolean crop. Requires OGC-VALID input — a concatenated
+    MultiPolygon with overlapping members makes GEOS throw ("side location
+    conflict"). For bulk lattice output prefer :func:`crop_parts`."""
     return ensure_multipolygon(polys.intersection(crop_box(extent_um)))
+
+
+def crop_parts(parts, extent_um: tuple[float, float]) -> MultiPolygon:
+    """Clip polygon parts to the extent box WITHOUT a whole-geometry set-op.
+
+    Strictly-inside parts (the overwhelming majority of a lattice) pass
+    through untouched; only boundary-crossing parts are clipped, one geometry
+    at a time via the vectorized array API; parts fully outside are dropped.
+
+    The result is a plain CONCATENATION — members may overlap or share edges
+    (OGC-invalid as a MultiPolygon, e.g. kanasu diamonds at duty > 1/√2),
+    which is fine for the fill-only consumers (``rasterize`` / ``to_svg``;
+    see ``plates._concat_polygons`` for the precedent) but must never be fed
+    to a GEOS boolean op afterwards.
+    """
+    parts = np.asarray(parts, dtype=object)
+    if parts.size == 0:
+        return MultiPolygon()
+    bbox = crop_box(extent_um)
+    inside = shapely.contains_properly(bbox, parts)
+    kept = list(parts[inside])
+    crossing = parts[~inside]
+    if crossing.size:
+        clipped = shapely.intersection(crossing, bbox)
+        for geom in clipped:
+            if geom.is_empty:
+                continue
+            if isinstance(geom, Polygon):
+                kept.append(geom)
+            else:  # MultiPolygon / GeometryCollection — keep area parts only
+                kept.extend(
+                    g
+                    for g in getattr(geom, "geoms", [])
+                    if isinstance(g, Polygon) and not g.is_empty
+                )
+    return MultiPolygon(kept)
 
 
 def linear_grating(
@@ -48,7 +115,12 @@ def dot_array(
     rotation_deg: float = 0.0,
     offset: tuple[float, float] = (0.0, 0.0),
 ) -> MultiPolygon:
-    """Square lattice of circular dots."""
+    """Square lattice of circular dots.
+
+    NOTE: currently caller-less. If revived on a hot path: disks overlap
+    whenever ``diameter > period`` — needs ``crop_parts`` (per-part clip),
+    not plain concat + ``crop``.
+    """
     w, h = extent_um
     diag = math.hypot(w, h) * 1.05
     nx = int(diag / period_um) + 2
@@ -78,7 +150,12 @@ def zone_plate(
     extent_um: tuple[float, float],
     min_feature_um: float = 2.0,
 ) -> MultiPolygon:
-    """Binary amplitude Fresnel zone plate — odd zones opaque, even transparent."""
+    """Binary amplitude Fresnel zone plate — odd zones opaque, even transparent.
+
+    NOTE: currently caller-less. Rings are concentric and radially disjoint —
+    SAFE to concat if revived (the annuli have holes, but no member overlaps
+    another's hole, so rasterize's hole-punch stays correct).
+    """
     w, h = extent_um
     r_max = min(w, h) / 2
     rings = []
@@ -102,24 +179,53 @@ def raster_to_polygons(
     cell_um: float,
     extent_um: tuple[float, float],
 ) -> MultiPolygon:
-    """Convert a 2D binary numpy array (1=gold) into a MultiPolygon of cells.
+    """Convert a 2D binary numpy array (1=gold) into a MultiPolygon of
+    axis-aligned rectangles — one per horizontal run of consecutive gold cells.
 
-    `cell_um` is the size of each pixel in μm. This is O(n_cells) but we merge
-    adjacent cells via unary_union to keep output compact.
+    `cell_um` is the size of each pixel in μm. The old implementation built
+    one shapely box per cell and compacted them with ``unary_union`` (~4 s for
+    a 1M-cell grid, ~75% of some patterns' generate time); this pure-numpy
+    run-length merge is milliseconds and keeps SVG path counts ~5-10× below
+    per-cell concatenation. Output rectangles share edges row-to-row
+    (OGC-invalid as a MultiPolygon) — fine for the fill-only consumers
+    (``rasterize`` / ``to_svg``), but NOT for GEOS set-ops. Run coordinates
+    reproduce the old per-cell float math exactly so rasterization rounds
+    identically.
+
+    In every in-repo caller the cell grid exactly spans ``extent_um``, making
+    the old post-union crop a geometric no-op; if a future caller passes a
+    grid larger than the extent we fall back to a per-part clip.
     """
     h, w = grid.shape
     hx = w * cell_um / 2.0
     hy = h * cell_um / 2.0
-    cells: list[Polygon] = []
-    ys, xs = np.where(grid > 0)
-    for px, py in zip(xs, ys):
-        x0 = px * cell_um - hx
-        y0 = hy - (py + 1) * cell_um
-        cells.append(box(x0, y0, x0 + cell_um, y0 + cell_um))
-    if not cells:
+    g = np.asarray(grid) > 0
+    # Pad each row with a zero column on both sides; diff finds run edges.
+    padded = np.zeros((h, w + 2), dtype=np.int8)
+    padded[:, 1:-1] = g
+    d = np.diff(padded, axis=1)
+    rows, starts = np.nonzero(d == 1)  # run start columns (inclusive)
+    _, ends = np.nonzero(d == -1)      # run end columns (exclusive)
+    # np.nonzero scans row-major, so the k-th start and k-th end pair up.
+    if starts.size == 0:
         return MultiPolygon()
-    merged = unary_union(cells)
-    return crop(ensure_multipolygon(merged), extent_um)
+    x0 = starts * cell_um - hx
+    x1 = ((ends - 1) * cell_um - hx) + cell_um   # == last cell's old x0+cell
+    y0 = hy - (rows + 1) * cell_um
+    y1 = (hy - (rows + 1) * cell_um) + cell_um   # == old cell's y0+cell
+    verts = np.empty((starts.size, 4, 2), dtype=np.float64)
+    verts[:, 0, 0] = x0
+    verts[:, 0, 1] = y0
+    verts[:, 1, 0] = x1
+    verts[:, 1, 1] = y0
+    verts[:, 2, 0] = x1
+    verts[:, 2, 1] = y1
+    verts[:, 3, 0] = x0
+    verts[:, 3, 1] = y1
+    rects = shapely.polygons(verts)
+    if 2.0 * hx > extent_um[0] + 1e-9 or 2.0 * hy > extent_um[1] + 1e-9:
+        return crop_parts(rects, extent_um)
+    return MultiPolygon(list(rects))
 
 
 def empty_layer() -> MultiPolygon:
@@ -136,7 +242,11 @@ def ring_grating(
     extent_um: tuple[float, float],
     center: tuple[float, float] = (0.0, 0.0),
 ) -> MultiPolygon:
-    """Concentric rings of opaque gold at the given radial period."""
+    """Concentric rings of opaque gold at the given radial period.
+
+    NOTE: currently caller-less. Same concat-safety class as ``zone_plate``
+    (concentric, radially disjoint annuli — SAFE to concat if revived).
+    """
     r_max = math.hypot(*extent_um) / 2 + math.hypot(*center)
     cx, cy = center
     rings = []
@@ -156,7 +266,11 @@ def chevron_stripes(
     period_um: float,
     amp_um: float,
 ) -> MultiPolygon:
-    """V-shaped (chevron) stripes filling the extent, period_um tall, with width amp_um."""
+    """V-shaped (chevron) stripes filling the extent, period_um tall, with width amp_um.
+
+    NOTE: currently caller-less. Left/right halves share the x=0 edge —
+    plain concat is OGC-invalid; use ``crop_parts`` if revived.
+    """
     from shapely.geometry import Polygon as _Polygon
     w, h = extent_um
     polys = []

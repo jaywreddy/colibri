@@ -3,7 +3,8 @@
 Stroked polylines become thin polygons via ``LineString.buffer(width/2)`` with
 flat caps so neighboring segments butt cleanly. Filled subpaths become
 polygons. The pen flushes its accumulated geometry on demand via
-``finish() -> MultiPolygon`` so callers can union it onto a layer.
+``finish() -> MultiPolygon`` so callers can compose it onto a layer
+(by concatenation — see ``finish`` for why union is opt-in only).
 
 Transforms are tracked as a 2x3 affine matrix; coordinates from motifs pass
 through ``_xform`` before joining the accumulator.
@@ -13,7 +14,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from shapely.geometry import LineString, MultiLineString, MultiPolygon, Point, Polygon
+import numpy as np
+import shapely
+from shapely.geometry import LineString, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
@@ -187,48 +190,41 @@ class ShapelyPen(Pen):
 
         The pen accumulates raw vertex lists during draw, so this is the only
         place we pay GEOS/Shapely costs:
-          - Strokes: bucketed by width into MultiLineStrings → one buffer per
-            bucket.
-          - Fills: constructed in a single MultiPolygon from all rings at once.
-          - Disks: bucketed by radius into MultiPoints → one buffer per bucket.
+          - Strokes: each polyline buffered INDIVIDUALLY at its exact width
+            via the vectorized array API.
+          - Fills: constructed per ring (``buffer(0)`` repair on demand).
+          - Disks: each center buffered individually at its exact radius.
+
+        Per-part buffering is load-bearing, not a style choice: buffering a
+        whole MultiLineString makes GEOS union every member's buffer in one
+        overlay — with thousands of mutually-overlapping vine strokes that
+        noding committed gigabytes and froze the host (2026-06-10 bugchecks).
+        Individual buffers are local and linear, and the concatenated
+        (possibly overlapping) output covers the identical area, so the
+        fill-only consumers (rasterize / SVG) are unaffected.
 
         ``merge=False`` (default) skips the final ``unary_union``; overlapping
         polygons rasterize identically and the union step is the most
-        expensive op in the pipeline. Set ``merge=True`` for SVG export when
-        clean topology matters.
+        expensive op in the pipeline. Set ``merge=True`` for consumers that
+        need clean topology.
         """
         out: list[Polygon] = []
 
-        # --- strokes — bucket by width ---
-        if self._stroke_paths:
-            widths = [w for _, w in self._stroke_paths]
-            w_min, w_max = min(widths), max(widths)
-            n_bins = 32 if w_max > w_min else 1
-            bins: dict[int, list[list[tuple[float, float]]]] = {}
-            for path, w in self._stroke_paths:
-                if n_bins == 1:
-                    key = 0
-                else:
-                    key = min(n_bins - 1, int((w - w_min) / (w_max - w_min) * n_bins))
-                bins.setdefault(key, []).append(path)
-            for key, paths in bins.items():
-                if n_bins == 1:
-                    width = (w_min + w_max) / 2
-                else:
-                    width = w_min + (key + 0.5) * (w_max - w_min) / n_bins
-                # Filter out degenerate paths (< 2 points) before LineString
-                # construction; shapely throws on them.
-                lines = [LineString(p) for p in paths if len(p) >= 2]
-                if not lines:
-                    continue
-                buf = MultiLineString(lines).buffer(width / 2, cap_style=2, join_style=2)
-                if isinstance(buf, Polygon) and not buf.is_empty:
-                    out.append(buf)
-                elif isinstance(buf, MultiPolygon):
-                    out.extend(g for g in buf.geoms if not g.is_empty)
+        def extend(geom: BaseGeometry) -> None:
+            if isinstance(geom, Polygon) and not geom.is_empty:
+                out.append(geom)
+            elif isinstance(geom, MultiPolygon):
+                out.extend(g for g in geom.geoms if not g.is_empty)
 
-        # --- fills — batch-construct polygons; ``buffer(0)`` repairs any
-        # invalid self-intersecting rings in one pass.
+        # --- strokes — one local buffer per polyline, exact width ---
+        kept = [(p, w) for p, w in self._stroke_paths if len(p) >= 2]
+        if kept:
+            lines = np.array([LineString(p) for p, _ in kept], dtype=object)
+            half_widths = np.array([w for _, w in kept], dtype=np.float64) / 2.0
+            for buf in shapely.buffer(lines, half_widths, cap_style="flat", join_style="mitre"):
+                extend(buf)
+
+        # --- fills — per ring; ``buffer(0)`` repairs self-intersecting rings.
         for ring in self._fill_paths:
             if len(ring) < 4:
                 continue
@@ -236,40 +232,25 @@ class ShapelyPen(Pen):
                 poly = Polygon(ring)
                 if not poly.is_valid:
                     poly = poly.buffer(0)
-                if isinstance(poly, Polygon) and not poly.is_empty:
-                    out.append(poly)
-                elif isinstance(poly, MultiPolygon):
-                    out.extend(g for g in poly.geoms if not g.is_empty)
+                extend(poly)
             except Exception:  # noqa: BLE001 — drop malformed rings
                 continue
 
-        # --- disks — bucket by radius and buffer each MultiPoint once ---
+        # --- disks — one local buffer per center, exact radius ---
         if self._disks:
-            radii = [r for _, _, r in self._disks]
-            r_min, r_max = min(radii), max(radii)
-            n_r_bins = 8 if r_max > r_min else 1
-            r_buckets: dict[int, list[tuple[float, float]]] = {}
-            for cx, cy, r in self._disks:
-                if n_r_bins == 1:
-                    key = 0
-                else:
-                    key = min(n_r_bins - 1, int((r - r_min) / (r_max - r_min) * n_r_bins))
-                r_buckets.setdefault(key, []).append((cx, cy))
-            for key, centers in r_buckets.items():
-                if n_r_bins == 1:
-                    r = (r_min + r_max) / 2
-                else:
-                    r = r_min + (key + 0.5) * (r_max - r_min) / n_r_bins
-                from shapely.geometry import MultiPoint
-                buf = MultiPoint(centers).buffer(r, quad_segs=12)
-                if isinstance(buf, Polygon) and not buf.is_empty:
-                    out.append(buf)
-                elif isinstance(buf, MultiPolygon):
-                    out.extend(g for g in buf.geoms if not g.is_empty)
+            centers = shapely.points(np.array([(cx, cy) for cx, cy, _ in self._disks]))
+            radii = np.array([r for _, _, r in self._disks], dtype=np.float64)
+            for buf in shapely.buffer(centers, radii, quad_segs=12):
+                extend(buf)
 
         if not out:
             return MultiPolygon()
         if merge:
+            # KEEP: deliberate opt-in escape hatch. No caller passes
+            # merge=True today (api.py uses merge=False explicitly), so this
+            # union costs nothing at runtime — it exists for any future
+            # consumer that needs clean topology (e.g. a real GDS boolean
+            # pipeline) rather than the fill-only concatenation below.
             merged = unary_union(out)
             return ensure_multipolygon(merged)
         return MultiPolygon(out)

@@ -32,19 +32,34 @@ export type LogEvent = {
  */
 export type EventType =
   | 'catalog_loaded'
-  | 'pattern_select_requested'
-  | 'pattern_selected'
-  | 'pattern_select_aborted'
-  | 'pattern_load_failed'
-  | 'param_changed'
-  | 'param_regen_start'
-  | 'param_regen_done'
-  | 'param_regen_failed'
+  | 'catalog_load_failed'
+  | 'box_regen_start'
+  | 'box_regen_done'
+  | 'box_regen_failed'
+  | 'box_regen_stale'
+  | 'box_regen_skipped_invalid'
+  | 'box_saved'
+  | 'box_loaded'
+  | 'box_reset'
+  | 'box_scene_rebuilt'
+  | 'size_preset_applied'
+  | 'face_clicked'
+  | 'face_apply_all'
+  | 'face_seed_shuffled'
+  | 'thumbnail_loaded'
+  | 'thumbnail_load_failed'
+  | 'autorotate_toggled'
+  | 'face_pattern_changed'
+  | 'face_param_changed'
+  | 'face_texture_bound'
+  | 'face_texture_failed'
+  | 'frame_param_changed'
+  | 'foil_tape_changed'
+  | 'lid_changed'
+  | 'layout_changed'
   | 'illumination_changed'
   | 'light_moved'
   | 'laser_color_changed'
-  | 'tilt_changed'
-  | 'texture_bound'
   | 'webgl_context_lost'
   | 'webgl_context_restored'
   | 'fetch_error';
@@ -73,19 +88,4 @@ export function log(type: string, payload: Record<string, unknown> = {}): void {
     // eslint-disable-next-line no-console
     console.debug('[optics]', type, payload);
   }
-}
-
-/**
- * Read a snapshot of the current buffer. Returns a shallow copy so callers
- * can iterate safely while new events are pushed.
- */
-export function readLog(): LogEvent[] {
-  if (typeof window === 'undefined') return [];
-  return [...(window.__log ?? [])];
-}
-
-/** Clear the buffer. Useful between test cases. */
-export function clearLog(): void {
-  if (typeof window === 'undefined') return;
-  window.__log = [];
 }

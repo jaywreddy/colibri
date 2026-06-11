@@ -1,8 +1,6 @@
 """Heliconia: alternating triangular bracts climbing a central stalk."""
 from __future__ import annotations
 
-import math
-
 from ...geometry import Mulberry32
 from ...pen import Pen
 

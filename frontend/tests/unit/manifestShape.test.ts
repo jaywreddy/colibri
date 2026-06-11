@@ -1,9 +1,15 @@
 /**
- * Guard the PatternManifest type shape at runtime so the backend can't
- * silently change a field name without a red test.
+ * Guard the PatternManifest + BoxManifest (v2) type shapes at runtime so the
+ * backend can't silently change a field name without a red test.
  */
 import { describe, it, expect } from 'vitest';
-import { RECIPE_IDS, type PatternManifest, type RenderRecipe } from '../../src/api';
+import {
+  RECIPE_IDS,
+  defaultBoxSpec,
+  type BoxManifest,
+  type PatternManifest,
+  type RenderRecipe,
+} from '../../src/api';
 
 const SAMPLE: PatternManifest = {
   slug: 'wayuu-kanasu-moire',
@@ -86,6 +92,117 @@ describe('PatternManifest shape', () => {
       recipe_data: { carrier_period_um: 20.0 },
     };
     expect(isManifest(withRecipe)).toBe(true);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// BoxManifest v2 — the contract's server response shape. The frontend's
+// scene/cut-list code reads spec + assembly; pin the required keys here.
+// ----------------------------------------------------------------------------
+
+const SAMPLE_BOX: BoxManifest = {
+  kind: 'box',
+  id: 'ring-box-1',
+  spec: defaultBoxSpec(),
+  name: 'Ring box',
+  faces: {},
+  dimensions_um: { width: 50000, height: 40000, depth: 50000 },
+  assembly: {
+    keepout_um: 3425,
+    overlap_um: 2925,
+    glass_thickness_um: 500,
+    cut_list: [
+      { face: 'bottom', width_um: 50000, height_um: 50000, width_mm: 50.0, height_mm: 50.0 },
+      { face: 'top', width_um: 50000, height_um: 50000, width_mm: 50.0, height_mm: 50.0 },
+      { face: 'front', width_um: 50000, height_um: 39000, width_mm: 50.0, height_mm: 39.0 },
+      { face: 'back', width_um: 50000, height_um: 39000, width_mm: 50.0, height_mm: 39.0 },
+      { face: 'left', width_um: 49000, height_um: 39000, width_mm: 49.0, height_mm: 39.0 },
+      { face: 'right', width_um: 49000, height_um: 39000, width_mm: 49.0, height_mm: 39.0 },
+    ],
+    seams: 8,
+    hinge: {
+      style: 'tube',
+      tube_od_um: 2400,
+      rod_od_um: 1600,
+      segments: 5,
+      coverage: 0.8,
+      run_length_um: 40000,
+      segment_length_um: 7680,
+    },
+  },
+  content_hash: 'abc123',
+};
+
+function isBoxManifest(m: unknown): m is BoxManifest {
+  if (typeof m !== 'object' || m === null) return false;
+  const obj = m as Record<string, unknown>;
+  if (obj.kind !== 'box') return false;
+  if (typeof obj.id !== 'string') return false;
+  if (typeof obj.content_hash !== 'string') return false;
+  const spec = obj.spec as Record<string, unknown> | undefined;
+  if (!spec) return false;
+  for (const k of ['width_um', 'depth_um', 'height_um']) {
+    if (typeof spec[k] !== 'number' || (spec[k] as number) <= 0) return false;
+  }
+  for (const k of ['glass', 'foil', 'hinge', 'faces']) {
+    if (typeof spec[k] !== 'object' || spec[k] === null) return false;
+  }
+  const dims = obj.dimensions_um as Record<string, unknown> | undefined;
+  if (!dims) return false;
+  for (const k of ['width', 'height', 'depth']) {
+    if (typeof dims[k] !== 'number') return false;
+  }
+  const asm = obj.assembly as Record<string, unknown> | undefined;
+  if (!asm) return false;
+  for (const k of ['keepout_um', 'overlap_um', 'glass_thickness_um']) {
+    if (typeof asm[k] !== 'number') return false;
+  }
+  if (!Array.isArray(asm.cut_list) || asm.cut_list.length !== 6) return false;
+  const hinge = asm.hinge as Record<string, unknown> | undefined;
+  if (!hinge) return false;
+  if (typeof hinge.run_length_um !== 'number') return false;
+  if (typeof hinge.segment_length_um !== 'number') return false;
+  return true;
+}
+
+describe('BoxManifest v2 shape', () => {
+  it('a valid box manifest passes the guard', () => {
+    expect(isBoxManifest(SAMPLE_BOX)).toBe(true);
+  });
+
+  it('missing the assembly block fails the guard', () => {
+    const bad = { ...SAMPLE_BOX, assembly: undefined } as unknown;
+    expect(isBoxManifest(bad)).toBe(false);
+  });
+
+  it('a cut list without all 6 plates fails the guard', () => {
+    const bad = {
+      ...SAMPLE_BOX,
+      assembly: { ...SAMPLE_BOX.assembly, cut_list: SAMPLE_BOX.assembly.cut_list.slice(0, 4) },
+    } as unknown;
+    expect(isBoxManifest(bad)).toBe(false);
+  });
+
+  it('hinge echo must include run/segment lengths', () => {
+    const { run_length_um: _drop, ...hingeNoRun } = SAMPLE_BOX.assembly.hinge;
+    const bad = {
+      ...SAMPLE_BOX,
+      assembly: { ...SAMPLE_BOX.assembly, hinge: hingeNoRun },
+    } as unknown;
+    expect(isBoxManifest(bad)).toBe(false);
+  });
+
+  it('v1 manifests (no glass/foil/hinge in spec) fail the guard', () => {
+    const v1spec = {
+      width_um: 30000,
+      height_um: 30000,
+      depth_um: 30000,
+      weld_margin_um: 1000,
+      faces: {},
+      label: '',
+    };
+    const bad = { ...SAMPLE_BOX, spec: v1spec } as unknown;
+    expect(isBoxManifest(bad)).toBe(false);
   });
 });
 

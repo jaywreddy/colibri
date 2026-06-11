@@ -1,24 +1,29 @@
 /**
- * Canvas-renders suite. Pins the two silent-black-canvas regressions:
- *   #3 canvas style drift (missing display:block; width:100%; height:100%)
- *   #4 NPOT texture with default LinearMipmapLinear filter
+ * Canvas-renders suite. Pins the silent-black-canvas regressions:
+ *   - canvas style drift (missing display:block; width:100%; height:100%)
+ *   - NPOT texture with default LinearMipmapLinear filter
  *
  * We assert on pixel brightness inequalities, NOT screenshot diffs.
  */
 import { test, expect } from '@playwright/test';
-import { waitForThree, waitForTexturesBound, expectCanvasNotBlank, sampleBrightness } from './helpers';
+import {
+  waitForStudio,
+  waitForBoxTextures,
+  expectCanvasNotBlank,
+  sampleBrightness,
+} from './helpers';
 
 test.describe('canvas renders', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await waitForThree(page);
-    await waitForTexturesBound(page);
+    await waitForStudio(page);
+    await waitForBoxTextures(page);
   });
 
   test('canvas has non-zero dimensions', async ({ page }) => {
     const dims = await page.evaluate(() => {
-      const t = (window as any).__three;
-      const c = t.renderer.domElement as HTMLCanvasElement;
+      const s = (window as any).__studio;
+      const c = s.renderer.domElement as HTMLCanvasElement;
       return { w: c.offsetWidth, h: c.offsetHeight };
     });
     expect(dims.w).toBeGreaterThan(100);
@@ -29,12 +34,12 @@ test.describe('canvas renders', () => {
     await expectCanvasNotBlank(page);
   });
 
-  test('center and corner pixels are distinguishable (texture binds, NPOT guard)', async ({
+  test('center and corner pixels are distinguishable (box visible, not flat)', async ({
     page,
   }) => {
     const dims = await page.evaluate(() => {
-      const t = (window as any).__three;
-      const c = t.renderer.domElement as HTMLCanvasElement;
+      const s = (window as any).__studio;
+      const c = s.renderer.domElement as HTMLCanvasElement;
       return [c.width, c.height];
     });
     const [w, h] = dims;
@@ -45,14 +50,20 @@ test.describe('canvas renders', () => {
       await sampleBrightness(page, 10, h - 10),
       await sampleBrightness(page, w - 10, h - 10),
     ];
-    // At least one sample should differ meaningfully from another — else
-    // we're looking at a flat-color canvas (the "silent black" or "silent
-    // gray" failure mode).
     const all = [bCenter, ...corners];
     const spread = Math.max(...all) - Math.min(...all);
     expect(
       spread,
       `canvas appears flat, all samples=${JSON.stringify(all)}`
     ).toBeGreaterThan(5);
+  });
+
+  test('flat layout re-renders without blanking the canvas', async ({ page }) => {
+    await page.getByTestId('layout-flat').click();
+    await page.waitForTimeout(600);
+    await expectCanvasNotBlank(page);
+    await page.getByTestId('layout-assembled').click();
+    await page.waitForTimeout(600);
+    await expectCanvasNotBlank(page);
   });
 });
