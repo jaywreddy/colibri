@@ -12,13 +12,22 @@ router = APIRouter(prefix="/plates", tags=["plates"])
 
 
 class FrameSpecBody(BaseModel):
-    algorithm: str = "colonize"
+    algorithm: str = "wreath"
     theme: str = "esmeralda"
     density: float = 1.0
     bloom: float = 0.6
     foliage: float = 0.6
     seed: int = 1
     band_um: float | None = None
+    # Band-composition dials — passed through to the frame grower so each
+    # face can carry its own engraved-border recipe (see plates.FrameSpec).
+    edge_gradient: float = 0.8
+    understory: float = 0.85
+    border_vine: float = 1.15
+    corner_fans: float = 1.0
+    # Wreath composition preset (wreath algorithm only): "laurel" | "garland"
+    # | "clusters". Ignored by colonize. See frames/algorithms/wreath.py.
+    wreath_style: str = "laurel"
 
 
 class GlassSpecBody(BaseModel):
@@ -35,6 +44,8 @@ class PlateSpecBody(BaseModel):
     width_um: float = 30000.0
     height_um: float = 30000.0
     weld_margin_um: float = 1000.0
+    # Fabricated grating pitch (μm) of the back carrier + leaf louvre family.
+    carrier_pitch_um: float = 22.0
     label: str = ""
 
     def to_spec(self) -> PlateSpec:

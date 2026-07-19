@@ -238,6 +238,44 @@ The lid should swing up and back over the hinge freely to ~110 degrees
 """
 
 
+@router.get("/wafer/plan")
+def wafer_plan() -> dict[str, Any]:
+    """The 4-inch-wafer packing plan for the largest fitting box.
+
+    Pure math (no pattern generation): runs the deterministic
+    rectangle-in-circle packer + max-scale solver from ``export_wafer`` and
+    returns the mini-box dimensions plus each plate's wafer-centered footprint.
+    The full GDS is produced offline via ``python -m app.export_wafer``.
+    """
+    from ..export_wafer import (
+        DICING_STREET_UM,
+        EDGE_EXCLUSION_UM,
+        WAFER_DIAMETER_UM,
+        solve_max_scale,
+    )
+
+    result = solve_max_scale()
+    if result is None:
+        raise HTTPException(500, "No box size fits the wafer — check constants.")
+    return {
+        "wafer_diameter_um": WAFER_DIAMETER_UM,
+        "edge_exclusion_um": EDGE_EXCLUSION_UM,
+        "dicing_street_um": DICING_STREET_UM,
+        "mini_box": result.dims_mm(),
+        "placements": [
+            {
+                "face": p.face,
+                "cx_um": round(p.cx, 1),
+                "cy_um": round(p.cy, 1),
+                "width_um": round(p.width_um, 1),
+                "height_um": round(p.height_um, 1),
+                "rotated": p.rotated,
+            }
+            for p in result.placements
+        ],
+    }
+
+
 @router.get("/box/{box_id}/fab.zip")
 def box_fab_zip(box_id: str) -> StreamingResponse:
     box_manifest = get_box(box_id)

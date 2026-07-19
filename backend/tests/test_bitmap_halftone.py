@@ -18,6 +18,8 @@ from PIL import Image
 import app.patterns  # noqa: F401  -- populate registry (pulls in the bitmap pkg)
 from app.patterns.base import registry
 from app.patterns.bitmap import halftone
+from app.rasterize import rasterize
+from app.sim2d import switch_metrics
 
 # Small extent keeps the working grid at 200x200 cells for the default
 # 20 um period — milliseconds per generate, safely inside the memory rules.

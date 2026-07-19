@@ -73,6 +73,15 @@ type State = {
   /** Pattern under study in the lab; null = follow the selected face. */
   labSlug: string | null;
   setLabSlug: (slug: string | null) => void;
+  /**
+   * Pattern Scale: uniform multiplier on every procedural preview period on
+   * both plate planes (frame carrier + louvre, centerpiece switch, water comb +
+   * ripple lanes, barrier-interlace lanes). 1 = exact fab dimensions (sub-pixel
+   * at default zoom — the fine structure resolves when you raise this or zoom
+   * in). Frontend-only; no backend regen. Default 1×.
+   */
+  patternScale: number;
+  setPatternScale: (s: number) => void;
 
   // --- illumination / viewer state ---
   illumination: Illumination;
@@ -95,6 +104,7 @@ export const useStore = create<State>((set, get) => ({
   autoRotate: false,
   labOpen: false,
   labSlug: null,
+  patternScale: 1,
   illumination: 'ambient',
   laserColor: 'green',
   lightAzimuthDeg: 35,
@@ -214,6 +224,7 @@ export const useStore = create<State>((set, get) => ({
   setAutoRotate: (autoRotate) => set({ autoRotate }),
   setLabOpen: (labOpen) => set({ labOpen }),
   setLabSlug: (labSlug) => set({ labSlug }),
+  setPatternScale: (patternScale) => set({ patternScale }),
 
   setIllumination: (illumination) => set({ illumination }),
   setLaserColor: (laserColor) => set({ laserColor }),

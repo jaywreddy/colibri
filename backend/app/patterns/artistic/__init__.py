@@ -10,6 +10,14 @@ from . import (
     globe_rotation_lenticular,
     orchid_shimmer_moire,
     monogram_phase,
+    colibri_flap_phase,
+    globe_duo_phase,
+    monogram_jp,
+    inscription_line,
+    capybara_scanimation,
+    food_pair_chirp,
+    gear_quill_switch,
+    jamon_tray,
 )
 
 __all__ = [
@@ -22,4 +30,12 @@ __all__ = [
     "globe_rotation_lenticular",
     "orchid_shimmer_moire",
     "monogram_phase",
+    "colibri_flap_phase",
+    "globe_duo_phase",
+    "monogram_jp",
+    "inscription_line",
+    "capybara_scanimation",
+    "food_pair_chirp",
+    "gear_quill_switch",
+    "jamon_tray",
 ]

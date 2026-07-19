@@ -24,9 +24,12 @@ export const MIN_APERTURE_UM = 3000;
 
 /** Preview colors for the three solder/foil finish options. */
 export const FOIL_COLORS: Record<FoilFinish, string> = {
-  bright: '#c9ced6',
-  copper: '#b87333',
-  patina: '#34343a',
+  bright: '#c9ced6', // freshly flowed tin-lead / lead-free solder — cool silver
+  copper: '#b87333', // bare copper foil left unsoldered — warm orange
+  patina: '#34343a', // black sulfide patina treatment
+  gold: '#e3b53b', // polished gold plating — rich yellow
+  rose: '#c98a86', // rose-gold blush
+  gunmetal: '#3a3f47', // dark blued gunmetal
 };
 
 /** mm rounding for derived cut-list fields — 3 decimals, matching backend
@@ -42,9 +45,23 @@ export function overlapUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
   return Math.max(0, (spec.foil.tape_width_um - spec.glass.thickness_um) / 2);
 }
 
-/** Pattern keep-out margin per edge: foil overlap + safety. */
+/** Pattern keep-out margin per edge: foil overlap + safety.
+ * Bounds the FRONT artwork (foliage silhouette). */
 export function keepoutUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
   return overlapUm(spec) + spec.foil.safety_um;
+}
+
+/**
+ * Back-carrier keep-out per edge: foil overlap ONLY (drops the safety margin).
+ *
+ * The back layer is a uniform moiré-carrier grating that should cover the whole
+ * EXPOSED face — everything the folded foil doesn't physically hide — so the
+ * shimmer reads edge-to-edge behind the front foliage. Only constraint: the
+ * grating must not run under the foil. Mirrors backend
+ * ``assembly.py::back_window_um``; always <= keepoutUm since safety >= 0.
+ */
+export function backWindowUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
+  return overlapUm(spec);
 }
 
 // -----------------------------------------------------------------------------
@@ -101,6 +118,7 @@ export function copperTapeLengthCm(spec: BoxSpec): number {
  */
 export function stampFaces(spec: BoxSpec): BoxSpec {
   const ko = keepoutUm(spec);
+  const bw = backWindowUm(spec);
   const cuts = new Map(cutList(spec).map((c) => [c.face, c]));
   const faces: Partial<Record<FaceId, PlateSpec>> = {};
   for (const [fid, face] of Object.entries(spec.faces) as [FaceId, PlateSpec][]) {
@@ -112,6 +130,11 @@ export function stampFaces(spec: BoxSpec): BoxSpec {
       width_um: cut.width_um,
       height_um: cut.height_um,
       weld_margin_um: ko,
+      // Back carrier grating covers the whole exposed face (foil overlap only).
+      back_margin_um: bw,
+      // Grating pitch is a box-level choice — stamp it onto every face (mirrors
+      // backend boxes.normalize_face_dims). NOT an assembly formula.
+      carrier_pitch_um: spec.carrier_pitch_um ?? 22.0,
     };
   }
   return { ...spec, faces };

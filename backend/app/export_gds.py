@@ -46,7 +46,12 @@ def to_gds(
             "(using gf.kdb.Region) -> write_gds() -> klayout CLI -> DXF."
         ) from e
 
-    # Reference implementation (intentionally unreachable until import succeeds):
+    # Activate the generic PDK so layer tuples resolve (mirrors
+    # export_wafer.py; harmless if a PDK is already active).
+    try:
+        gf.gpdk.PDK.activate()
+    except Exception:
+        pass
     c: Any = gf.Component(name=cell_name)
     geoms = polys.geoms if isinstance(polys, MultiPolygon) else [polys]
     for poly in geoms:

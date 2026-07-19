@@ -41,13 +41,16 @@ ESMERALDA = FrameTheme(
         "orchid", "orchid", "orchid",
         "coffee", "coffee",
         "heliconia", "heliconia",
-        "anthurium",
+        "anthurium", "anthurium",
     ),
     leaves=(
+        # Balance feathery fronds (fern/palm) against broad blades
+        # (philodendron/plantain) so the band has both texture and solid mass
+        # instead of an all-over spiky read.
         "wax_palm", "wax_palm",
-        "plantain",
-        "fern", "fern", "fern",
-        "philodendron", "philodendron",
+        "plantain", "plantain", "plantain",
+        "fern", "fern",
+        "philodendron", "philodendron", "philodendron",
     ),
     gold="#d4a64a",
     hi="#f4d97a",

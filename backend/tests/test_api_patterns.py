@@ -18,16 +18,27 @@ from fastapi.testclient import TestClient
 #   image halftoned onto a carrier in FRONT, exact anti-phase carrier in
 #   BACK, moire_interactive).
 EXPECTED_SLUGS = {
+    # Original catalog
     "wayuu-kanasu-moire",
     "emerald-facet-moire",
     "colibri-globe-lenticular",
     "colibri-globe-moire",
     "colibri-globe-phase",
+    # Taxonomy rebuild additions (barrier switches, carrier reveal, bitmap)
     "globe-rotation-stereo",
     "orchid-shimmer-moire",
     "jp-monogram-phase",
     "monogram-carrier-reveal",
     "bitmap-halftone",
+    # Engagement-box showpieces (six-face plan + experiments)
+    "capybara-scanimation",
+    "colibri-flap-phase",
+    "food-pair-chirp",
+    "gear-quill-switch",
+    "globe-duo-phase",
+    "inscription-line",
+    "jamon-tray",
+    "monogram-jp",
 }
 
 

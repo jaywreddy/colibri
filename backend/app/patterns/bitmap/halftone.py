@@ -10,9 +10,15 @@ chosen per `back_mode` to make the substrate parallax ANIMATE the picture:
   carrier       uniform 50% grating at the same period/phase; tilting slides
                 the carrier under the halftone so the whole image's tone
                 shimmers/breathes with viewing angle.
-  complement    halftone of the INVERTED image; head-on transmission is
-                uniformly dark, tilting de-registers the two screens and the
-                photo emerges bright-on-dark from nothing.
+  complement    row-interlaced parallax barrier (the CLAUDE.md rule: image
+                content in the BACK layer, slit mask in FRONT). The back
+                interlaces the POSITIVE halftone in one half-period row
+                phase with the NEGATIVE halftone in the other; the front is
+                a uniform horizontal slit grating straddling the channel
+                boundary. Head-on the slit averages the two channels into a
+                uniform tone (no image); a vertical tilt gates one channel —
+                +p/4 of back shift shows the positive photo, -p/4 the
+                negative (switch peaks at ±p/4, per sim2d.switch_metrics).
   phase_reveal  the front halftone again but with the carrier phase shifted
                 half a period; parallax biases which copy dominates, so the
                 image pulses/slides as the box is tilted.
@@ -26,7 +32,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .._helpers import check_lattice_budget, empty_layer, raster_to_polygons
-from ..base import GeneratedPattern, ParamSpec, Pattern, register
+from ..base import GeneratedPattern, ParamSpec, Pattern, Substrate, register
 
 # Demo bitmaps live in the repo (drawn by tools/dev/gen_demo_bitmaps.py).
 # Module-level Path so tests can monkeypatch the directory; every reader goes
@@ -107,8 +113,9 @@ class BitmapHalftone(Pattern):
         "of the front layer carries a gold band whose height tracks local "
         "image darkness, so the picture reads in transmitted light. The back "
         "layer turns substrate parallax into animation — a uniform carrier "
-        "makes the tone shimmer with tilt, a complementary screen makes the "
-        "photo appear out of darkness, and a half-period phase copy makes it "
+        "makes the tone shimmer with tilt, a complement barrier hides "
+        "positive and negative copies behind a slit mask so tilting flips "
+        "the photo between them, and a half-period phase copy makes it "
         "pulse between registrations."
     )
     tags = ["halftone", "bitmap", "photo", "tilt-reveal"]
@@ -181,20 +188,37 @@ class BitmapHalftone(Pattern):
         # darkness — the amplitude halftone, fully vectorized.
         t = (((np.arange(n_grid) + 0.5) * cell_um) / line_period_um) % 1.0
         tri = np.abs(2.0 * t - 1.0).astype(np.float32)
-        front_mask = darkness > tri[:, None]
 
-        if back_mode == "none":
-            back_mask = None
-        elif back_mode == "carrier":
-            # Uniform 50% grating, same period/phase as the halftone screen.
-            back_mask = np.tile((tri < 0.5)[:, None], (1, n_grid))
-        elif back_mode == "complement":
-            back_mask = (1.0 - darkness) > tri[:, None]
-        elif back_mode == "phase_reveal":
-            tri_shift = np.abs(2.0 * ((t + 0.5) % 1.0) - 1.0).astype(np.float32)
-            back_mask = darkness > tri_shift[:, None]
+        if back_mode == "complement":
+            # Row-interlaced parallax barrier (CLAUDE.md rule: image content
+            # in the BACK layer, slit mask in FRONT — a front-layer image can
+            # never vanish under parallax). FRONT: uniform horizontal slit
+            # grating, open for the half-period straddling the channel
+            # boundary at t=1/2. BACK: rows with t < 1/2 (channel A) carry
+            # the POSITIVE halftone, rows with t >= 1/2 (channel B) the
+            # NEGATIVE one. Bands are edge-anchored within their half-period
+            # (sawtooth profile — twice the tone levels of a centered band on
+            # this grid), which also makes the head-on view exactly uniform:
+            # the slit sees complementary partial bands summing to a constant
+            # quarter-period of gold, so the photo is invisible until tilt
+            # gates a single channel (+p/4 back shift = positive, -p/4 =
+            # negative; see sim2d.switch_metrics).
+            front_mask = np.tile((np.abs(t - 0.5) >= 0.25)[:, None], (1, n_grid))
+            saw = (2.0 * (t % 0.5)).astype(np.float32)  # 0..1 across each half-period
+            tone = np.where((t < 0.5)[:, None], darkness, 1.0 - darkness)
+            back_mask = tone > saw[:, None]
         else:
-            raise ValueError(f"unknown back_mode {back_mode!r}")
+            front_mask = darkness > tri[:, None]
+            if back_mode == "none":
+                back_mask = None
+            elif back_mode == "carrier":
+                # Uniform 50% grating, same period/phase as the halftone screen.
+                back_mask = np.tile((tri < 0.5)[:, None], (1, n_grid))
+            elif back_mode == "phase_reveal":
+                tri_shift = np.abs(2.0 * ((t + 0.5) % 1.0) - 1.0).astype(np.float32)
+                back_mask = darkness > tri_shift[:, None]
+            else:
+                raise ValueError(f"unknown back_mode {back_mode!r}")
 
         front = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back = (
@@ -203,20 +227,50 @@ class BitmapHalftone(Pattern):
             else raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
         )
 
-        min_duty = _min_gold_band_duty(front_mask, cell_um, line_period_um)
+        # Finest gold band across BOTH layers: for complement mode the tonal
+        # bands live in the back behind a coarse front slit, so the front
+        # alone would overstate the minimum feature.
+        duties = [_min_gold_band_duty(front_mask, cell_um, line_period_um)]
+        if back_mask is not None:
+            duties.append(_min_gold_band_duty(back_mask, cell_um, line_period_um))
+        realized = [d for d in duties if d > 0.0]
+        min_duty = min(realized) if realized else 0.0
+
+        extra = {
+            "image": image,
+            "coverage_front": float(front_mask.mean()),
+            "coverage_back": float(back_mask.mean()) if back_mask is not None else 0.0,
+            "n_grid": int(n_grid),
+            "cell_um": float(cell_um),
+            "n_lines": int(n_lines),
+            "min_duty_realized": float(min_duty),
+        }
+        if back_mode == "complement":
+            # Barrier switch geometry (straddle registration): the positive /
+            # negative flip completes at a back shift of p/4; Snell maps the
+            # in-substrate angle out (same audited formula as the lenticular
+            # barriers).
+            sub = Substrate()
+            extra["switch_shift_um"] = line_period_um / 4.0
+            extra["switch_half_angle_deg"] = float(
+                math.degrees(
+                    math.asin(
+                        min(
+                            1.0,
+                            sub.n
+                            * math.sin(
+                                math.atan(line_period_um / 4.0 / sub.thickness_um)
+                            ),
+                        )
+                    )
+                )
+            )
+
         return GeneratedPattern(
             front=front,
             back=back,
             extent_um=extent,
             pixel_pitch_um=cell_um,
             min_feature_um=max(2.0, line_period_um * min_duty),
-            extra={
-                "image": image,
-                "coverage_front": float(front_mask.mean()),
-                "coverage_back": float(back_mask.mean()) if back_mask is not None else 0.0,
-                "n_grid": int(n_grid),
-                "cell_um": float(cell_um),
-                "n_lines": int(n_lines),
-                "min_duty_realized": float(min_duty),
-            },
+            extra=extra,
         )

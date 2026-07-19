@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { buildStudioEnvScene } from './studioEnv';
+import { makeFoilMaps, makeSolderMaps, makeStripHeatColor, hashStr } from './metalTextures';
+import { makeBeadGeometry, makeCornerBlob } from './solderBead';
 import vert from '../shaders/plate.vert';
 import frag from '../shaders/plate.frag';
 import { log } from '../logger';
@@ -28,10 +30,127 @@ const EPS_FOIL_MM = 0.09;
 const TIN_MM = 0.3;
 const BRASS_COLOR = 0xb08d57;
 
+/**
+ * Per-finish physically-based surface params. Foil tape, solder beads, and
+ * tinned rims share the finish tint (FOIL_COLORS) but differ in microsurface:
+ *   - foil is rolled tape (moderately smooth),
+ *   - solder is a flowed-then-frozen bead — satin, rounder highlights, and a
+ *     thin clearcoat that reads as the wet sheen real solder keeps,
+ *   - patina is oxidized: it loses metallic reflectance (lower metalness) and
+ *     scatters more (higher roughness), so it looks matte and dark.
+ * envMapIntensity is > 1 because the studio env is the only thing a metalness=1
+ * surface reflects — at 1.0 against a dark background the metals crush to black.
+ *
+ * metalness is deliberately held < 1.0 even for the "clean" finishes. A perfect
+ * conductor has NO diffuse term, so a metalness=1 facet shows ONLY its env
+ * reflection; the small foil frame strips reflect toward directions the studio
+ * lightbox does not fill, so they crushed to flat black off the key axis and
+ * the lightest finish (bright) rendered DARKER than the dark finishes (patina,
+ * gunmetal) whose lower metalness gave them a diffuse floor — a finish
+ * inversion. Real rolled foil tape and flowed solder carry a thin diffuse
+ * oxide/scatter component anyway, so a metalness in the ~0.8 range keeps them
+ * unmistakably metallic while letting the three-point rig light their tint from
+ * every angle. Verified: at az=28/el=20, bright's foil-strip luminance now
+ * clearly exceeds patina's and gunmetal's (was 0 vs 22/16 — inverted).
+ */
+type FinishKey = keyof typeof FOIL_COLORS;
+type FinishPbr = {
+  foilRough: number;
+  solderRough: number;
+  tinRough: number;
+  metalness: number;
+  clearcoat: number;
+  clearcoatRough: number;
+  env: number;
+  /** 0 = clean rolled tape, 1 = heavily oxidised — drives texture mottle. */
+  oxidation: number;
+  /** Solder micro-relief strength (mm). */
+  bumpScale: number;
+};
+const FINISH_PBR: Record<FinishKey, FinishPbr> = {
+  bright: {
+    foilRough: 0.26,
+    solderRough: 0.34,
+    tinRough: 0.3,
+    // < 1.0 so the diffuse floor carries the silver tint on off-axis strips
+    // (see FINISH_PBR docstring — a perfect conductor crushed these to black).
+    metalness: 0.82,
+    clearcoat: 0.4,
+    clearcoatRough: 0.45,
+    env: 2.4,
+    oxidation: 0.12,
+    bumpScale: 0.012,
+  },
+  copper: {
+    foilRough: 0.36,
+    solderRough: 0.42,
+    tinRough: 0.38,
+    metalness: 0.82,
+    clearcoat: 0.3,
+    clearcoatRough: 0.5,
+    env: 2.2,
+    oxidation: 0.3,
+    bumpScale: 0.016,
+  },
+  patina: {
+    foilRough: 0.62,
+    solderRough: 0.6,
+    tinRough: 0.58,
+    metalness: 0.7,
+    clearcoat: 0.12,
+    clearcoatRough: 0.7,
+    env: 1.7,
+    oxidation: 0.95,
+    bumpScale: 0.02,
+  },
+  gold: {
+    foilRough: 0.22,
+    solderRough: 0.3,
+    tinRough: 0.26,
+    metalness: 0.85,
+    clearcoat: 0.45,
+    clearcoatRough: 0.4,
+    env: 2.6,
+    oxidation: 0.08,
+    bumpScale: 0.01,
+  },
+  rose: {
+    foilRough: 0.3,
+    solderRough: 0.38,
+    tinRough: 0.32,
+    metalness: 0.83,
+    clearcoat: 0.35,
+    clearcoatRough: 0.45,
+    env: 2.4,
+    oxidation: 0.18,
+    bumpScale: 0.012,
+  },
+  gunmetal: {
+    foilRough: 0.44,
+    solderRough: 0.5,
+    tinRough: 0.46,
+    metalness: 0.8,
+    clearcoat: 0.2,
+    clearcoatRough: 0.5,
+    env: 2.0,
+    oxidation: 0.5,
+    bumpScale: 0.016,
+  },
+};
+
 type FaceRT = {
   faceId: FaceId;
-  /** The dual-layer gold-pattern shader — persistent across rebuilds. */
+  /**
+   * TWO real surfaces per plate (see makePlateShader / buildPlate). Each runs the
+   * plate shader for ONE layer (uLayer) and binds its OWN mask to uFront — no
+   * cross-layer sampling. `shader` drives the OUTER plane (front layer, z=+T/2),
+   * `shaderBack` the INNER plane (back layer, z=-T/2). Cross-layer illusions
+   * emerge from the perspective projection of the two planes. `shader` keeps its
+   * name (not `shaderFront`) so the demo-box shot harness's `faces.*.shader`
+   * probe still resolves. Persistent across rebuilds.
+   */
   shader: THREE.ShaderMaterial;
+  shaderBack: THREE.ShaderMaterial;
   /** The fused-silica slab material — persistent across rebuilds. */
   glassMat: THREE.MeshPhysicalMaterial;
   /** Front/back PNG textures currently bound (tracked for disposal). */
@@ -149,11 +268,19 @@ const FACE_AZIMUTH: Partial<Record<FaceId, number>> = {
 const easeInOutQuad = (k: number): number =>
   k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
 
-function makePlateShader(blank: THREE.Texture): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
+function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMaterial {
+  const m = new THREE.ShaderMaterial({
     vertexShader: vert,
     fragmentShader: frag,
     side: THREE.DoubleSide,
+    // foliage_moire outputs per-fragment gold coverage as alpha. Rendered in the
+    // OPAQUE pass with alphaToCoverage (the renderer runs MSAA) instead of
+    // blending, so: (a) the fine gratings get MSAA-smoothed edges without the old
+    // in-shader supersampling, (b) each plate writes real depth → correct
+    // occlusion between the six walls, and (c) the planes land in the glass
+    // slab's transmission backdrop, so the inner (back) plane is visible THROUGH
+    // the slab from outside. Blending would break all three.
+    transparent: false,
     uniforms: {
       uFront: { value: blank },
       uBack: { value: blank },
@@ -172,8 +299,45 @@ function makePlateShader(blank: THREE.Texture): THREE.ShaderMaterial {
       uSlitPeriodUm: { value: 40.0 },
       uSwitchAxis: { value: 0.0 },
       uCarrierPeriodUm: { value: 20.0 },
+      uCarrierAngle: { value: 0.0 },
+      uSlitAngle: { value: 0.0 },
+      uGratingDuty: { value: 0.5 },
+      uCenterPeriodUm: { value: 220.0 },
+      // Water scanimation (foliage_moire, capybara back face). N=0 disables the
+      // travelling-ripple branch so every other face keeps its 2-phase switch.
+      uWaterScanN: { value: 0.0 },
+      uWaterRippleWavelengthUm: { value: 900.0 },
+      // Coarse PREVIEW phase-advance pitch (µm). Decouples the water phase walk
+      // from the mm-scale crest spacing so a few degrees of tilt advances a full
+      // ripple phase (the fab 60 µm pitch is invisible at preview parallax scale).
+      // <= 0 → shader falls back to the wavelength (legacy frozen behaviour).
+      uWaterPhasePitchPreviewUm: { value: 0.0 },
+      // Art-box uv rect so the flow wake registers to the capybara (the
+      // centerpiece is a 0.86·aperture square centered on the plate → different
+      // uv half-extents per axis on a non-square plate). (0,0) → shader falls
+      // back to treating the whole face as the art box.
+      uWaterArtScale: { value: new THREE.Vector2(0.0, 0.0) },
+      uWaterArtCenter: { value: new THREE.Vector2(0.5, 0.5) },
+      // Per-motif frame-band angle bucket encoding (foliage_moire).
+      uFrameBucket0: { value: 96.0 / 255.0 },
+      uFrameBucketStep: { value: 14.0 / 255.0 },
+      uFrameBucketCount: { value: 6.0 },
+      uFrameAngleSpan: { value: (11.0 * Math.PI) / 180.0 },
+      // Diffraction rainbow accent: normalized graylevel of the reserved accent
+      // level, or < 0 to disable (default off so pre-accent manifests are
+      // unchanged). Bound from recipe_data.rainbow_level when present.
+      uRainbowLevel: { value: -1.0 },
+      // 0 = OUTER plane (front layer), 1 = INNER plane (back layer).
+      uLayer: { value: layer },
+      // Pattern Scale (Task 1b): multiplies every procedural preview period on
+      // both planes. 1 = exact fab dimensions (sub-pixel at default zoom).
+      uPatternScale: { value: 1.0 },
+      // Barrier-interlace tilt switch (Task 3): 1 on globe-duo / gear-quill.
+      uSwitchInterlace: { value: 0.0 },
     },
   });
+  m.alphaToCoverage = true;
+  return m;
 }
 
 function makeGlassMaterial(): THREE.MeshPhysicalMaterial {
@@ -212,6 +376,44 @@ function addFoilFrame(
     m.position.set(cx, cy, z);
     parent.add(m);
   }
+}
+
+/**
+ * Foil frame for the assembled box: each of the four strips gets its own
+ * material so (a) the brushed roughness streaks run along the strip's physical
+ * long axis, and (b) a per-strip heat-patina colour map darkens the outer long
+ * edge (the edge welded to the plate join) and fades inward.
+ *
+ * `mkStripMat` builds a strip material given the shared foil rough map, the
+ * per-strip heat colour texture, and whether the strip is vertical (long axis
+ * = plate Y, needs the rough map rotated 90deg).
+ */
+function addFoilFrameRealistic(
+  parent: THREE.Group,
+  w: number,
+  h: number,
+  ov: number,
+  z: number,
+  outward: boolean,
+  build: (isVertical: boolean, seed: number) => THREE.Material,
+  geo: <T extends THREE.BufferGeometry>(g: T) => T,
+  mat: <T extends THREE.Material>(m: T) => T
+): void {
+  // [cx, cy, sw, sh, isVertical]
+  const strips: [number, number, number, number, boolean][] = [
+    [0, h / 2 - ov / 2, w, ov, false], // top
+    [0, -(h / 2 - ov / 2), w, ov, false], // bottom
+    [-(w / 2 - ov / 2), 0, ov, h - 2 * ov, true], // left
+    [w / 2 - ov / 2, 0, ov, h - 2 * ov, true], // right
+  ];
+  strips.forEach(([cx, cy, sw, sh, vert], idx) => {
+    if (sw <= 0 || sh <= 0) return;
+    const seed = hashStr(`strip:${outward ? 'o' : 'i'}:${idx}:${w.toFixed(1)}:${h.toFixed(1)}`);
+    const stripMat = mat(build(vert, seed));
+    const m = new THREE.Mesh(geo(new THREE.PlaneGeometry(sw, sh)), stripMat);
+    m.position.set(cx, cy, z);
+    parent.add(m);
+  });
 }
 
 function makeLabelSprite(text: string, D: RebuildDisposables): THREE.Sprite {
@@ -261,6 +463,7 @@ export default function BoxScene() {
   const lidTargetDeg = useStore((s) => s.lidTargetDeg);
   const selectedFaceId = useStore((s) => s.selectedFaceId);
   const autoRotate = useStore((s) => s.autoRotate);
+  const patternScale = useStore((s) => s.patternScale);
   const illumination = useStore((s) => s.illumination);
   const laserColor = useStore((s) => s.laserColor);
   const lightAz = useStore((s) => s.lightAzimuthDeg);
@@ -313,23 +516,114 @@ export default function BoxScene() {
       g.thickness = T * scale;
     }
 
-    const finish = new THREE.Color(FOIL_COLORS[spec.foil.finish]);
+    const finishKey = spec.foil.finish;
+    const finish = new THREE.Color(FOIL_COLORS[finishKey]);
+    const pbr = FINISH_PBR[finishKey];
+    const tint = FOIL_COLORS[finishKey];
+
+    // --- procedural microsurface maps (generated once per rebuild) ----------
+    const foilMaps = makeFoilMaps(finishKey, { oxidation: pbr.oxidation, tint });
+    const solderMaps = makeSolderMaps(finishKey, { oxidation: pbr.oxidation, tint });
+    D.texs.push(foilMaps.color, foilMaps.rough);
+    D.texs.push(solderMaps.color, solderMaps.rough, solderMaps.bump);
+
+    // Rolled copper tape: metal with brushed roughness streaks + colour mottle,
+    // double-sided so the inner-border strips read from inside the open box too.
+    // The base foilMat is used for the flat layout; the assembled layout builds
+    // per-strip clones so the brush direction and heat-patina align to each
+    // strip's long axis (see addFoilFrame).
     const foilMat = mat(
       new THREE.MeshStandardMaterial({
-        color: finish,
-        metalness: 1.0,
-        roughness: 0.32,
+        color: 0xffffff, // tint carried by the colour map
+        map: foilMaps.color,
+        roughnessMap: foilMaps.rough,
+        metalness: pbr.metalness,
+        roughness: 1.0, // scaled by the roughnessMap
+        envMapIntensity: pbr.env,
         side: THREE.DoubleSide,
       })
     );
+    // Solder bead: flowed metal with a satin clearcoat sheen + blotchy
+    // roughness and a micro-relief bump — the clearcoat + blotch is what
+    // separates a real solder joint from a chrome rod.
     const solderMat = mat(
-      new THREE.MeshStandardMaterial({ color: finish, metalness: 1.0, roughness: 0.26 })
+      new THREE.MeshPhysicalMaterial({
+        color: 0xffffff,
+        map: solderMaps.color,
+        roughnessMap: solderMaps.rough,
+        bumpMap: solderMaps.bump,
+        bumpScale: pbr.bumpScale,
+        metalness: pbr.metalness,
+        roughness: 1.0,
+        clearcoat: pbr.clearcoat,
+        clearcoatRoughness: pbr.clearcoatRough,
+        envMapIntensity: pbr.env,
+      })
     );
     const tinMat = mat(
-      new THREE.MeshStandardMaterial({ color: finish, metalness: 1.0, roughness: 0.3 })
+      new THREE.MeshStandardMaterial({
+        color: finish,
+        metalness: pbr.metalness,
+        roughness: pbr.tinRough,
+        envMapIntensity: pbr.env,
+      })
     );
+
+    // Base tint as 0..255 RGB for the heat-patina colour maps.
+    const tintRgb: [number, number, number] = [
+      Math.round(finish.r * 255),
+      Math.round(finish.g * 255),
+      Math.round(finish.b * 255),
+    ];
+    // Per-strip foil material: rotates the shared brushed-roughness map so its
+    // streaks run along the strip's long axis, and (for outer strips) bakes a
+    // heat-patina colour map that darkens the outer welded edge. Rotating a
+    // Texture in-place would affect all users, so vertical strips get a cheap
+    // clone of the rough map with a 90deg rotation.
+    const rotatedRough = () => {
+      const r = foilMaps.rough.clone();
+      r.center.set(0.5, 0.5);
+      r.rotation = Math.PI / 2;
+      r.needsUpdate = true;
+      D.texs.push(r);
+      return r;
+    };
+    const buildFoilStripMat = (heat: boolean) => (isVertical: boolean, seed: number) => {
+      const roughMap = isVertical ? rotatedRough() : foilMaps.rough;
+      let colorMap: THREE.Texture = foilMaps.color;
+      if (heat) {
+        // Outer long edge nearest the plate join gets patina. Horizontal
+        // strips: the outer edge is the top/bottom (v-edges); vertical strips
+        // (rotated): the outer edge is the far U end. We tint both long edges
+        // lightly so any seam-adjacent border reads warm-oxidised, fading in.
+        const seamEdges = isVertical
+          ? { v0: false, v1: false, u0: true, u1: true }
+          : { v0: true, v1: true, u0: false, u1: false };
+        const heatTex = makeStripHeatColor(tintRgb, seamEdges, seed);
+        D.texs.push(heatTex);
+        colorMap = heatTex;
+      }
+      return new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: colorMap,
+        roughnessMap: roughMap,
+        metalness: pbr.metalness,
+        roughness: 1.0,
+        envMapIntensity: pbr.env,
+        side: THREE.DoubleSide,
+      });
+    };
+
+    // Brass hinge hardware: warm metal, lightly lacquered (thin clearcoat).
     const brassMat = mat(
-      new THREE.MeshStandardMaterial({ color: BRASS_COLOR, metalness: 1.0, roughness: 0.34 })
+      new THREE.MeshPhysicalMaterial({
+        color: BRASS_COLOR,
+        metalness: 1.0,
+        roughness: 0.3,
+        clearcoat: 0.25,
+        clearcoatRoughness: 0.4,
+        envMapIntensity: 1.4,
+      })
     );
 
     const group = new THREE.Group();
@@ -351,17 +645,56 @@ export default function BoxScene() {
       slab.userData.faceId = fid;
       pg.add(slab);
       ctx.raycastTargets.push(slab);
-      // (b) the gold pattern surface, epsilon outside the outer face
-      const plane = new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shader);
-      plane.position.z = T / 2 + EPS_PATTERN_MM;
-      plane.userData.faceId = fid;
-      pg.add(plane);
-      ctx.raycastTargets.push(plane);
+      // (b) TWO real gold-pattern surfaces — the physical second-surface object.
+      // OUTER plane just outside the front face carries the front layer; INNER
+      // plane just outside the inner face carries the back layer. They are
+      // separated by the true slab thickness T, so the colibrí↔globe switch, the
+      // leaf moiré, and the gear/quill switch all emerge from the perspective
+      // projection of these two real surfaces (no in-shader parallax). The back
+      // mask is authored in the same uv frame as the front (registers when viewed
+      // from OUTSIDE — the primary switch view); from inside it reads as genuine
+      // second-surface art (laterally reversed, as any inner-face deposition is).
+      const outer = new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shader);
+      outer.position.z = T / 2 + EPS_PATTERN_MM;
+      outer.userData.faceId = fid;
+      outer.renderOrder = 2;
+      pg.add(outer);
+      ctx.raycastTargets.push(outer);
+      const inner = new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shaderBack);
+      // TASK 2 — apparent-depth gap. The back gold layer physically sits on the
+      // far (−T/2) surface, but refraction lifts its APPARENT position toward the
+      // viewer: a paraxial ray exits the slab as if the back surface were only
+      // T/n below the front. Placing the inner plane at that paraxial-equivalent
+      // air gap (separation T/n below the outer plane, not the full T) makes the
+      // straight-ray parallax the camera sees match the physical Snell rate
+      // (~5.98 µm/deg through 500 µm fused silica at n=1.46), so the switch /
+      // scanimation crossings land at their true tilt angles. The glass slab
+      // geometry is unchanged; only the pattern plane moves.
+      const nGlass = spec.glass.n > 1.0 ? spec.glass.n : 1.46;
+      const outerZ = T / 2 + EPS_PATTERN_MM;
+      inner.position.z = outerZ - T / nGlass;
+      inner.userData.faceId = fid;
+      inner.renderOrder = 0;
+      pg.add(inner);
+      ctx.raycastTargets.push(inner);
       // (c) copper foil overlap strips, outer AND inner borders
       const ov = Math.min(overlapMm, Math.min(w, h) / 2);
       if (ov > 1e-4) {
-        addFoilFrame(pg, w, h, ov, T / 2 + EPS_FOIL_MM, foilMat, geo);
-        addFoilFrame(pg, w, h, ov, -(T / 2 + EPS_FOIL_MM), foilMat, geo);
+        if (sceneLayout === 'assembled') {
+          // Outer frame: brushed + heat-patina near the welded edge.
+          addFoilFrameRealistic(
+            pg, w, h, ov, T / 2 + EPS_FOIL_MM, true,
+            buildFoilStripMat(true), geo, mat
+          );
+          // Inner frame: brushed only (no patina inside the box).
+          addFoilFrameRealistic(
+            pg, w, h, ov, -(T / 2 + EPS_FOIL_MM), false,
+            buildFoilStripMat(false), geo, mat
+          );
+        } else {
+          addFoilFrame(pg, w, h, ov, T / 2 + EPS_FOIL_MM, foilMat, geo);
+          addFoilFrame(pg, w, h, ov, -(T / 2 + EPS_FOIL_MM), foilMat, geo);
+        }
       }
       return pg;
     };
@@ -420,17 +753,48 @@ export default function BoxScene() {
         }
       }
 
-      // --- 8 solder seam beads (half-embedded cylinders) --------------------
+      // --- organic solder seam beads + corner junction blobs ----------------
+      // Each seam is a tube-of-revolution with seeded radius undulation, blobby
+      // spherical end caps, and a slightly asymmetric fillet cross-section
+      // (see solderBead.ts). The 8 box corners get a lumpy accumulation blob so
+      // meeting seams read as flowed-together solder, not clean rod ends. The
+      // per-seam seed is derived from the seam id so it never flickers across
+      // rebuilds. Triangle budget: ~14 radial * ~(len/0.35 + caps) rings per
+      // seam + 8 blobs at subdiv 2 -> comfortably < 60k total.
       const beadR = mm(spec.foil.bead_um) / 2;
+      const cornerKeys = new Set<string>();
+      const cornerAt: THREE.Vector3[] = [];
+      const noteCorner = (v: THREE.Vector3) => {
+        const k = `${v.x.toFixed(2)},${v.y.toFixed(2)},${v.z.toFixed(2)}`;
+        if (!cornerKeys.has(k)) {
+          cornerKeys.add(k);
+          cornerAt.push(v.clone());
+        }
+      };
       for (const seam of seamSegments(spec)) {
         const a = new THREE.Vector3(mm(seam.start_um[0]), mm(seam.start_um[1]), mm(seam.start_um[2]));
         const b = new THREE.Vector3(mm(seam.end_um[0]), mm(seam.end_um[1]), mm(seam.end_um[2]));
         const len = a.distanceTo(b);
-        const bead = new THREE.Mesh(geo(new THREE.CylinderGeometry(beadR, beadR, len, 16)), solderMat);
+        const seed = hashStr(`seam:${seam.id}`);
+        const beadGeo = geo(
+          makeBeadGeometry({ radius: beadR, length: len, seed, undulation: 0.09 })
+        );
+        const bead = new THREE.Mesh(beadGeo, solderMat);
         bead.position.copy(a).add(b).multiplyScalar(0.5);
+        // bead runs along local +Y; orient to the seam axis
         if (seam.axis === 'x') bead.rotation.z = Math.PI / 2;
         else if (seam.axis === 'z') bead.rotation.x = Math.PI / 2;
+        // vertical (y) seams already run along +Y — no rotation
         group.add(bead);
+        noteCorner(a);
+        noteCorner(b);
+      }
+      // Corner blobs: a touch larger than the bead so the joint looks pooled.
+      for (const c of cornerAt) {
+        const blobSeed = hashStr(`corner:${c.x.toFixed(2)},${c.y.toFixed(2)},${c.z.toFixed(2)}`);
+        const blob = new THREE.Mesh(geo(makeCornerBlob(beadR * 1.35, blobSeed)), solderMat);
+        blob.position.copy(c);
+        group.add(blob);
       }
 
       // --- tinned (no bead): wall top rim + lid edge faces -------------------
@@ -517,15 +881,55 @@ export default function BoxScene() {
     mount.appendChild(renderer.domElement);
 
     // Environment map — metals (foil, solder, brass) need one to read as
-    // metal. Keep the dark background; the env only feeds reflections.
+    // metal. RoomEnvironment is too dim and crushes metalness=1 to black, so we
+    // render a bright custom studio lightbox to PMREM instead (see studioEnv).
+    // The visible background stays the dark gradient; the env only feeds
+    // reflections.
     const pmrem = new THREE.PMREMGenerator(renderer);
-    const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    const envScene = buildStudioEnvScene();
+    const envTex = pmrem.fromScene(envScene, 0.02).texture;
     scene.environment = envTex;
+    envScene.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+      if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+      else if (mat) mat.dispose();
+    });
 
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    // Global env bounce. The studio env is bright, so keep this ~1; per-finish
+    // envMapIntensity in FINISH_PBR does the metal-specific lift.
+    scene.environmentIntensity = 1.0;
+
+    // Three-point rig: warm key, cool fill from the opposite side so the metals
+    // carry a second highlight, and a bright back/rim light that catches the
+    // top edges of the solder beads and hinge. Brightened so direct-lit facets
+    // read clearly on top of the env reflections.
+    const keyLight = new THREE.DirectionalLight(0xfff2e0, 2.1);
     keyLight.position.set(2, 3, 3);
     scene.add(keyLight);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+    const fillLight = new THREE.DirectionalLight(0xbcd0ff, 0.8);
+    fillLight.position.set(-2.5, 1.0, -1.5);
+    scene.add(fillLight);
+    const rimLight = new THREE.DirectionalLight(0xffffff, 1.3);
+    rimLight.position.set(-1.0, 2.5, -3.0);
+    scene.add(rimLight);
+    // A soft frontal fill from the camera hemisphere. The foil frame strips are
+    // near-metal (metalness ~0.8) MeshStandardMaterials whose diffuse floor is
+    // the ONLY thing lighting the strips whose mirror reflection misses the
+    // studio env. Front-facing strips (normal toward the viewer) get no direct
+    // light from the key/fill/rim rig, so without this they read dark grey even
+    // for the light silver finish. This frontal fill lights their tint from the
+    // camera side; because diffuse = albedo * light, the light finishes (bright,
+    // gold) come out far brighter than the dark ones (patina, gunmetal),
+    // restoring the finish ordering the verifier found inverted.
+    const frontFill = new THREE.DirectionalLight(0xf2f4f8, 1.05);
+    frontFill.position.set(0.6, 0.9, 3.2);
+    scene.add(frontFill);
+    // Raised ambient (was 0.25) so every foil facet keeps a tinted floor no
+    // matter which way it points — the flat lift that stops off-axis strips
+    // crushing to black.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -555,7 +959,8 @@ export default function BoxScene() {
     for (const fid of FACE_IDS) {
       faces[fid] = {
         faceId: fid,
-        shader: makePlateShader(blank),
+        shader: makePlateShader(blank, 0),
+        shaderBack: makePlateShader(blank, 1),
         glassMat: makeGlassMaterial(),
         textures: [],
       };
@@ -740,6 +1145,7 @@ export default function BoxScene() {
           const rt = c.faces[fid];
           for (const t of rt.textures) t.dispose();
           rt.shader.dispose();
+          rt.shaderBack.dispose();
           rt.glassMat.dispose();
         }
         c.envTex.dispose();
@@ -824,29 +1230,108 @@ export default function BoxScene() {
           }
           for (const old of rt.textures) old.dispose();
           rt.textures = texs;
-          const u = rt.shader.uniforms;
-          u.uFront.value = front;
-          u.uBack.value = back;
-          // (width, height) — UV u spans the width, v the height; wall
-          // plates are non-square so the parallax needs both axes.
-          (u.uExtentUm.value as THREE.Vector2).set(fm.extent_um[0], fm.extent_um[1]);
-          u.uThicknessUm.value = fm.substrate.thickness_um;
-          u.uN.value = fm.substrate.n;
-          u.uRecipe.value = RECIPE_IDS[recipe];
-          if (recipe === 'stereo_lenticular') {
-            u.uSlitOrientation.value = ((Number(rd.slit_axis_deg ?? 0) || 0) * Math.PI) / 180;
-            u.uSlitPeriodUm.value = Number(rd.slit_period_um ?? 40.0) || 40.0;
-            // Fall back to the front mask if the manifest lacks view urls.
-            u.uViewA.value = viewA ?? front;
-            u.uViewB.value = viewB ?? front;
-          } else {
-            u.uViewA.value = front;
-            u.uViewB.value = front;
-          }
-          if (recipe === 'phase_shift_overlay') {
-            u.uSwitchAxis.value = ((Number(rd.switch_axis_deg ?? 0) || 0) * Math.PI) / 180;
-            u.uCarrierPeriodUm.value = Number(rd.carrier_period_um ?? 20.0) || 20.0;
-          }
+          // Shared recipe uniforms are written to BOTH plane materials; the ONLY
+          // per-plane differences are the mask bound to uFront (front vs back
+          // PNG) and the fixed uLayer set at material creation.
+          const applyShared = (u: Record<string, THREE.IUniform>) => {
+            // (width, height) — UV u spans the width, v the height; wall plates
+            // are non-square so the physical grating axes need both.
+            (u.uExtentUm.value as THREE.Vector2).set(fm.extent_um[0], fm.extent_um[1]);
+            u.uThicknessUm.value = fm.substrate.thickness_um;
+            u.uN.value = fm.substrate.n;
+            u.uRecipe.value = RECIPE_IDS[recipe];
+            if (recipe === 'stereo_lenticular') {
+              u.uSlitOrientation.value = ((Number(rd.slit_axis_deg ?? 0) || 0) * Math.PI) / 180;
+              u.uSlitPeriodUm.value = Number(rd.slit_period_um ?? 40.0) || 40.0;
+              u.uViewA.value = viewA ?? front;
+              u.uViewB.value = viewB ?? front;
+            } else {
+              u.uViewA.value = front;
+              u.uViewB.value = front;
+            }
+            if (recipe === 'phase_shift_overlay') {
+              u.uSwitchAxis.value = ((Number(rd.switch_axis_deg ?? 0) || 0) * Math.PI) / 180;
+              u.uCarrierPeriodUm.value = Number(rd.carrier_period_um ?? 20.0) || 20.0;
+            }
+            if (recipe === 'foliage_moire') {
+              // Two-plane geometric renderer. The FRONT (outer) plane draws the
+              // foliage louvre (slit period/angle) + colibrí carrier; the BACK
+              // (inner) plane draws the uniform carrier + globe/water. The leaf
+              // moiré and the switch EMERGE from the two real planes — NOT from a
+              // single-plane beat formula. Preview periods must resolve at
+              // >=2-3 px/period at default zoom or the real planes alias (the old
+              // 70 µm carrier was sub-pixel — see the two-plane rig matrix).
+              u.uCarrierPeriodUm.value = Number(rd.carrier_period_um ?? 220.0) || 220.0;
+              u.uSlitPeriodUm.value = Number(rd.slit_period_um ?? 239.8) || 239.8;
+              u.uCarrierAngle.value = ((Number(rd.carrier_angle_deg ?? 0) || 0) * Math.PI) / 180;
+              u.uSlitAngle.value = ((Number(rd.slit_axis_deg ?? 3) || 3) * Math.PI) / 180;
+              u.uGratingDuty.value = Number(rd.grating_duty ?? 0.5) || 0.5;
+              u.uFrameBucket0.value = (Number(rd.frame_bucket0 ?? 96) || 96) / 255;
+              u.uFrameBucketStep.value = (Number(rd.frame_bucket_step ?? 14) || 14) / 255;
+              u.uFrameBucketCount.value = Number(rd.frame_bucket_count ?? 6) || 6;
+              u.uFrameAngleSpan.value =
+                ((Number(rd.frame_angle_span_deg ?? 3.5) || 3.5) * Math.PI) / 180;
+              // --- GRATING PITCH preview periods (Tasks 1 + 2) ----------------
+              // The frame back carrier + leaf louvre are drawn at the USER-TUNED
+              // grating pitch, MAGNIFIED for on-screen resolvability (see
+              // plates.PREVIEW_PITCH_MAGNIFY): the raw fab pitch can be the 4 µm
+              // litho floor, which is deeply sub-pixel on the two real planes even
+              // at Pattern Scale 4× and would collapse to flat gold. The preview
+              // period is proportional to the real pitch, so finer pitch reads as
+              // finer, livelier fringes; the manifest's carrier_period_um / fab_*
+              // stay the TRUE pitch (advertised + baked). uPatternScale multiplies
+              // on top. Fallbacks read the true pitch × the magnify factor so a
+              // stale manifest (no preview_* fields) still resolves. The
+              // centerpiece 60 µm switch/comb below is NOT part of the pitch family
+              // and stays at exact fab dimensions.
+              u.uCarrierPeriodUm.value =
+                Number(rd.preview_carrier_period_um ??
+                  (Number(rd.fab_back_period_um ?? 22.0) || 22.0) * 5.0) || 110.0;
+              u.uSlitPeriodUm.value =
+                Number(rd.preview_slit_period_um ??
+                  (Number(rd.fab_front_period_um ?? 22.0 * 1.09) || 22.0 * 1.09) * 5.0) ||
+                110.0 * 1.09;
+              u.uFrameAngleSpan.value =
+                ((Number(rd.frame_angle_span_deg ?? 3.5) || 3.5) * Math.PI) / 180;
+              // Centerpiece switch / water-comb / barrier pitch: the fab 60 µm
+              // value → ~5° crossing at the T/n air gap.
+              u.uCenterPeriodUm.value = Number(rd.fab_center_period_um ?? 60.0) || 60.0;
+              u.uSwitchAxis.value = ((Number(rd.switch_axis_deg ?? 0) || 0) * Math.PI) / 180;
+              // Barrier-interlace faces (globe-duo, gear-quill) — Task 3.
+              u.uSwitchInterlace.value = rd.switch_interlace ? 1.0 : 0.0;
+              // Live Pattern Scale (Task 1b) — the store may have changed it
+              // before this manifest bound; keep the freshly-bound uniforms in sync.
+              u.uPatternScale.value = useStore.getState().patternScale;
+              u.uWaterScanN.value = Number(rd.water_scan_n ?? 0) || 0;
+              u.uWaterRippleWavelengthUm.value =
+                Number(rd.water_ripple_wavelength_um ?? 900.0) || 900.0;
+              u.uWaterPhasePitchPreviewUm.value =
+                Number(rd.water_phase_pitch_preview_um ?? 0) || 0;
+              {
+                const half = (rd.water_art_half_uv ?? [0, 0]) as number[];
+                const ctr = (rd.water_art_center_uv ?? [0.5, 0.5]) as number[];
+                (u.uWaterArtScale.value as THREE.Vector2).set(
+                  Number(half[0]) || 0,
+                  Number(half[1]) || 0
+                );
+                (u.uWaterArtCenter.value as THREE.Vector2).set(
+                  Number(ctr[0]) || 0.5,
+                  Number(ctr[1]) || 0.5
+                );
+              }
+              u.uRainbowLevel.value =
+                rd.rainbow_level != null ? (Number(rd.rainbow_level) || 0) / 255 : -1.0;
+            }
+          };
+          applyShared(rt.shader.uniforms);
+          applyShared(rt.shaderBack.uniforms);
+          // Per-plane masks: OUTER plane samples the FRONT mask, INNER the BACK.
+          // uBack is kept bound (legacy single-plane recipes read it); the
+          // foliage_moire path ignores it and reads only uFront (this layer).
+          rt.shader.uniforms.uFront.value = front;
+          rt.shader.uniforms.uBack.value = back;
+          rt.shaderBack.uniforms.uFront.value = back;
+          rt.shaderBack.uniforms.uBack.value = front;
           log('face_texture_bound', {
             face: fid,
             slug: fm.spec.pattern_slug,
@@ -905,6 +1390,16 @@ export default function BoxScene() {
     if (ctx) ctx.lidTargetDeg = lidTargetDeg;
   }, [lidTargetDeg]);
 
+  // --- pattern scale (Task 1b) -----------------------------------------------
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    for (const fid of FACE_IDS) {
+      ctx.faces[fid].shader.uniforms.uPatternScale.value = patternScale;
+      ctx.faces[fid].shaderBack.uniforms.uPatternScale.value = patternScale;
+    }
+  }, [patternScale]);
+
   // --- illumination / laser color --------------------------------------------
   useEffect(() => {
     const ctx = ctxRef.current;
@@ -916,8 +1411,10 @@ export default function BoxScene() {
       blue: 0x3388ff,
     };
     for (const fid of FACE_IDS) {
-      ctx.faces[fid].shader.uniforms.uIllumination.value = illumId;
-      ctx.faces[fid].shader.uniforms.uLaserColor.value.setHex(laserRgb[laserColor]);
+      for (const s of [ctx.faces[fid].shader, ctx.faces[fid].shaderBack]) {
+        s.uniforms.uIllumination.value = illumId;
+        s.uniforms.uLaserColor.value.setHex(laserRgb[laserColor]);
+      }
     }
   }, [illumination, laserColor]);
 
@@ -933,6 +1430,7 @@ export default function BoxScene() {
     const z = r * Math.cos(el) * Math.cos(az);
     for (const fid of FACE_IDS) {
       ctx.faces[fid].shader.uniforms.uLightWorld.value.set(x, y, z);
+      ctx.faces[fid].shaderBack.uniforms.uLightWorld.value.set(x, y, z);
     }
     ctx.keyLight.position.set(x, y, z);
   }, [lightAz, lightEl]);

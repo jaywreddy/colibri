@@ -52,6 +52,9 @@ FINISH_COLORS = {
     "bright": "#c9ced6",
     "copper": "#b87333",
     "patina": "#34343a",
+    "gold": "#e3b53b",
+    "rose": "#c98a86",
+    "gunmetal": "#3a3f47",
 }
 
 # Common copper foil tape widths (µm): 3/16", 7/32", 1/4".
@@ -130,9 +133,26 @@ def keepout_um(foil: FoilSpec, glass_thickness_um: float) -> float:
     """Pattern keep-out rim per plate edge: foil overlap + safety margin.
 
     This is stamped into every face's ``weld_margin_um`` so the gold mask
-    never extends under (or hazardously close to) the copper foil.
+    never extends under (or hazardously close to) the copper foil. It bounds
+    the FRONT artwork (foliage silhouette) — decorative gold must not creep
+    under or hazardously near the hand-applied copper tape.
     """
     return overlap_um(foil, glass_thickness_um) + foil.safety_um
+
+
+def back_window_um(foil: FoilSpec, glass_thickness_um: float) -> float:
+    """Back-carrier keep-out rim per plate edge: foil overlap ONLY.
+
+    The back layer is a uniform moiré-carrier grating, not decorative art. It
+    should cover the whole *exposed* face — everything the folded copper foil
+    does not physically hide — so the moiré shimmer reads edge-to-edge behind
+    the front foliage. The only hard constraint is that the grating must not
+    run under the foil (where it would be invisible and could interfere with
+    solder wetting), so we inset by the foil overlap alone and DROP the safety
+    margin the front art carries. The result is a wider window than the front
+    keep-out (``back_window_um <= keepout_um`` always, since safety >= 0).
+    """
+    return overlap_um(foil, glass_thickness_um)
 
 
 def face_cut_dims(
@@ -317,6 +337,7 @@ def assembly_summary(
     """The ``assembly`` block of the box manifest — all derived geometry."""
     return {
         "keepout_um": keepout_um(foil, glass_thickness_um),
+        "back_window_um": back_window_um(foil, glass_thickness_um),
         "overlap_um": overlap_um(foil, glass_thickness_um),
         "glass_thickness_um": glass_thickness_um,
         "cut_list": cut_list(width_um, depth_um, height_um, glass_thickness_um),
