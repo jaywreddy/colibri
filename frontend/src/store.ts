@@ -67,6 +67,15 @@ type State = {
   /** Slow OrbitControls turntable. Default OFF. */
   autoRotate: boolean;
   setAutoRotate: (on: boolean) => void;
+  /**
+   * Pattern Scale: uniform multiplier on every procedural preview period on
+   * both plate planes (frame carrier + louvre, centerpiece switch, water comb +
+   * ripple lanes, barrier-interlace lanes). 1 = exact fab dimensions (sub-pixel
+   * at default zoom — the fine structure resolves when you raise this or zoom
+   * in). Frontend-only; no backend regen. Default 1×.
+   */
+  patternScale: number;
+  setPatternScale: (s: number) => void;
 
   // --- illumination / viewer state ---
   illumination: Illumination;
@@ -87,6 +96,7 @@ export const useStore = create<State>((set, get) => ({
   lidTargetDeg: 0,
   layout: 'assembled',
   autoRotate: false,
+  patternScale: 1,
   illumination: 'ambient',
   laserColor: 'green',
   lightAzimuthDeg: 35,
@@ -204,6 +214,7 @@ export const useStore = create<State>((set, get) => ({
   setLidTargetDeg: (deg) => set({ lidTargetDeg: clampLid(deg) }),
   setLayout: (layout) => set({ layout }),
   setAutoRotate: (autoRotate) => set({ autoRotate }),
+  setPatternScale: (patternScale) => set({ patternScale }),
 
   setIllumination: (illumination) => set({ illumination }),
   setLaserColor: (laserColor) => set({ laserColor }),

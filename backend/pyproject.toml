@@ -12,6 +12,7 @@ dependencies = [
     "shapely>=2.0",
     "drawsvg>=2.4",
     "pydantic>=2.9",
+    "gdsfactory>=9.45.0",
 ]
 
 [project.optional-dependencies]

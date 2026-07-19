@@ -1,6 +1,6 @@
 import { FACE_IDS, type FaceId } from '../api';
 import { useStore } from '../store';
-import { KIT, SubHeader } from './kit';
+import { KIT, Section } from './kit';
 import FaceEditor from './FaceEditor';
 import IlluminationPanel from './IlluminationPanel';
 
@@ -24,8 +24,7 @@ export default function FacesPanel() {
 
   return (
     <div data-testid="faces-panel">
-      <div style={{ padding: 12 }}>
-        <SubHeader>FACES</SubHeader>
+      <Section title="Faces" testId="section-faces" persistId="faces">
         <div
           data-testid="face-grid"
           style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}
@@ -69,10 +68,8 @@ export default function FacesPanel() {
             );
           })}
         </div>
-      </div>
-      <div style={{ borderTop: `1px solid ${KIT.divider}` }} />
+      </Section>
       <FaceEditor />
-      <div style={{ borderTop: `1px solid ${KIT.divider}` }} />
       <IlluminationPanel />
     </div>
   );

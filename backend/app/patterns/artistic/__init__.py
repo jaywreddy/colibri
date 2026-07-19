@@ -6,6 +6,14 @@ from . import (
     colibri_globe_lenticular,
     colibri_globe_moire,
     colibri_globe_phase,
+    colibri_flap_phase,
+    globe_duo_phase,
+    monogram_jp,
+    inscription_line,
+    capybara_scanimation,
+    food_pair_chirp,
+    gear_quill_switch,
+    jamon_tray,
 )
 
 __all__ = [
@@ -14,4 +22,12 @@ __all__ = [
     "colibri_globe_lenticular",
     "colibri_globe_moire",
     "colibri_globe_phase",
+    "colibri_flap_phase",
+    "globe_duo_phase",
+    "monogram_jp",
+    "inscription_line",
+    "capybara_scanimation",
+    "food_pair_chirp",
+    "gear_quill_switch",
+    "jamon_tray",
 ]

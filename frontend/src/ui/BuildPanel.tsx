@@ -21,6 +21,10 @@ const SIZE_PRESETS = [
   { id: 'ring-box', label: 'Ring box', w: 50000, d: 50000, h: 40000 },
   { id: 'compact', label: 'Compact', w: 45000, d: 45000, h: 35000 },
   { id: 'pendant', label: 'Pendant', w: 40000, d: 40000, h: 55000 },
+  // Largest box whose 6 plates pack onto one 4-inch (100 mm) Si wafer with
+  // 300 um dicing streets — the fab wafer-layout target (see
+  // backend/app/export_wafer.py::solve_max_scale). H/W keeps the 0.8 ratio.
+  { id: 'mini-wafer', label: 'Mini (wafer)', w: 28900, d: 28900, h: 23120 },
 ] as const;
 
 /** Brass hinge tube OD presets (um). */
@@ -29,7 +33,13 @@ const TUBE_PRESETS = [
   { label: '1/8″', um: 3175 },
 ] as const;
 
-const FINISHES: FoilFinish[] = ['bright', 'copper', 'patina'];
+const FINISHES: FoilFinish[] = ['bright', 'copper', 'gold', 'rose', 'patina', 'gunmetal'];
+
+/** Grating-pitch presets (μm) for the fabricated back carrier + leaf louvre. */
+const GRATING_PITCH_PRESETS = [4, 10, 20, 40, 60] as const;
+/** Litho floor (2 μm line + 2 μm gap) and a sane upper bound for the custom field. */
+const GRATING_PITCH_MIN_UM = 4;
+const GRATING_PITCH_MAX_UM = 200;
 
 /**
  * Left "Build" rail — the design toolbox: size presets, box dims + glass,
@@ -44,6 +54,11 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
   const patchGlass = useStore((s) => s.patchGlass);
   const patchFoil = useStore((s) => s.patchFoil);
   const patchHinge = useStore((s) => s.patchHinge);
+  const patternScale = useStore((s) => s.patternScale);
+  const setPatternScale = useStore((s) => s.setPatternScale);
+
+  const gratingPitch = boxSpec.carrier_pitch_um;
+  const activePitchPreset = GRATING_PITCH_PRESETS.find((p) => p === gratingPitch);
 
   const ko = keepoutUm(boxSpec);
   const ov = overlapUm(boxSpec);
@@ -72,6 +87,70 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
             patchBoxSpec({ width_um: p.w, depth_um: p.d, height_um: p.h });
           }}
         />
+      </Section>
+
+      <Section title="Preview" testId="section-preview">
+        <ChipRow
+          label="Pattern scale"
+          chips={[1, 2, 4, 8].map((s) => ({
+            value: s,
+            label: `${s}×`,
+            testId: `pattern-scale-${s}`,
+          }))}
+          value={patternScale}
+          onSelect={(s) => {
+            log('pattern_scale_changed', { scale: s });
+            setPatternScale(s as number);
+          }}
+        />
+        <div style={{ fontSize: 11, opacity: 0.6, lineHeight: 1.5, marginTop: 2 }}>
+          Magnifies every procedural period on screen (preview only — no effect
+          on the fab masks). The centerpiece switch/comb (60 μm) and ripple lanes
+          (15 μm) are exact-fab and sub-pixel at 1×, reading as flat gold — raise
+          the scale or zoom in to resolve them. The leaf/carrier fringes track the
+          Grating pitch below.
+        </div>
+      </Section>
+
+      <Section title="Pattern" testId="section-pattern">
+        <ChipRow
+          label="Grating pitch"
+          chips={GRATING_PITCH_PRESETS.map((p) => ({
+            value: p,
+            label: `${p} μm`,
+            testId: `grating-pitch-${p}`,
+          }))}
+          value={activePitchPreset}
+          onSelect={(um) => {
+            log('grating_pitch_changed', { carrier_pitch_um: um });
+            patchBoxSpec({ carrier_pitch_um: um as number });
+          }}
+        />
+        <Disclosure label="Advanced" testId="grating-pitch-advanced">
+          <NumberRow
+            label="Pitch (custom)"
+            value={gratingPitch}
+            min={GRATING_PITCH_MIN_UM}
+            max={GRATING_PITCH_MAX_UM}
+            step={1}
+            unit="μm"
+            onChange={(v) => {
+              const clamped = Math.max(
+                GRATING_PITCH_MIN_UM,
+                Math.min(GRATING_PITCH_MAX_UM, v)
+              );
+              log('grating_pitch_changed', { carrier_pitch_um: clamped });
+              patchBoxSpec({ carrier_pitch_um: clamped });
+            }}
+            testId="grating-pitch-custom"
+          />
+        </Disclosure>
+        <div style={{ fontSize: 11, opacity: 0.6, lineHeight: 1.5, marginTop: 2 }}>
+          Sets the fringe spacing + tilt sensitivity of the REAL fabricated part
+          (finer = livelier, with diffraction onset below ~5 μm). 4 μm = 2 μm
+          lines at the litho floor. Drives the leaf / back-carrier family only —
+          the switch & comb faces keep their own 60 μm barrier architecture.
+        </div>
       </Section>
 
       <Section title="Box" testId="section-box">
@@ -183,7 +262,7 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           testId="foil-bead"
         />
         <div style={{ fontSize: 12, marginBottom: 4 }}>Finish</div>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
           {FINISHES.map((f) => (
             <Swatch
               key={f}

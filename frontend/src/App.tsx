@@ -58,16 +58,42 @@ export default function App() {
   const [savedBoxes, setSavedBoxes] = useState<BoxManifest[]>([]);
   const [presetName, setPresetName] = useState('');
   const lastReqIdRef = useRef(0);
+  // Consecutive regen failures — drives the backend-warmup retry backoff.
+  const regenFailsRef = useRef(0);
 
-  // Pattern catalog — fetched once at boot for the face editors.
+  // Pattern catalog — fetched at boot for the face editors. Retries with
+  // backoff: under the combined `app` launcher Vite is ready in ~0.5 s while
+  // uvicorn takes a few seconds, so the first fetches can hit a dead proxy.
+  // Without retry the app sits on blank (black) faces forever.
   useEffect(() => {
     if (catalog.length > 0) return;
-    listPatterns()
-      .then((pts) => {
-        setCatalog(pts);
-        log('catalog_loaded', { count: pts.length });
-      })
-      .catch((e) => log('catalog_load_failed', { error: (e as Error).message }));
+    let cancelled = false;
+    let timer: number | null = null;
+    let attempt = 0;
+    const load = () => {
+      listPatterns()
+        .then((pts) => {
+          if (cancelled) return;
+          setCatalog(pts);
+          log('catalog_loaded', { count: pts.length, attempt });
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          attempt += 1;
+          // Never give up: a dev-server restart can bring the backend back
+          // minutes later, and a capped retry left the app on black faces
+          // forever. Settle into a gentle 5 s heartbeat after the first burst.
+          if (attempt % 10 === 0) {
+            log('catalog_load_retrying', { error: (e as Error).message, attempt });
+          }
+          timer = window.setTimeout(load, Math.min(500 * attempt, 5000));
+        });
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
   }, [catalog.length, setCatalog]);
 
   const validationErrors = useMemo(() => validateBox(boxSpec), [boxSpec]);
@@ -88,6 +114,7 @@ export default function App() {
         glass: boxSpec.glass,
         foil: boxSpec.foil,
         hinge: boxSpec.hinge,
+        carrier_pitch_um: boxSpec.carrier_pitch_um,
         faces: boxSpec.faces,
       }),
     [boxSpec]
@@ -114,13 +141,30 @@ export default function App() {
         return;
       }
       setBoxManifest(m);
+      regenFailsRef.current = 0;
       log('box_regen_done', {
         id: m.id,
         duration_ms: Math.round(performance.now() - t0),
       });
     } catch (e) {
       const err = e as Error;
-      if (lastReqIdRef.current === reqId) setError(err.message);
+      if (lastReqIdRef.current === reqId) {
+        setError(err.message);
+        // Backend-warmup retry: under the combined `app` launcher the first
+        // generate can race uvicorn's startup (proxy 500/ECONNREFUSED), and a
+        // dev-server restart can take the backend down for minutes. Never give
+        // up — settle into a 5 s heartbeat; the stale-response guard makes
+        // overlapping retries harmless and a success resets the counter. (A
+        // genuinely invalid spec never reaches here: regen() validates first.)
+        regenFailsRef.current += 1;
+        const delay = Math.min(600 * regenFailsRef.current, 5000);
+        if (regenFailsRef.current <= 3 || regenFailsRef.current % 10 === 0) {
+          log('box_regen_retry', { attempt: regenFailsRef.current, delay_ms: delay });
+        }
+        window.setTimeout(() => {
+          if (lastReqIdRef.current === reqId) regen();
+        }, delay);
+      }
       log('box_regen_failed', { error: err.message });
     } finally {
       if (lastReqIdRef.current === reqId) setBusy(false);

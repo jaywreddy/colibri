@@ -1,6 +1,6 @@
 import { log } from '../logger';
 import { useStore } from '../store';
-import { ChipRow, SliderRow, SubHeader } from './kit';
+import { ChipRow, Section, SliderRow } from './kit';
 
 /** Illumination mode, laser color, and light-direction controls. */
 export default function IlluminationPanel() {
@@ -13,40 +13,45 @@ export default function IlluminationPanel() {
   const setLight = useStore((s) => s.setLight);
 
   return (
-    <div style={{ padding: 12 }}>
-      <SubHeader>ILLUMINATION</SubHeader>
-      <ChipRow
-        chips={(['ambient', 'laser', 'backlight'] as const).map((m) => ({
-          value: m,
-          label: m,
-          testId: `illum-${m}`,
-        }))}
-        value={illumination}
-        onSelect={(m) => {
-          log('illumination_changed', { from: illumination, to: m });
-          setIllumination(m);
-        }}
-      />
-
-      {illumination === 'laser' && (
+    <>
+      <Section title="Illumination" testId="section-illumination" persistId="illumination">
         <ChipRow
-          label="Laser"
-          chips={(['red', 'green', 'blue'] as const).map((c) => ({
-            value: c,
-            label: c,
-            testId: `laser-${c}`,
+          chips={(['ambient', 'laser', 'backlight'] as const).map((m) => ({
+            value: m,
+            label: m,
+            testId: `illum-${m}`,
           }))}
-          value={laserColor}
-          onSelect={(c) => {
-            log('laser_color_changed', { from: laserColor, to: c });
-            setLaserColor(c);
+          value={illumination}
+          onSelect={(m) => {
+            log('illumination_changed', { from: illumination, to: m });
+            setIllumination(m);
           }}
         />
-      )}
 
-      <SubHeader>LIGHT DIRECTION</SubHeader>
-      <SliderRow
-        label="Azimuth"
+        {illumination === 'laser' && (
+          <ChipRow
+            label="Laser"
+            chips={(['red', 'green', 'blue'] as const).map((c) => ({
+              value: c,
+              label: c,
+              testId: `laser-${c}`,
+            }))}
+            value={laserColor}
+            onSelect={(c) => {
+              log('laser_color_changed', { from: laserColor, to: c });
+              setLaserColor(c);
+            }}
+          />
+        )}
+      </Section>
+
+      <Section
+        title="Light direction"
+        testId="section-light-direction"
+        persistId="light-direction"
+      >
+        <SliderRow
+          label="Azimuth"
         value={az}
         min={-180}
         max={180}
@@ -73,6 +78,7 @@ export default function IlluminationPanel() {
         }}
         testId="light-el"
       />
-    </div>
+      </Section>
+    </>
   );
 }

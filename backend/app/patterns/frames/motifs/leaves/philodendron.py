@@ -1,7 +1,16 @@
-"""Philodendron: lobed leaf with deep cuts (an abstracted Monstera-like profile)."""
-from __future__ import annotations
+"""Philodendron: a graceful cordate (heart) leaf with a drawn-out drip tip.
 
-import math
+Earlier versions chased a literal split-leaf *Monstera* — but at frame-raster
+scale the deep sinuses (or even gentle scallops) read as an angular, stepped
+gold blob, the ugliest shape in the garland. What actually reads elegant next
+to the plantain's smooth oval is a SMOOTH cordate silhouette: a broad heart
+shoulder at the base, a single fluid widest point, then a long tapering sweep to
+a fine drip tip. It stays distinct from the plantain (heart base + acuminate
+drip tip vs. symmetric ellipse) while keeping a clean, flowing margin.
+
+Anchor at the petiole (origin), midrib along +x.
+"""
+from __future__ import annotations
 
 from ...geometry import Mulberry32
 from ...pen import Pen
@@ -9,42 +18,49 @@ from ...pen import Pen
 
 def draw(pen: Pen, size: float, seed: int) -> None:
     rng = Mulberry32(seed)
-    stroke = size * 0.018
+    stroke = size * 0.02
 
-    leaf_len = size * 1.0
-    leaf_w = leaf_len * 0.55
+    leaf_len = size * 1.10
+    hw = leaf_len * 0.40 * (0.94 + 0.12 * rng.next_float())
 
-    # Construct the outline as a polyline with alternating lobes — base at origin,
-    # tip along +x. We walk the top edge from base→tip, then the bottom back to
-    # base. Lobes are sinusoidal cuts in y.
-    n_lobes = 5
-    top_pts: list[tuple[float, float]] = [(0.0, 0.0)]
-    for i in range(1, 2 * n_lobes + 1):
-        frac = i / (2 * n_lobes + 1)
-        x = leaf_len * frac
-        # Even step → outer crest; odd step → inner cut.
-        if i % 2 == 1:
-            y = leaf_w * 0.5 * math.sin(math.pi * frac) ** 0.7
-        else:
-            y = leaf_w * 0.18 * math.sin(math.pi * frac) ** 0.7
-        # Pull the inner cuts toward the midrib to fake the fenestration.
-        if i % 2 == 0:
-            y *= 0.4
-        top_pts.append((x, y * (0.9 + 0.15 * rng.next_float())))
-    top_pts.append((leaf_len, 0.0))
+    # Margin control points as (x_frac, halfwidth_frac). SMOOTH and monotonic:
+    # a fast heart-shoulder rise near the base, one fluid widest point at ~28 %,
+    # then a long uninterrupted taper to a fine acuminate drip tip. No sinuses —
+    # the flowing margin is what reads as elegant at frame scale.
+    prof = [
+        (0.00, 0.04),   # petiole base
+        (0.05, 0.52),   # heart shoulder rises fast (cordate base)
+        (0.14, 0.86),   # shoulder crown
+        (0.28, 0.98),   # widest point
+        (0.46, 0.90),
+        (0.64, 0.70),
+        (0.80, 0.44),
+        (0.92, 0.20),   # ease into the drip tip
+        (1.00, 0.0),    # fine acuminate tip
+    ]
 
-    # Bottom mirror
-    bottom_pts = [(x, -y) for x, y in reversed(top_pts[1:-1])]
+    def edge(sign: float, reverse: bool) -> None:
+        pts = prof if not reverse else list(reversed(prof))
+        for k, (fx, fw) in enumerate(pts):
+            x = leaf_len * fx
+            y = sign * hw * fw
+            if k == 0:
+                pen.line_to(x, y)
+            else:
+                # Curve into each control point for soft lobe crowns + rounded
+                # sinus floors (a straight zigzag would look mechanical).
+                px, pfw = pts[k - 1]
+                mx = leaf_len * 0.5 * (px + fx)
+                my = sign * hw * 0.5 * (pfw + fw)
+                pen.quadratic_to(mx, my, x, y)
 
-    pen.move_to(top_pts[0][0], top_pts[0][1])
-    for x, y in top_pts[1:]:
-        pen.line_to(x, y)
-    for x, y in bottom_pts:
-        pen.line_to(x, y)
+    pen.move_to(0.0, 0.0)
+    edge(+1.0, reverse=False)   # top margin base -> tip
+    edge(-1.0, reverse=True)    # bottom margin tip -> base
     pen.close_path()
     pen.fill_path()
 
-    # Midrib
+    # Midrib.
     pen.move_to(0.0, 0.0)
-    pen.line_to(leaf_len, 0.0)
-    pen.stroke_path(stroke * 1.6)
+    pen.line_to(leaf_len * 0.95, 0.0)
+    pen.stroke_path(stroke * 1.7)

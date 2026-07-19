@@ -296,8 +296,20 @@ def test_default_box_spec_matches_contract():
     spec = default_box_spec()
     assert (spec.width_um, spec.depth_um, spec.height_um) == (50000.0, 50000.0, 40000.0)
     assert set(spec.faces) == set(FACE_IDS)
+    # Confirmed six-face plan (rev: round-8 user decisions — front carries the
+    # rotating CA↔Colombia duo-globe, left the jamón tray; colibri-globe-phase
+    # and food-pair-chirp remain in the catalog).
+    expected_slug = {
+        "front": "globe-duo-phase",
+        "back": "capybara-scanimation",
+        "top": "monogram-jp",
+        "bottom": "inscription-line",
+        "left": "jamon-tray",
+        "right": "gear-quill-switch",
+    }
     for i, fid in enumerate(FACE_IDS):
-        assert spec.faces[fid].pattern_slug == "wayuu-kanasu-moire"
+        assert spec.faces[fid].pattern_slug == expected_slug[fid]
+        # Per-face seed 100..105 in FACE_IDS order (distinct moiré carrier angle).
         assert spec.faces[fid].frame.seed == 100 + i
 
 

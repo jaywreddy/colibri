@@ -1,7 +1,7 @@
 import { useStore } from '../store';
 import { log } from '../logger';
 import type { FaceId, FrameSpec } from '../api';
-import { NumberRow, SelectRow, SliderRow, SubHeader } from './kit';
+import { NumberRow, Section, SelectRow, SliderRow } from './kit';
 
 /**
  * Frame dials for one face — algorithm picker, theme picker, density/bloom/
@@ -24,15 +24,30 @@ export default function FrameControls({ faceId }: { faceId: FaceId }) {
   };
 
   return (
-    <div data-testid="frame-controls">
-      <SubHeader>FRAME</SubHeader>
-
+    <Section title="Frame" testId="frame-controls" persistId="frame">
       <SelectRow
         label="Algorithm"
         value={f.algorithm}
-        options={[{ value: 'colonize', label: 'Space colonization' }]}
+        options={[
+          { value: 'wreath', label: 'Laurel wreath' },
+          { value: 'colonize', label: 'Space colonization' },
+        ]}
         onChange={(v) => patchFaceFrame(faceId, { algorithm: v as FrameSpec['algorithm'] })}
       />
+
+      {f.algorithm === 'wreath' && (
+        <SelectRow
+          label="Wreath style"
+          value={f.wreath_style}
+          options={[
+            { value: 'garland2', label: 'Garland (lush tropical)' },
+            { value: 'laurel', label: 'Laurel (classic rank)' },
+            { value: 'garland', label: 'Garland (loose mixed)' },
+            { value: 'clusters', label: 'Clusters (spaced rosettes)' },
+          ]}
+          onChange={(v) => patchFaceFrame(faceId, { wreath_style: v as FrameSpec['wreath_style'] })}
+        />
+      )}
 
       <SelectRow
         label="Theme"
@@ -88,6 +103,6 @@ export default function FrameControls({ faceId }: { faceId: FaceId }) {
         onChange={(v) => setNum('seed', Math.floor(v))}
         testId="frame-seed"
       />
-    </div>
+    </Section>
   );
 }

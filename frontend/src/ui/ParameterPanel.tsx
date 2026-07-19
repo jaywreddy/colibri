@@ -1,7 +1,7 @@
 import { useStore } from '../store';
 import { log } from '../logger';
 import type { FaceId } from '../api';
-import { CheckRow, SelectRow, SliderRow, SubHeader } from './kit';
+import { CheckRow, Section, SelectRow, SliderRow } from './kit';
 
 /**
  * Central-pattern parameter controls for one face of the box. Edits write to
@@ -24,8 +24,7 @@ export default function ParameterPanel({ faceId }: { faceId: FaceId }) {
   };
 
   return (
-    <div data-testid="parameter-panel">
-      <SubHeader>PATTERN</SubHeader>
+    <Section title="Pattern parameters" testId="parameter-panel" persistId="pattern-params">
       {descriptor.params.map((p) => {
         const v =
           (face.pattern_params[p.name] as number | string | boolean | undefined) ??
@@ -65,6 +64,6 @@ export default function ParameterPanel({ faceId }: { faceId: FaceId }) {
           />
         );
       })}
-    </div>
+    </Section>
   );
 }

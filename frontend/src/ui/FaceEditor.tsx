@@ -4,7 +4,7 @@ import { log } from '../logger';
 import FrameControls from './FrameControls';
 import ParameterPanel from './ParameterPanel';
 import { FACE_LABELS } from './FacesPanel';
-import { Button, Disclosure, KIT, Shimmer, SubHeader } from './kit';
+import { Button, KIT, Section, Shimmer } from './kit';
 
 /**
  * Editor for the selected face: visual pattern picker (thumbnail cards) +
@@ -43,25 +43,34 @@ export default function FaceEditor() {
   const descriptor = catalog.find((c) => c.slug === face.pattern_slug);
 
   return (
-    <div
-      data-testid="face-editor"
-      style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 12 }}
-    >
-      <SubHeader>EDITING: {FACE_LABELS[selectedFaceId].toUpperCase()}</SubHeader>
+    <div data-testid="face-editor">
+      <div
+        style={{
+          padding: '10px 12px 4px',
+          fontSize: 11,
+          letterSpacing: 1.5,
+          opacity: 0.6,
+        }}
+      >
+        EDITING: {FACE_LABELS[selectedFaceId].toUpperCase()}
+      </div>
 
-      <Disclosure
-        label={`Pattern — ${descriptor?.name ?? face.pattern_slug}`}
+      <Section
+        title="Pattern"
         testId="pattern-picker"
-        onOpen={() => {
+        persistId="pattern"
+        defaultOpen
+        onFirstOpen={() => {
           setPickerOpened(true);
           void loadThumbnails();
         }}
       >
         <div
+          data-testid="pattern-grid"
           style={{
             display: 'grid',
             gridTemplateColumns: '1fr 1fr',
-            gap: 6,
+            gap: 8,
           }}
         >
           {catalog.map((c) => {
@@ -80,17 +89,18 @@ export default function FaceEditor() {
                   patchFace(selectedFaceId, { pattern_slug: c.slug, pattern_params: {} });
                 }}
                 style={{
-                  padding: 4,
-                  border: `1px solid ${active ? KIT.accent : KIT.border}`,
+                  padding: 5,
+                  border: `2px solid ${active ? KIT.accent : KIT.border}`,
                   background: active ? KIT.raised : KIT.field,
                   borderRadius: 6,
                   color: KIT.text,
                   cursor: 'pointer',
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: 4,
+                  gap: 5,
                   fontSize: 11,
                   textAlign: 'center',
+                  boxShadow: active ? `0 0 0 1px ${KIT.accent}` : 'none',
                 }}
               >
                 {typeof thumb === 'string' ? (
@@ -108,46 +118,48 @@ export default function FaceEditor() {
                 ) : (
                   <Shimmer style={{ width: '100%', aspectRatio: '1 / 1' }} />
                 )}
-                <div style={{ lineHeight: 1.25 }}>{c.name}</div>
+                <div style={{ lineHeight: 1.25, fontWeight: active ? 600 : 400 }}>
+                  {c.name}
+                </div>
               </button>
             );
           })}
         </div>
-      </Disclosure>
 
-      {descriptor && (
-        <div style={{ fontSize: 11, opacity: 0.6, lineHeight: 1.4 }}>
-          {descriptor.description}
+        {descriptor && (
+          <div style={{ fontSize: 11, opacity: 0.6, lineHeight: 1.4, marginTop: 10 }}>
+            {descriptor.description}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+          <Button
+            testId="apply-all-faces"
+            title="Copy this face's pattern + dials to all 6 faces (each keeps its own seed)"
+            onClick={() => {
+              log('face_apply_all', { from: selectedFaceId });
+              applyFaceToAll(selectedFaceId);
+            }}
+            style={{ flex: 1 }}
+          >
+            Apply to all faces
+          </Button>
+          <Button
+            testId="shuffle-seed"
+            title="Randomize this face's frame seed"
+            onClick={() => {
+              shuffleFaceSeed(selectedFaceId);
+              log('face_seed_shuffled', {
+                faceId: selectedFaceId,
+                seed: useStore.getState().boxSpec.faces[selectedFaceId]?.frame.seed,
+              });
+            }}
+            style={{ flex: 1 }}
+          >
+            🎲 Shuffle seed
+          </Button>
         </div>
-      )}
-
-      <div style={{ display: 'flex', gap: 6 }}>
-        <Button
-          testId="apply-all-faces"
-          title="Copy this face's pattern + dials to all 6 faces (each keeps its own seed)"
-          onClick={() => {
-            log('face_apply_all', { from: selectedFaceId });
-            applyFaceToAll(selectedFaceId);
-          }}
-          style={{ flex: 1 }}
-        >
-          Apply to all faces
-        </Button>
-        <Button
-          testId="shuffle-seed"
-          title="Randomize this face's frame seed"
-          onClick={() => {
-            shuffleFaceSeed(selectedFaceId);
-            log('face_seed_shuffled', {
-              faceId: selectedFaceId,
-              seed: useStore.getState().boxSpec.faces[selectedFaceId]?.frame.seed,
-            });
-          }}
-          style={{ flex: 1 }}
-        >
-          🎲 Shuffle seed
-        </Button>
-      </div>
+      </Section>
 
       <ParameterPanel faceId={selectedFaceId} />
 

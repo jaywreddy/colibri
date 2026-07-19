@@ -22,7 +22,8 @@ export type ParamSpec = {
 export type RenderRecipe =
   | 'stereo_lenticular'
   | 'moire_interactive'
-  | 'phase_shift_overlay';
+  | 'phase_shift_overlay'
+  | 'foliage_moire';
 
 export type PatternDescriptor = {
   slug: string;
@@ -62,6 +63,7 @@ export const RECIPE_IDS: Record<RenderRecipe, number> = {
   stereo_lenticular: 0,
   moire_interactive: 1,
   phase_shift_overlay: 2,
+  foliage_moire: 3,
 };
 
 /**
@@ -126,16 +128,27 @@ export type FaceId = 'front' | 'back' | 'top' | 'bottom' | 'left' | 'right';
 export const FACE_IDS: FaceId[] = ['front', 'back', 'top', 'bottom', 'left', 'right'];
 
 /** Default pattern slug stamped onto all six faces of a fresh box. */
-export const DEFAULT_PATTERN_SLUG = 'wayuu-kanasu-moire';
+export const DEFAULT_PATTERN_SLUG = 'globe-duo-phase';
 
 export type FrameSpec = {
-  algorithm: 'colonize';
+  algorithm: 'wreath' | 'colonize';
   theme: 'esmeralda';
   density: number;
   bloom: number;
   foliage: number;
   seed: number;
   band_um: number | null;
+  /** Outer-edge density bias (0 flat .. 1 strong). */
+  edge_gradient: number;
+  /** Density of the outer-band small-leaf infill. */
+  understory: number;
+  /** Continuous running-ornament border line. */
+  border_vine: number;
+  /** Size/reach of the corner fan compositions. */
+  corner_fans: number;
+  /** Wreath composition preset (wreath algorithm only). 'garland2' is the lush
+   * mixed-tropical default; 'laurel' austere single-species; plus 'garland' | 'clusters'. */
+  wreath_style: 'garland2' | 'laurel' | 'garland' | 'clusters';
 };
 
 export type GlassSpec = {
@@ -144,7 +157,7 @@ export type GlassSpec = {
   n: number;
 };
 
-export type FoilFinish = 'bright' | 'copper' | 'patina';
+export type FoilFinish = 'bright' | 'copper' | 'patina' | 'gold' | 'rose' | 'gunmetal';
 
 export type FoilSpec = {
   /** Copper foil tape width. Presets: 4763 (3/16"), 5556 (7/32"), 6350 (1/4"). */
@@ -185,8 +198,14 @@ export type PlateSpec = {
   glass: GlassSpec;
   width_um: number;
   height_um: number;
-  /** Blank rim reserved for foil overlap + safety — no gold patterned inside. */
+  /** Front-art blank rim: foil overlap + safety — no foliage gold inside. */
   weld_margin_um: number;
+  /** Back-carrier blank rim: foil overlap only (wider window). null = fall
+   * back to weld_margin_um for a standalone plate. */
+  back_margin_um: number | null;
+  /** Fabricated grating pitch (μm) of the back carrier + leaf louvre family.
+   * Stamped from the box level; the louvre is this × 1.09. Litho floor 4 µm. */
+  carrier_pitch_um: number;
   label: string;
 };
 
@@ -225,6 +244,9 @@ export type BoxSpec = {
   foil: FoilSpec;
   hinge: HingeSpec;
   faces: Partial<Record<FaceId, PlateSpec>>;
+  /** Box-level fabricated grating pitch (μm) — stamped onto every face by
+   * stampFaces (mirrors backend normalize_face_dims). Default 22 µm. */
+  carrier_pitch_um: number;
   label: string;
 };
 
@@ -238,6 +260,7 @@ export type CutListEntry = {
 
 export type BoxAssemblyInfo = {
   keepout_um: number;
+  back_window_um: number;
   overlap_um: number;
   glass_thickness_um: number;
   cut_list: CutListEntry[];
@@ -261,17 +284,53 @@ export type BoxManifest = {
 // Defaults — MUST match the backend dataclass defaults exactly.
 // -----------------------------------------------------------------------------
 
-export function defaultFrameSpec(seed = 1): FrameSpec {
+export function defaultFrameSpec(seed = 1, overrides: Partial<FrameSpec> = {}): FrameSpec {
   return {
-    algorithm: 'colonize',
+    algorithm: 'wreath',
     theme: 'esmeralda',
     density: 1.0,
     bloom: 0.6,
     foliage: 0.6,
     seed,
     band_um: null,
+    edge_gradient: 0.8,
+    understory: 0.85,
+    border_vine: 1.15,
+    corner_fans: 1.0,
+    wreath_style: 'garland2',
+    ...overrides,
   };
 }
+
+/** Per-face frame recipe — mirrors backend boxes._FACE_FRAME_PROFILE so the
+ * frontend default box (what the live preview POSTs) matches the backend's
+ * default_box_spec exactly. Each face gets a distinct seed (→ distinct moiré
+ * carrier angle) + distinct band composition, so every side reads uniquely. */
+export const LID_PATTERN_SLUG = 'monogram-jp';
+export const BOTTOM_PATTERN_SLUG = 'inscription-line';
+export const BACK_PATTERN_SLUG = 'capybara-scanimation';
+export const LEFT_PATTERN_SLUG = 'jamon-tray';
+export const RIGHT_PATTERN_SLUG = 'gear-quill-switch';
+/** Confirmed per-face default centerpiece — mirrors backend _FACE_PATTERN_SLUG.
+ * front stays the colibrí↔globe switch (or a caller-supplied override); every
+ * other wall gets its own showpiece. Keeps the live-preview POST byte-identical
+ * to the backend's default_box_spec. */
+const FACE_PATTERN_SLUG: Record<FaceId, string> = {
+  front: DEFAULT_PATTERN_SLUG,
+  back: BACK_PATTERN_SLUG,
+  left: LEFT_PATTERN_SLUG,
+  right: RIGHT_PATTERN_SLUG,
+  top: LID_PATTERN_SLUG,
+  bottom: BOTTOM_PATTERN_SLUG,
+};
+const FACE_FRAME_PROFILE: Record<FaceId, Partial<FrameSpec> & { seed: number }> = {
+  front: { seed: 100, edge_gradient: 0.75, understory: 0.9, border_vine: 1.2, corner_fans: 1.1 },
+  back: { seed: 101, edge_gradient: 1.0, understory: 0.6, border_vine: 0.9, corner_fans: 0.8 },
+  top: { seed: 102, edge_gradient: 0.55, understory: 1.05, border_vine: 1.35, corner_fans: 1.25 },
+  bottom: { seed: 103, edge_gradient: 0.9, understory: 0.75, border_vine: 1.0, corner_fans: 0.9 },
+  left: { seed: 104, edge_gradient: 0.65, understory: 1.0, border_vine: 1.25, corner_fans: 1.15 },
+  right: { seed: 105, edge_gradient: 0.85, understory: 0.8, border_vine: 1.05, corner_fans: 0.95 },
+};
 
 export function defaultGlassSpec(): GlassSpec {
   return { thickness_um: 500.0, material: 'fused silica', n: 1.46 };
@@ -285,23 +344,35 @@ export function defaultHingeSpec(): HingeSpec {
   return { style: 'tube', tube_od_um: 2400.0, rod_od_um: 1600.0, segments: 5, coverage: 0.8 };
 }
 
-export function defaultPlateSpec(patternSlug: string, seed = 1): PlateSpec {
+export function defaultPlateSpec(
+  patternSlug: string,
+  seed = 1,
+  frameOverrides: Partial<FrameSpec> = {}
+): PlateSpec {
   return {
     pattern_slug: patternSlug,
     pattern_params: {},
-    frame: defaultFrameSpec(seed),
+    frame: defaultFrameSpec(seed, frameOverrides),
     glass: defaultGlassSpec(),
     width_um: 50000,
     height_um: 50000,
     weld_margin_um: 1000,
+    back_margin_um: null,
+    carrier_pitch_um: 22.0,
     label: '',
   };
 }
 
 export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxSpec {
   const faces: Partial<Record<FaceId, PlateSpec>> = {};
-  FACE_IDS.forEach((fid, i) => {
-    faces[fid] = defaultPlateSpec(patternSlug, 100 + i);
+  FACE_IDS.forEach((fid) => {
+    const { seed, ...frameOverrides } = FACE_FRAME_PROFILE[fid];
+    // Confirmed six-face plan (see FACE_PATTERN_SLUG): top = J+P monogram,
+    // bottom = hidden inscription, back = capybara scanimation, left = coffee +
+    // arepa, right = gear↔quill, front = colibrí↔globe. A caller-supplied
+    // `patternSlug` overrides only the FRONT face (themed override boxes).
+    const slug = fid === 'front' ? patternSlug : FACE_PATTERN_SLUG[fid];
+    faces[fid] = defaultPlateSpec(slug, seed, frameOverrides);
   });
   const spec: BoxSpec = {
     width_um: 50000.0,
@@ -311,6 +382,7 @@ export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxS
     foil: defaultFoilSpec(),
     hinge: defaultHingeSpec(),
     faces,
+    carrier_pitch_um: 22.0,
     label: '',
   };
   // Stamp glass / cut dims / keep-out into the faces so the spec is

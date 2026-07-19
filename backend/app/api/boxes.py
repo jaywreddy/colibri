@@ -37,6 +37,9 @@ class BoxSpecBody(BaseModel):
     foil: FoilSpecBody = Field(default_factory=FoilSpecBody)
     hinge: HingeSpecBody = Field(default_factory=HingeSpecBody)
     faces: dict[str, PlateSpecBody] = Field(default_factory=dict)
+    # Box-level grating pitch (μm) — stamped onto every face by
+    # normalize_face_dims. Default 22 µm (litho floor 4 µm, enforced UI-side).
+    carrier_pitch_um: float = 22.0
     label: str = ""
 
     def to_spec(self) -> BoxSpec:

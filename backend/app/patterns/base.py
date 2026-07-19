@@ -69,6 +69,7 @@ RECIPE_NAMES = {
     "stereo_lenticular",
     "moire_interactive",
     "phase_shift_overlay",
+    "foliage_moire",
 }
 
 

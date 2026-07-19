@@ -108,22 +108,54 @@ export function Button({
   );
 }
 
-/** Collapsible panel section with an uppercase header. */
+// Remembers each Section's open/closed state across reloads. Keyed by
+// `persistId` (falls back to the title), namespaced so it can't collide with
+// other localStorage keys. Wrapped in try/catch — private-mode / disabled
+// storage must never break the panels.
+const SECTION_STORE_PREFIX = 'rbs.section.';
+function readSectionOpen(key: string, fallback: boolean): boolean {
+  try {
+    const v = window.localStorage.getItem(SECTION_STORE_PREFIX + key);
+    if (v === '0') return false;
+    if (v === '1') return true;
+  } catch {
+    /* storage unavailable — use fallback */
+  }
+  return fallback;
+}
+function writeSectionOpen(key: string, open: boolean): void {
+  try {
+    window.localStorage.setItem(SECTION_STORE_PREFIX + key, open ? '1' : '0');
+  } catch {
+    /* storage unavailable — nothing to persist */
+  }
+}
+
+/**
+ * Collapsible panel section with an uppercase header + chevron. This is the
+ * single collapsible primitive shared by BOTH the left (Build) and right
+ * (Faces) rails, so their sections look and behave identically. Open/closed
+ * state persists across reloads, keyed by `persistId` (or the title).
+ */
 export function Section({
   title,
   children,
   defaultOpen = true,
   testId,
+  persistId,
   onFirstOpen,
 }: {
   title: string;
   children: ReactNode;
   defaultOpen?: boolean;
   testId?: string;
+  /** Stable key for persisting open state; defaults to `title`. */
+  persistId?: string;
   /** Fires once, the first time the section becomes open (incl. mount). */
   onFirstOpen?: () => void;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const key = persistId ?? title;
+  const [open, setOpen] = useState(() => readSectionOpen(key, defaultOpen));
   const fired = useRef(false);
   useEffect(() => {
     if (open && !fired.current) {
@@ -131,10 +163,18 @@ export function Section({
       onFirstOpen?.();
     }
   }, [open, onFirstOpen]);
+  const toggle = () => {
+    setOpen((o) => {
+      const next = !o;
+      writeSectionOpen(key, next);
+      return next;
+    });
+  };
   return (
     <div data-testid={testId} style={{ borderBottom: `1px solid ${KIT.divider}` }}>
       <button
-        onClick={() => setOpen(!open)}
+        onClick={toggle}
+        aria-expanded={open}
         style={{
           width: '100%',
           textAlign: 'left',
@@ -147,11 +187,23 @@ export function Section({
           opacity: 0.75,
           cursor: 'pointer',
           display: 'flex',
+          alignItems: 'center',
           justifyContent: 'space-between',
         }}
       >
         <span>{title.toUpperCase()}</span>
-        <span style={{ opacity: 0.6 }}>{open ? '−' : '+'}</span>
+        <span
+          aria-hidden
+          style={{
+            fontSize: 9,
+            opacity: 0.6,
+            display: 'inline-block',
+            transform: open ? 'rotate(0deg)' : 'rotate(-90deg)',
+            transition: 'transform 120ms ease',
+          }}
+        >
+          ▾
+        </span>
       </button>
       {open && <div style={{ padding: '0 12px 12px' }}>{children}</div>}
     </div>

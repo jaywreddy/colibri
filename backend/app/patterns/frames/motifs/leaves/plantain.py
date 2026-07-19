@@ -1,7 +1,5 @@
-"""Plantain: broad oval leaf with a strong central midrib and lateral veins."""
+"""Plantain: a broad, smooth oval leaf with a strong central midrib."""
 from __future__ import annotations
-
-import math
 
 from ...geometry import Mulberry32
 from ...pen import Pen
@@ -21,18 +19,9 @@ def draw(pen: Pen, size: float, seed: int) -> None:
     pen.close_path()
     pen.fill_path()
 
-    # Midrib
+    # Midrib only. Lateral veins were removed: on the single-color gold mask
+    # internal veins are invisible (gold on gold), and their stroked tips poked
+    # PAST the leaf margin, reading as spiky burrs on the silhouette edge.
     pen.move_to(0.0, 0.0)
-    pen.line_to(leaf_len, 0.0)
+    pen.line_to(leaf_len * 0.94, 0.0)
     pen.stroke_path(stroke * 2.0)
-
-    # Lateral veins — alternating fan from the midrib.
-    n = 7
-    for i in range(1, n + 1):
-        frac = i / (n + 1)
-        x = leaf_len * frac
-        vein_len = leaf_w * 0.45 * math.sin(math.pi * frac) ** 0.7
-        for side in (-1, 1):
-            pen.move_to(x, 0.0)
-            pen.quadratic_to(x + vein_len * 0.4, side * vein_len * 0.6, x + vein_len * 0.6, side * vein_len * 0.95)
-            pen.stroke_path(stroke * 0.8)

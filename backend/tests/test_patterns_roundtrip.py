@@ -16,11 +16,21 @@ import app.patterns.artistic  # noqa: F401
 
 def test_all_patterns_registered():
     expected = {
+        # Original catalog
         "wayuu-kanasu-moire",
         "emerald-facet-moire",
         "colibri-globe-lenticular",
         "colibri-globe-moire",
         "colibri-globe-phase",
+        # Engagement-box showpieces (six-face plan + experiments)
+        "capybara-scanimation",
+        "colibri-flap-phase",
+        "food-pair-chirp",
+        "gear-quill-switch",
+        "globe-duo-phase",
+        "inscription-line",
+        "jamon-tray",
+        "monogram-jp",
     }
     got = set(registry.keys())
     assert got == expected, f"registry mismatch: got {got}, expected {expected}"

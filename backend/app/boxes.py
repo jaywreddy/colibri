@@ -30,6 +30,7 @@ from .assembly import (
     FoilSpec,
     HingeSpec,
     assembly_summary,
+    back_window_um,
     face_cut_dims,
     keepout_um,
     validate_assembly,
@@ -42,7 +43,40 @@ _log = logging.getLogger("optics.boxes")
 
 BOXES_ROOT = DATA_ROOT / "boxes"
 
-DEFAULT_FACE_PATTERN_SLUG = "wayuu-kanasu-moire"
+DEFAULT_FACE_PATTERN_SLUG = "globe-duo-phase"      # front: rotating CA↔Colombia globe
+LID_PATTERN_SLUG = "monogram-jp"                   # top
+BOTTOM_PATTERN_SLUG = "inscription-line"           # bottom
+# Confirmed six-face plan: each wall gets its own showpiece.
+BACK_PATTERN_SLUG = "capybara-scanimation"   # capybara + water scanimation
+LEFT_PATTERN_SLUG = "jamon-tray"             # jamón + tray (food-pair-chirp stays in catalog)
+RIGHT_PATTERN_SLUG = "gear-quill-switch"     # gear ↔ quill+book tilt switch
+
+# Per-face default centerpiece slug (the confirmed plan). front keeps the
+# colibrí↔globe switch; each other wall its own motif.
+_FACE_PATTERN_SLUG: dict[str, str] = {
+    "front": DEFAULT_FACE_PATTERN_SLUG,
+    "back": BACK_PATTERN_SLUG,
+    "left": LEFT_PATTERN_SLUG,
+    "right": RIGHT_PATTERN_SLUG,
+    "top": LID_PATTERN_SLUG,
+    "bottom": BOTTOM_PATTERN_SLUG,
+}
+
+# Per-face frame recipe. Each face gets a distinct seed (which the plate
+# compositor turns into a distinct moiré CARRIER ANGLE via (seed*17)%180) plus
+# a distinct band-composition profile, so every side reads as its own
+# deliberately engraved border even before the user assigns per-face themes.
+# (fid -> dict of FrameSpec overrides). Seeds 100..105 kept from the original
+# default so cached faces that only differ in seed still line up.
+_FACE_FRAME_PROFILE: dict[str, dict[str, float]] = {
+    #        seed  edge_gradient understory border_vine corner_fans
+    "front":  dict(seed=100, edge_gradient=0.75, understory=0.9,  border_vine=1.2,  corner_fans=1.1),
+    "back":   dict(seed=101, edge_gradient=1.0,  understory=0.6,  border_vine=0.9,  corner_fans=0.8),
+    "top":    dict(seed=102, edge_gradient=0.55, understory=1.05, border_vine=1.35, corner_fans=1.25),
+    "bottom": dict(seed=103, edge_gradient=0.9,  understory=0.75, border_vine=1.0,  corner_fans=0.9),
+    "left":   dict(seed=104, edge_gradient=0.65, understory=1.0,  border_vine=1.25, corner_fans=1.15),
+    "right":  dict(seed=105, edge_gradient=0.85, understory=0.8,  border_vine=1.05, corner_fans=0.95),
+}
 
 # Anonymous (live-preview) generates all land in this single scratch slot so
 # debounced edits never pile up saved boxes. The leading underscores keep it
@@ -83,6 +117,12 @@ class BoxSpec:
     foil: FoilSpec = field(default_factory=FoilSpec)
     hinge: HingeSpec = field(default_factory=HingeSpec)
     faces: dict[str, PlateSpec] = field(default_factory=dict)
+    # Box-level GRATING PITCH (μm): the fabricated back-carrier + leaf-louvre
+    # period, stamped onto every face in ``normalize_face_dims`` (like glass —
+    # not an independent per-face degree of freedom). Default 22 µm; litho floor
+    # 4 µm. Drives the real fringe spacing + tilt sensitivity of the leaf/back
+    # carrier family (the 60 µm switch/comb barrier faces are NOT coupled to it).
+    carrier_pitch_um: float = 22.0
     label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,6 +138,7 @@ class BoxSpec:
             "foil": self.foil.to_dict(),
             "hinge": self.hinge.to_dict(),
             "faces": {fid: p.to_dict() for fid, p in self.faces.items()},
+            "carrier_pitch_um": self.carrier_pitch_um,
             "label": self.label,
         }
 
@@ -117,6 +158,7 @@ class BoxSpec:
             foil=FoilSpec.from_dict(data.get("foil")),
             hinge=HingeSpec.from_dict(data.get("hinge")),
             faces={fid: PlateSpec.from_dict(p) for fid, p in (data.get("faces") or {}).items()},
+            carrier_pitch_um=float(data.get("carrier_pitch_um", 22.0)),
             label=str(data.get("label", "")),
         )
 
@@ -129,6 +171,7 @@ class BoxSpec:
         the face carried — none of these are face-level choices in a box.
         """
         ko = keepout_um(self.foil, self.glass.thickness_um)
+        bw = back_window_um(self.foil, self.glass.thickness_um)
         for fid in FACE_IDS:
             plate = self.faces.get(fid)
             if plate is None:
@@ -139,20 +182,45 @@ class BoxSpec:
             plate.width_um = w
             plate.height_um = h
             plate.weld_margin_um = ko
+            # Back carrier grating covers the whole exposed face (foil overlap
+            # only) — wider window than the front weld margin.
+            plate.back_margin_um = bw
             plate.glass = replace(self.glass)
+            # Grating pitch is a box-level choice (like glass): stamp it onto
+            # every face so the per-face plate hash + recipe_data reflect it.
+            plate.carrier_pitch_um = self.carrier_pitch_um
 
 
 def default_box_spec() -> BoxSpec:
     """The default ring box — MUST match the frontend's ``defaultBoxSpec()``.
 
-    50 x 50 x 40 mm, 1/4" foil, 5-segment tube hinge, Wayuu kanasü moiré on
-    all six faces with frame seeds 100..105 so each face renders distinctly.
+    50 x 50 x 40 mm, 1/4" foil, 5-segment tube hinge. Every face gets a
+    perimeter foliage FRAME with its own seed + band-composition profile (so
+    each side is a visibly distinct engraved border) around a centerpiece:
+
+      * TOP (lid) → the interlocked cursive J+P monogram (``monogram-jp``),
+        a front-only tilt shimmer — the engagement engraving.
+      * FRONT → the colibrí↔globe tilt-switch (``colibri-globe-phase``, on the
+        real-geography globe) with a diffraction-rainbow gorget accent.
+      * BACK → the capybara + water scanimation (``capybara-scanimation``): a
+        still capybara on a waterline with an N-phase ripple field below it that
+        FLOWS on tilt (shader water-scan path in preview; real slit barrier +
+        interleaved ripple frames baked in the fab SVG).
+      * LEFT → coffee cup + arepa with chirped-steam shimmer
+        (``food-pair-chirp``); the steam tips are a sub-5 µm diffraction accent.
+      * RIGHT → the gear↔quill+book tilt-switch (``gear-quill-switch``, "the
+        engineer and the historian") with a diffraction-rainbow hub accent.
+      * BOTTOM (hidden) → a cursive inscription line (``inscription-line``),
+        "J & P · 2026" with an editable year — the private line the couple
+        reads when they lift the box, also a front-only shimmer.
     """
     spec = BoxSpec()
-    for i, fid in enumerate(FACE_IDS):
+    for fid in FACE_IDS:
+        profile = _FACE_FRAME_PROFILE.get(fid, {})
+        slug = _FACE_PATTERN_SLUG.get(fid, DEFAULT_FACE_PATTERN_SLUG)
         spec.faces[fid] = PlateSpec(
-            pattern_slug=DEFAULT_FACE_PATTERN_SLUG,
-            frame=FrameSpec(seed=100 + i),
+            pattern_slug=slug,
+            frame=FrameSpec(**profile),
         )
     spec.normalize_face_dims()
     return spec
