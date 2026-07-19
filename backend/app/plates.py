@@ -466,7 +466,7 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         return None
     front_svg = plate_dir / "front.svg"
     back_svg = plate_dir / "back.svg"
-    if front_svg.exists() and back_svg.exists():
+    if front_svg.exists() and back_svg.exists() and _svg_is_current(front_svg):
         return front_svg, back_svg
 
     manifest = json.loads(manifest_path.read_text())
@@ -484,14 +484,35 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     scene = generate_frame(rect, frame_params)
     frame_body = render_scene_to_svg(scene, rect, frame_params)
 
-    # 3. Central pattern as SVG paths.
+    # 3. Central pattern as SVG paths, scaled up to fill the plate aperture —
+    # the SAME target the raster compositor hits (_raster_compose_plate), so
+    # the fab SVG geometry matches the preview PNG. Both spaces share a
+    # centered origin, so a uniform scale about the origin is exact; patterns
+    # generate square, and a non-square one scales-to-fit on its long axis
+    # just like the raster path.
+    aperture_um = _aperture(spec)
+    central_long_um = max(central.extent_um[0], central.extent_um[1])
+    central_scale = aperture_um / central_long_um if central_long_um > 0 else 1.0
     central_front_body = to_svg(central.front, central.extent_um, background=None)
     central_back_body = to_svg(central.back, central.extent_um, background=None)
 
     # 4. Stamp the surrounding <svg> wrapper at plate extent (μm units).
     W, H = spec.width_um, spec.height_um
-    front_svg.write_text(_wrap_svg(W, H, [_inner_svg_paths(central_front_body), _group("frame", frame_body)]), encoding="utf-8")
-    back_svg.write_text(_wrap_svg(W, H, [_inner_svg_paths(central_back_body)]), encoding="utf-8")
+    front_svg.write_text(
+        _wrap_svg(
+            W,
+            H,
+            [
+                _inner_svg_paths(central_front_body, scale=central_scale),
+                _group("frame", frame_body),
+            ],
+        ),
+        encoding="utf-8",
+    )
+    back_svg.write_text(
+        _wrap_svg(W, H, [_inner_svg_paths(central_back_body, scale=central_scale)]),
+        encoding="utf-8",
+    )
 
     manifest["files"]["front_svg"] = f"/data/plates/{plate_id}/front.svg"
     manifest["files"]["back_svg"] = f"/data/plates/{plate_id}/back.svg"
@@ -499,12 +520,30 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     return front_svg, back_svg
 
 
+# Bump when the SVG compose geometry changes: cached plate SVGs are only
+# reused if they carry the current marker, so a formula fix (e.g. the
+# aperture-scaling fix) invalidates stale files under unchanged spec hashes.
+PLATE_SVG_VERSION = "plate-svg-v2"
+
+
+def _svg_is_current(svg_path: Path) -> bool:
+    try:
+        head = svg_path.read_text(encoding="utf-8", errors="ignore")[:256]
+    except OSError:
+        return False
+    return PLATE_SVG_VERSION in head
+
+
 def _wrap_svg(width_um: float, height_um: float, groups: list[str]) -> str:
+    # width/height carry an explicit physical unit (mm) so importers that
+    # honor them place the plate at true scale; the viewBox keeps user units
+    # = μm, matching every nested path coordinate.
     body = "".join(groups)
     return (
         f'<?xml version="1.0" encoding="UTF-8"?>'
+        f'<!--{PLATE_SVG_VERSION}-->'
         f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'width="{width_um:.2f}" height="{height_um:.2f}" '
+        f'width="{width_um / 1000.0:.4f}mm" height="{height_um / 1000.0:.4f}mm" '
         f'viewBox="{-width_um/2:.2f} {-height_um/2:.2f} {width_um:.2f} {height_um:.2f}">'
         f'{body}</svg>'
     )
@@ -514,10 +553,11 @@ def _group(layer_id: str, inner: str) -> str:
     return f'<g id="{layer_id}">{inner}</g>'
 
 
-def _inner_svg_paths(full_svg: str) -> str:
+def _inner_svg_paths(full_svg: str, scale: float = 1.0) -> str:
     """Strip the outer <svg>...</svg> wrapper off a drawsvg output so we can
-    nest it inside our wrapper. Drawsvg emits a fixed prelude that we don't
-    want twice in the same document.
+    nest it inside our wrapper, optionally scaling the group about the shared
+    centered origin (used to blow the central pattern up to the aperture).
+    Drawsvg emits a fixed prelude that we don't want twice in one document.
     """
     # Drawsvg emits something like:
     #   <?xml ...?><svg ...><defs>...</defs><rect ...>...<path .../></svg>
@@ -529,7 +569,10 @@ def _inner_svg_paths(full_svg: str) -> str:
     close_idx = full_svg.rfind("</svg>")
     if open_end == -1 or close_idx == -1:
         return full_svg
-    return _group("central", full_svg[open_end + 1 : close_idx])
+    inner = full_svg[open_end + 1 : close_idx]
+    if abs(scale - 1.0) > 1e-9:
+        return f'<g id="central" transform="scale({scale:.8g})">{inner}</g>'
+    return _group("central", inner)
 
 
 def list_plates() -> list[dict[str, Any]]:

@@ -21,6 +21,11 @@ def test_all_patterns_registered():
         "colibri-globe-lenticular",
         "colibri-globe-moire",
         "colibri-globe-phase",
+        "globe-rotation-stereo",
+        "orchid-shimmer-moire",
+        "jp-monogram-phase",
+        "monogram-carrier-reveal",
+        "bitmap-halftone",
     }
     got = set(registry.keys())
     assert got == expected, f"registry mismatch: got {got}, expected {expected}"
@@ -49,10 +54,14 @@ def test_lenticular_pattern_has_view_a_view_b_layers():
     assert "view_b" in gp.extra_layers and not gp.extra_layers["view_b"].is_empty
 
 
-def test_phase_pattern_reports_carrier_in_recipe_data():
-    """colibri-globe-phase carries a carrier_period_um so the shader knows
-    how to scale parallax-driven phase flips."""
+def test_rebuilt_phase_pattern_is_a_barrier():
+    """colibri-globe-phase was rebuilt as a parallax barrier (the two-image
+    front/back phase split could not switch under honest parallax): it must
+    now ship the slit metadata + interlaced view layers like every barrier."""
     cls = registry["colibri-globe-phase"]
+    assert cls.render_recipe == "stereo_lenticular"
     gp = cls.generate(**cls.defaults())
-    assert "carrier_period_um" in gp.recipe_data
-    assert float(gp.recipe_data["carrier_period_um"]) > 0
+    assert "slit_period_um" in gp.recipe_data
+    assert float(gp.recipe_data["slit_period_um"]) > 0
+    assert "view_a" in gp.extra_layers and not gp.extra_layers["view_a"].is_empty
+    assert "view_b" in gp.extra_layers and not gp.extra_layers["view_b"].is_empty

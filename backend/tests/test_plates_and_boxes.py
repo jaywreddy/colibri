@@ -22,7 +22,8 @@ def test_compose_plate_unions_frame_and_pattern(isolated_data):
 
     spec = PlateSpec(
         pattern_slug="colibri-globe-phase",
-        pattern_params={"period_um": 30.0, "extent_um": 1000.0},
+        # Rebuilt as a barrier — its params are the slit family now.
+        pattern_params={"slit_period_um": 30.0, "extent_um": 1000.0},
         frame=FrameSpec(seed=7),
         width_um=10000.0,
         height_um=8000.0,
@@ -440,3 +441,143 @@ def test_http_box_fab_export_has_cutlist_and_assembly(app_client):
     box_json = _json.loads(zf.read("box.json").decode())
     for face in box_json["faces"].values():
         assert "frame_scene" not in face.get("recipe_data", {})
+
+
+def test_plate_svg_central_scaled_to_aperture(isolated_data):
+    """Regression (fab-critical): the SVG masks must carry the SAME
+    aperture-scaled central pattern as the preview PNGs. The SVG path used to
+    emit the central at its native extent (~2 mm) inside the full plate — a
+    wrong lithography mask that no test caught."""
+    import re
+
+    from app.plates import FrameSpec, PlateSpec, ensure_plate_svg, materialize_plate
+
+    spec = PlateSpec(
+        pattern_slug="wayuu-kanasu-moire",
+        frame=FrameSpec(seed=5),
+        width_um=8000.0,
+        height_um=8000.0,
+        weld_margin_um=600.0,
+    )
+    m = materialize_plate(spec)
+    aperture_um = float(m["extra"]["aperture_um"])
+    assert aperture_um > 0
+    pair = ensure_plate_svg(m["id"])
+    assert pair is not None
+    front_svg, back_svg = pair
+
+    for svg_path in (front_svg, back_svg):
+        svg = svg_path.read_text(encoding="utf-8")
+        # Physical size is explicit mm; user units stay um via the viewBox.
+        assert 'width="8.0000mm"' in svg and 'height="8.0000mm"' in svg, svg[:300]
+
+        gm = re.search(r'<g id="central" transform="scale\(([-0-9.eE]+)\)">', svg)
+        assert gm is not None, f"{svg_path.name}: central group is not aperture-scaled"
+        scale = float(gm.group(1))
+        assert scale > 1.0, "central pattern should upscale to the aperture here"
+
+        # Every central path coordinate, scaled, must land inside the
+        # aperture — and the pattern must actually FILL it, not sit tiny in
+        # the middle of empty glass.
+        start = svg.index(gm.group(0))
+        end = svg.index("</g>", start)
+        chunk = svg[start:end]
+        coords: list[float] = []
+        for d_attr in re.findall(r'd="([^"]+)"', chunk):
+            coords.extend(
+                abs(float(v))
+                for v in re.findall(r"-?\d+\.?\d*(?:[eE]-?\d+)?", d_attr)
+            )
+        assert coords, f"{svg_path.name}: central group has no path geometry"
+        reach_um = max(coords) * scale
+        half_ap = aperture_um / 2.0
+        assert reach_um <= half_ap * 1.01 + 1.0, (
+            f"{svg_path.name}: scaled central overshoots the aperture "
+            f"({reach_um:.1f} um > {half_ap:.1f} um)"
+        )
+        assert reach_um >= half_ap * 0.5, (
+            f"{svg_path.name}: central does not fill the aperture "
+            f"({reach_um:.1f} um vs half-aperture {half_ap:.1f} um) — "
+            f"native-extent regression?"
+        )
+
+
+def test_stale_plate_svg_regenerates_on_version_bump(isolated_data):
+    """A cached SVG without the current PLATE_SVG_VERSION marker must be
+    rebuilt, not served — formula fixes change output under unchanged spec
+    hashes."""
+    from app.plates import (
+        FrameSpec,
+        PLATES_ROOT,
+        PlateSpec,
+        PLATE_SVG_VERSION,
+        ensure_plate_svg,
+        materialize_plate,
+    )
+
+    spec = PlateSpec(
+        pattern_slug="wayuu-kanasu-moire",
+        frame=FrameSpec(seed=6),
+        width_um=8000.0,
+        height_um=8000.0,
+        weld_margin_um=600.0,
+    )
+    m = materialize_plate(spec)
+    plate_dir = PLATES_ROOT / m["id"]
+    # Simulate a pre-fix cache: valid files, no version marker.
+    (plate_dir / "front.svg").write_text("<svg>stale</svg>", encoding="utf-8")
+    (plate_dir / "back.svg").write_text("<svg>stale</svg>", encoding="utf-8")
+
+    pair = ensure_plate_svg(m["id"])
+    assert pair is not None
+    front_svg, _ = pair
+    text = front_svg.read_text(encoding="utf-8")
+    assert PLATE_SVG_VERSION in text
+    assert "stale" not in text
+
+
+def test_recipe_data_keys_flow_to_box_faces(isolated_data):
+    """Every recipe_data key the frontend shader binding reads
+    (BoxScene.tsx) must be emitted by the pattern, survive the plate
+    compose, AND survive the box manifest slimming (_lean_face_manifest
+    strips only frame_scene). A missing key silently degrades the 3D
+    preview to fallback values."""
+    from app.boxes import materialize_box
+    from app.plates import FrameSpec, PlateSpec
+
+    # Uses the curated test patterns (see frontend effectsCatalog TEST_PATTERNS):
+    # the spinning globe (stereo) and the J+P monogram reveal (phase).
+    spec = _box_spec(faces=[])
+    spec.faces["front"] = PlateSpec(
+        pattern_slug="globe-rotation-stereo",
+        frame=FrameSpec(seed=201),
+        width_um=0,
+        height_um=0,
+    )
+    spec.faces["back"] = PlateSpec(
+        # The honest carrier reveal — its carrier_period_um must survive the
+        # box slimming for the Pattern Lab's zone quick-sets.
+        pattern_slug="monogram-carrier-reveal",
+        frame=FrameSpec(seed=202),
+        width_um=0,
+        height_um=0,
+    )
+    manifest = materialize_box(spec)
+
+    stereo = manifest["faces"]["front"]
+    assert stereo["render_recipe"] == "stereo_lenticular"
+    rd = stereo["recipe_data"]
+    for key in ("view_a_png", "view_b_png", "slit_axis_deg", "slit_period_um"):
+        assert key in rd, f"stereo recipe_data missing {key!r} (frontend reads it)"
+    for key in ("view_a_png", "view_b_png"):
+        assert isinstance(rd[key], str) and rd[key].startswith("/data/"), (
+            f"{key} must be a servable URL, got {rd[key]!r}"
+        )
+    assert "frame_scene" not in rd
+
+    reveal = manifest["faces"]["back"]
+    assert reveal["render_recipe"] == "moire_interactive"
+    rd = reveal["recipe_data"]
+    for key in ("switch_axis_deg", "carrier_period_um"):
+        assert key in rd, f"reveal recipe_data missing {key!r} (lab zone UI reads it)"
+    assert "frame_scene" not in rd

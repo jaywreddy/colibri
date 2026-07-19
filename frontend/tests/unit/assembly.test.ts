@@ -205,6 +205,29 @@ describe('validation', () => {
     seg.hinge.segments = 99; // ~8 um pieces, shorter than the tube OD
     expect(validateBox(seg).some((e) => /uncuttable/.test(e))).toBe(true);
   });
+
+  it('mirrors backend degenerate-input guards: glass, dims, tape, safety', () => {
+    // Backend validate_assembly rejects all four; the frontend must too
+    // (a spec that passes here but 400s on POST /boxes/generate is a
+    // contract bug).
+    const glass = spec();
+    glass.glass.thickness_um = 0;
+    expect(validateBox(glass).some((e) => /thickness must be positive/i.test(e))).toBe(true);
+
+    const dims = spec();
+    dims.width_um = -1;
+    expect(validateBox(dims).some((e) => /dimensions must be positive/i.test(e))).toBe(true);
+
+    const tape = spec();
+    tape.foil.tape_width_um = 0;
+    expect(validateBox(tape).some((e) => /tape width must be positive/i.test(e))).toBe(true);
+
+    const safety = spec();
+    safety.foil.safety_um = -100;
+    expect(validateBox(safety).some((e) => /safety margin cannot be negative/i.test(e))).toBe(
+      true
+    );
+  });
 });
 
 describe('stampFaces (box-level normalization)', () => {

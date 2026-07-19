@@ -6,12 +6,28 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 
+# Catalog contract after the 2026-07-19 parallax-honesty rebuild:
+# - "colibri-globe-phase" KEPT but rebuilt as a parallax barrier (both images
+#   interlaced in BACK, slit in FRONT, stereo_lenticular) — its old two-image
+#   front/back phase split was structurally incapable of switching under
+#   honest parallax. It is now a deprecation candidate (architecturally
+#   identical to colibri-globe-lenticular at a slower default period).
+# - "jp-monogram-phase" kept but rebuilt as a stereo_lenticular barrier
+#   (see test_monogram_barrier_manifest_ships_view_urls below).
+# - "monogram-carrier-reveal" ADDED — the honest T5 carrier reveal (single
+#   image halftoned onto a carrier in FRONT, exact anti-phase carrier in
+#   BACK, moire_interactive).
 EXPECTED_SLUGS = {
     "wayuu-kanasu-moire",
     "emerald-facet-moire",
     "colibri-globe-lenticular",
     "colibri-globe-moire",
     "colibri-globe-phase",
+    "globe-rotation-stereo",
+    "orchid-shimmer-moire",
+    "jp-monogram-phase",
+    "monogram-carrier-reveal",
+    "bitmap-halftone",
 }
 
 
@@ -80,6 +96,10 @@ def test_unknown_slug_returns_404(client: TestClient) -> None:
 # actively switches on.
 # ---------------------------------------------------------------------------
 
+# NOTE: phase_shift_overlay (recipe 2) has no registered users after the
+# honesty rebuild — its "switch" was a view-sign bias, and both former users
+# were rebuilt as barriers. It stays in the valid set only because the
+# shader still switches on the id; drop it here if/when recipe 2 is deleted.
 _VALID_RECIPES = {
     "stereo_lenticular",
     "moire_interactive",
@@ -122,14 +142,37 @@ def test_lenticular_manifest_ships_view_a_view_b_urls(client: TestClient) -> Non
     assert "slit_period_um" in rd
 
 
-def test_phase_overlay_manifest_ships_carrier_period(client: TestClient) -> None:
+def test_monogram_barrier_manifest_ships_view_urls(client: TestClient) -> None:
+    """jp-monogram-phase was rebuilt from the broken two-image phase overlay
+    into a parallax barrier (both images interlaced in the BACK layer, slit
+    mask in FRONT — the only construction that switches under honest
+    parallax). It must advertise stereo_lenticular and ship the interlaced
+    view PNGs + slit period like the other barrier patterns."""
     r = client.post(
         "/patterns/generate",
-        json={"slug": "colibri-globe-phase", "params": {}},
+        json={"slug": "jp-monogram-phase", "params": {}},
     )
     assert r.status_code == 200, r.text
     m = r.json()
-    assert m["render_recipe"] == "phase_shift_overlay"
+    assert m["render_recipe"] == "stereo_lenticular"
+    rd = m["recipe_data"]
+    assert "view_a_png" in rd and "view_b_png" in rd
+    assert "slit_period_um" in rd
+
+
+def test_carrier_reveal_manifest_ships_carrier_period(client: TestClient) -> None:
+    """The honest carrier reveal (image-on-carrier FRONT, uniform image-free
+    carrier BACK) renders under plain moire_interactive mask sampling and
+    must publish carrier_period_um so the UI/tests can calibrate first-zone
+    tilts: the reveal completes at a back shift of p/2 and aliases with
+    period p."""
+    r = client.post(
+        "/patterns/generate",
+        json={"slug": "monogram-carrier-reveal", "params": {}},
+    )
+    assert r.status_code == 200, r.text
+    m = r.json()
+    assert m["render_recipe"] == "moire_interactive"
     assert "carrier_period_um" in m["recipe_data"]
 
 

@@ -92,6 +92,9 @@ class SceneMeta:
     secondary_image: Path | None
     uniforms: dict[str, Any]
     variant: str | None
+    # Ordered frame sequence for effect scenes (effectsPhysical.spec.ts).
+    # Empty for classic single-image scenes.
+    frames: list[Path] = field(default_factory=list)
 
 
 @dataclass
@@ -132,8 +135,11 @@ def discover_scenes(run_dir: Path) -> list[SceneMeta]:
         # under "image"; older sidecars used "plateImage". Accept both.
         plate_rel = data.get("plateImage") or data.get("image")
         sec_rel = data.get("secondaryImage")
-        if not plate_rel:
+        frames_rel = data.get("frames") if isinstance(data.get("frames"), list) else []
+        if not plate_rel and not frames_rel:
             continue
+        if not plate_rel:
+            plate_rel = frames_rel[0]
         plate_path = meta_path.parent / plate_rel
         sec_path: Path | None = (
             meta_path.parent / sec_rel if isinstance(sec_rel, str) else None
@@ -164,6 +170,11 @@ def discover_scenes(run_dir: Path) -> list[SceneMeta]:
                 secondary_image=sec_path,
                 uniforms=dict(data.get("uniforms") or {}),
                 variant=data.get("variant"),
+                frames=[
+                    meta_path.parent / f
+                    for f in frames_rel
+                    if isinstance(f, str) and (meta_path.parent / f).exists()
+                ],
             )
         )
     return scenes
@@ -184,12 +195,18 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_user_prompt(s: SceneMeta, has_secondary: bool) -> str:
+def build_user_prompt(s: SceneMeta, has_secondary: bool, n_frames: int = 0) -> str:
     lines = [
         f"Pattern: {s.slug}. Scene: {s.name}.",
         f"Physics claim: {s.claim}",
         f"A correct rendering shows (plate canvas): {s.plate_signature}",
     ]
+    if n_frames > 1:
+        lines.append(
+            f"You are shown {n_frames} frames IN ORDER from the sweep/transition "
+            "described in the claim. Judge whether the change ACROSS frames "
+            "matches the claim, not just each frame in isolation."
+        )
     if has_secondary and s.secondary_signature:
         lines.append(
             f"A correct rendering shows (side panel image): {s.secondary_signature}"
@@ -221,11 +238,23 @@ def grade_scene(client: Any, s: SceneMeta, model: str) -> SceneVerdict:
             skipped_reason="native_checks_failed",
         )
 
-    images: list[tuple[bytes, str]] = [_load_and_shrink(s.plate_image)]
+    images: list[tuple[bytes, str]] = []
     has_secondary = False
-    if s.secondary_image and s.secondary_image.exists():
-        images.append(_load_and_shrink(s.secondary_image))
-        has_secondary = True
+    n_frames = 0
+    if s.frames:
+        # Ordered effect sequence: cap the token cost at 4 frames — first,
+        # last, and up to two evenly spaced in between.
+        sel = s.frames
+        if len(sel) > 4:
+            idx = sorted({0, len(sel) // 3, (2 * len(sel)) // 3, len(sel) - 1})
+            sel = [sel[i] for i in idx]
+        images = [_load_and_shrink(p) for p in sel]
+        n_frames = len(images)
+    else:
+        images = [_load_and_shrink(s.plate_image)]
+        if s.secondary_image and s.secondary_image.exists():
+            images.append(_load_and_shrink(s.secondary_image))
+            has_secondary = True
 
     content: list[dict[str, Any]] = []
     for data, media_type in images:
@@ -239,7 +268,7 @@ def grade_scene(client: Any, s: SceneMeta, model: str) -> SceneVerdict:
                 },
             }
         )
-    content.append({"type": "text", "text": build_user_prompt(s, has_secondary)})
+    content.append({"type": "text", "text": build_user_prompt(s, has_secondary, n_frames)})
 
     try:
         resp = client.messages.create(

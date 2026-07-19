@@ -77,7 +77,17 @@ def plate_fab_zip(plate_id: str) -> StreamingResponse:
                 "  front.svg / front.png — gold mask, viewer-facing side (includes frame)\n"
                 "  back.svg  / back.png  — gold mask, far side\n"
                 "  manifest.json         — full plate spec + generation parameters\n"
-                "  thumbnail.png         — composite preview\n"
+                "  thumbnail.png         — composite preview\n\n"
+                "Mask orientation & scale:\n"
+                "  Both masks are drawn as seen from the plate's FRONT side (pattern\n"
+                "  toward the viewer, +x right, +y up). back.svg is the far-surface\n"
+                "  layer PROJECTED through the glass onto that same view, so the two\n"
+                "  files register 1:1 without any flip. If your writer patterns the\n"
+                "  back surface with the plate flipped about its vertical edge,\n"
+                "  mirror back.svg in X first — it is NOT pre-mirrored.\n"
+                "  SVG width/height are true millimeters; user units (viewBox and\n"
+                "  every path coordinate) are micrometers with the origin at the\n"
+                "  plate center.\n"
             ),
         )
     buf.seek(0)
@@ -178,6 +188,10 @@ safety margin for hand alignment. The foil will exactly cover this rim
 (minus the safety) — no gold may sit under the tape. Verify the etched
 plates before foiling; re-fab any plate with gold inside the rim.
 
+Orientation: every plate mounts with its patterned FRONT surface facing
+OUT of the box. The masks are drawn as viewed from outside (see
+README.txt for the back-layer mirroring convention).
+
 ## 3. Foil every plate
 
 Wrap {tape_mm:.3f} mm copper foil tape around all four edges of all six
@@ -218,8 +232,9 @@ the 4 walls. This is the finished contact surface the lid closes onto.
 ## 8. Hang the lid
 
 Thread the rod through all {hinge.segments} segments and cap the ends.
-The lid should swing up and back over the hinge through ~120 degrees
-without striking the back wall. Apply patina/finish ("{foil.finish}") last.
+The lid should swing up and back over the hinge freely to ~110 degrees
+(max travel 120) without striking the back wall. Apply patina/finish
+("{foil.finish}") last.
 """
 
 
@@ -256,7 +271,16 @@ def box_fab_zip(box_id: str) -> StreamingResponse:
                 "plate bundle (SVG + PNG + manifest). At the root:\n"
                 "  box.json    — assembly geometry + per-face plate ids\n"
                 "  CUTLIST.csv — glass cut list (mm + μm)\n"
-                "  ASSEMBLY.md — numbered copper-foil build steps\n"
+                "  ASSEMBLY.md — numbered copper-foil build steps\n\n"
+                "Mask orientation & scale (applies to every face folder):\n"
+                "  Plates mount with the patterned FRONT surface facing OUT of the\n"
+                "  box; masks are drawn as viewed from outside (+x right, +y up).\n"
+                "  back.svg is the far-surface layer projected through the glass onto\n"
+                "  the same view — it registers 1:1 with front.svg and is NOT\n"
+                "  pre-mirrored. Mirror it in X if your writer patterns the back\n"
+                "  surface with the plate flipped about its vertical edge.\n"
+                "  SVG width/height are true millimeters; viewBox user units are\n"
+                "  micrometers, origin at the plate center.\n"
             ),
         )
     buf.seek(0)

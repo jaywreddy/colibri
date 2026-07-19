@@ -12,6 +12,7 @@ import { useStore, LID_MAX_DEG } from './store';
 import BoxScene from './scene/BoxScene';
 import BuildPanel from './ui/BuildPanel';
 import FacesPanel from './ui/FacesPanel';
+import PatternLab from './ui/PatternLab';
 import { BUTTON_STYLE, INPUT_STYLE, KIT } from './ui/kit';
 
 function useDebounce<T extends (...args: never[]) => void>(fn: T, ms: number): T {
@@ -52,6 +53,8 @@ export default function App() {
   const setLayout = useStore((s) => s.setLayout);
   const autoRotate = useStore((s) => s.autoRotate);
   const setAutoRotate = useStore((s) => s.setAutoRotate);
+  const labOpen = useStore((s) => s.labOpen);
+  const setLabOpen = useStore((s) => s.setLabOpen);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -203,6 +206,18 @@ export default function App() {
           Fused-silica plates · gold-on-quartz masks · copper foil + solder
         </div>
         <div style={{ flex: 1 }} />
+        <button
+          data-testid="lab-toggle"
+          aria-pressed={labOpen}
+          title="2D dual-layer preview for pattern development (parallax + spacing)"
+          onClick={() => {
+            log('lab_toggled', { open: !labOpen });
+            setLabOpen(!labOpen);
+          }}
+          style={{ ...BUTTON_STYLE, borderColor: labOpen ? KIT.accent : KIT.border }}
+        >
+          Pattern Lab
+        </button>
         {busy && (
           <span data-testid="regen-status" style={{ fontSize: 12, opacity: 0.7 }}>
             Regenerating…
@@ -399,6 +414,9 @@ export default function App() {
           <FacesPanel />
         </aside>
       </div>
+
+      {/* Pattern Lab — fixed 2D overlay, view-only; never touches the box spec. */}
+      {labOpen && <PatternLab />}
     </div>
   );
 }

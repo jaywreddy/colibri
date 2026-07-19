@@ -89,7 +89,18 @@ vec3 runStereoLenticular(vec3 viewTangent) {
   vec2 slitNormal = vec2(cos(uSlitOrientation), sin(uSlitOrientation));
   float proj = dot(viewTangent.xy, slitNormal);
 
-  float t = smoothstep(-0.15, 0.15, proj);
+  // Physical switch half-width from the barrier geometry: the open slit
+  // straddles the two interlace channels, so the switch COMPLETES at a
+  // back-mask shift of p/4 (audited in 2D: full channel separation at
+  // +/-p/4; +/-p/2 aliases back to a blend). Inside the substrate that is
+  // tan(theta_in) = p / (4t); Snell maps it to an exterior sin(theta) of
+  // n * sin(theta_in). proj is the view sine along the slit-normal axis,
+  // so the smoothstep spans exactly that half-angle. (Clamped: t -> 0
+  // degenerates to an always-soft blend, never a divide-by-zero.)
+  float ratio = uSlitPeriodUm / (4.0 * max(uThicknessUm, 1.0));
+  float sinIn = ratio / sqrt(1.0 + ratio * ratio);
+  float sw = clamp(uN * sinIn, 0.02, 0.9);
+  float t = smoothstep(-sw, sw, proj);
 
   float sA = texture2D(uViewA, vUv - shift).r;
   float sB = texture2D(uViewB, vUv - shift).r;
@@ -125,10 +136,14 @@ vec3 runPhaseShiftOverlay(vec3 viewTangent) {
   vec2 shift = parallax_offset(viewTangent, uThicknessUm, uN, uExtentUm);
 
   // Project view direction onto the switch axis. Positive proj biases the
-  // back-layer reveal; negative proj biases the front.
+  // back-layer reveal; negative proj biases the front. The reveal completes
+  // when the through-substrate parallax slides the back carrier by half a
+  // period: shift = t*sin/n (small angle), so full flip at
+  // sin(theta) = n * (p/2) / t. That view sine is the smoothstep half-width.
   vec2 axis = vec2(cos(uSwitchAxis), sin(uSwitchAxis));
   float proj = dot(viewTangent.xy, axis);
-  float bias = smoothstep(-0.20, 0.20, proj);  // 0 = all front, 1 = all back
+  float sw = clamp(uN * 0.5 * uCarrierPeriodUm / max(uThicknessUm, 1.0), 0.02, 0.9);
+  float bias = smoothstep(-sw, sw, proj);  // 0 = all front, 1 = all back
 
   float frontGold = texture2D(uFront, vUv).r;
   float backGold  = texture2D(uBack,  vUv - shift).r;

@@ -67,6 +67,12 @@ type State = {
   /** Slow OrbitControls turntable. Default OFF. */
   autoRotate: boolean;
   setAutoRotate: (on: boolean) => void;
+  /** Pattern Lab — 2D dual-layer preview overlay. */
+  labOpen: boolean;
+  setLabOpen: (open: boolean) => void;
+  /** Pattern under study in the lab; null = follow the selected face. */
+  labSlug: string | null;
+  setLabSlug: (slug: string | null) => void;
 
   // --- illumination / viewer state ---
   illumination: Illumination;
@@ -87,6 +93,8 @@ export const useStore = create<State>((set, get) => ({
   lidTargetDeg: 0,
   layout: 'assembled',
   autoRotate: false,
+  labOpen: false,
+  labSlug: null,
   illumination: 'ambient',
   laserColor: 'green',
   lightAzimuthDeg: 35,
@@ -204,6 +212,8 @@ export const useStore = create<State>((set, get) => ({
   setLidTargetDeg: (deg) => set({ lidTargetDeg: clampLid(deg) }),
   setLayout: (layout) => set({ layout }),
   setAutoRotate: (autoRotate) => set({ autoRotate }),
+  setLabOpen: (labOpen) => set({ labOpen }),
+  setLabSlug: (labSlug) => set({ labSlug }),
 
   setIllumination: (illumination) => set({ illumination }),
   setLaserColor: (laserColor) => set({ laserColor }),

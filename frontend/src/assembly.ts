@@ -271,6 +271,24 @@ export function hingeLayout(spec: BoxSpec): HingeLayout {
  */
 export function validateBox(spec: BoxSpec): string[] {
   const errors: string[] = [];
+  // Degenerate-input guards — mirror backend validate_assembly exactly:
+  // non-positive glass/dims/tape and negative safety all reject there.
+  const t = spec.glass.thickness_um;
+  if (t <= 0) {
+    errors.push(`Glass thickness must be positive (got ${t} um).`);
+  }
+  if (spec.width_um <= 0 || spec.depth_um <= 0 || spec.height_um <= 0) {
+    errors.push(
+      `Box dimensions must be positive (got W=${spec.width_um}, D=${spec.depth_um}, ` +
+        `H=${spec.height_um} um).`
+    );
+  }
+  if (spec.foil.tape_width_um <= 0) {
+    errors.push(`Foil tape width must be positive (got ${spec.foil.tape_width_um} um).`);
+  }
+  if (spec.foil.safety_um < 0) {
+    errors.push(`Foil safety margin cannot be negative (got ${spec.foil.safety_um} um).`);
+  }
   const ko = keepoutUm(spec);
   for (const cut of cutList(spec)) {
     const minSide = Math.min(cut.width_um, cut.height_um);

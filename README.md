@@ -35,11 +35,18 @@ backend/   FastAPI (Python, uv). ALL geometry in micrometers (um).
   app/plates.py          PlateSpec (central pattern + frame) -> raster compose,
                          lazy SVG (ensure_plate_svg), cache under data/plates/<hash>
   app/service.py         pattern materialize + disk cache under data/<slug>/<variant>
-  app/patterns/          pattern registry, moire motifs, frame engine (frames/)
+  app/patterns/          pattern registry, moire motifs, frame engine (frames/),
+                         bitmap/ (photo -> halftone plates, assets/bitmaps/)
+  app/sim2d.py           headless 2D dual-layer parallax compositor + contrast
+                         metrics (the lightweight alternative to the 3D preview)
   app/api/               routers: /patterns /plates /boxes /export /sim
+                         (incl. /sim/parallax2d composite + curve endpoints)
 frontend/  Vite + React + TypeScript + vanilla three.js. UI displays mm.
   src/assembly.ts        client-side MIRROR of backend/app/assembly.py
   src/scene/BoxScene.tsx 3D preview; src/store.ts zustand state
+  src/lab/composite2d.ts + src/ui/PatternLab.tsx
+                         2D Pattern Lab: canvas dual-layer preview with tilt
+                         sliders/drag, illumination, and live param regen
 tools/     visual verification harness (visual_verifier.py + tools/dev/)
 ```
 
@@ -62,7 +69,39 @@ just test-unit      # frontend vitest
 just test-e2e       # Playwright E2E (spins up both servers itself)
 just test-all       # all three layers, sequentially
 just test-visual    # @visual signature capture (PNGs + meta, no LLM)
+just test-effects   # @effects physical-honesty suite (pixel metrics, no LLM)
 ```
+
+**Assembly contract golden fixture** — `tools/fixtures/assembly_golden.json`
+is generated from the backend math (`tools/dev/gen_assembly_golden.py`) and
+consumed by BOTH `backend/tests/test_assembly.py` and
+`frontend/tests/unit/assemblyGolden.test.ts`, so any drift between
+`app/assembly.py` and `src/assembly.ts` fails a suite instead of silently
+diverging. Regenerate it only when the contract intentionally changes.
+
+**Physical-honesty effects suite** (`frontend/tests/e2e/effectsPhysical.spec.ts`
++ `effectsCatalog.ts` + `effectsHelpers.ts`) is the anti-cheat gate for the 3D
+renderer. It verifies four axioms on the live WebGL buffer with deterministic
+pixel metrics:
+
+1. **View-dependent** — moiré fringes flow under camera orbit; the stereo
+   lenticular flips scenes across the slit axis; the phase overlay reveals
+   layers across the switch axis.
+2. **Time-invariant** — a parked camera yields pixel-identical frames (no
+   time-animated shader fakes).
+3. **Texture-driven** — imagery binds from the backend litho masks; stereo
+   view textures must really bind (no front-mask fallback).
+4. **Substrate physics** — at a fixed oblique view the fringes respond to
+   `uThicknessUm`/`uN`, the response scales with the thickness step, and with
+   thickness=0 the index has exactly zero effect (the uniforms act only
+   through the Snell parallax term).
+
+It also covers the lid transition (monotonic hinge rotation + closed-frame
+round-trip), illumination modes (distinct + laser-colored), and turntable
+flow. Every scenario dumps a PNG frame sequence + metrics sidecar under
+`frontend/test-results/visual/latest/effects/`; `just test-effects-verify`
+additionally grades the sequences with Claude vision
+(`tools/visual_verifier.py`, needs `ANTHROPIC_API_KEY`).
 
 ## Performance & safety
 

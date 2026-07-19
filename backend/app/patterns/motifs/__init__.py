@@ -5,6 +5,7 @@ from . import (
     emerald,
     colibri,
     globe,
+    monogram,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "emerald",
     "colibri",
     "globe",
+    "monogram",
 ]

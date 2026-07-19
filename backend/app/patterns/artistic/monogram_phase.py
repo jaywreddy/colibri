@@ -1,20 +1,16 @@
-"""Colibrí ↔ globe parallax-barrier switch (rebuilt from the phase overlay).
+"""J+P monogram ↔ heart parallax-barrier switch.
 
-History: this slug originally shipped a "phase-shift overlay" — bird
-carrier-halftone on the FRONT face, globe on the BACK at anti-phase. That
+History: this slug originally shipped a "phase-shift overlay" — monogram
+carrier-halftone on the FRONT face, heart on the BACK at anti-phase. That
 construction is structurally incapable of switching under honest parallax:
-the front-face image never moves, so the bird stayed visible at every tilt
-(measured contrast 0.52-0.57 across the whole ±1.5-period sweep; total
-transmission modulated only ~3%) and the 3D "switch" existed only via the
-phase_shift_overlay shader's view-sign bias cheat. Rebuilt 2026-07 as a
-parallax barrier: BOTH silhouettes live in the BACK layer as interlaced
-half-period column channels and the FRONT is a pure slit mask. The module
-filename and slug are kept for cache/registry continuity.
-
-DEPRECATION CANDIDATE: after this rebuild the pattern is architecturally
-identical to colibri-globe-lenticular (it differs only in its slower default
-period, 60 μm vs 40 μm, for a more comfortable hand-rocked switch). Remove
-this slug once nothing pins it.
+the front-face image never moves, so the monogram stayed visible at every
+tilt (measured region contrast 0.52-0.54 across the whole ±1.5-period sweep)
+and the 3D "switch" existed only via the phase_shift_overlay shader's
+view-sign bias cheat. Rebuilt 2026-07 as a parallax barrier: BOTH images
+live in the BACK layer as interlaced half-period column channels and the
+FRONT is a pure slit mask, exactly the colibri-globe-lenticular architecture
+(measured 0.819/0.000 channel separation at ±p/4 shift on that geometry).
+The module filename and slug are kept for cache/registry continuity.
 """
 from __future__ import annotations
 
@@ -33,7 +29,7 @@ from ..base import (
     ensure_multipolygon,
     register,
 )
-from ..motifs import colibri, globe
+from ..motifs import monogram
 
 _SUB = Substrate()
 
@@ -41,31 +37,32 @@ _SUB = Substrate()
 def _exterior_tilt_deg(shift_um: float, t_um: float = _SUB.thickness_um, n: float = _SUB.n) -> float:
     """Exterior tilt that produces a back-layer parallax shift of `shift_um`.
 
-    θ(s) = asin(n · sin(atan(s / t))) — Snell-refracted parallax through the
-    substrate, inverted. Includes the index factor n the legacy metadata
-    omitted, and uses the audited quarter-period switch shift.
+    Inverse of the Snell-refracted parallax through the substrate:
+    θ(s) = asin(n · sin(atan(s / t))). The old metadata used atan(p/(2t)) —
+    wrong shift (switch completes at s = p/4, not p/2, because the slit
+    straddles the channel boundary) AND missing the Snell factor n.
     """
     return math.degrees(math.asin(min(1.0, n * math.sin(math.atan(shift_um / t_um)))))
 
 
 @register
-class ColibriGlobePhase(Pattern):
-    slug = "colibri-globe-phase"
-    name = "Colibrí ↔ globe switch (slow)"
+class JPMonogramPhase(Pattern):
+    slug = "jp-monogram-phase"
+    name = "J+P ↔ heart switch"
     description = (
-        "A parallax-barrier (lenticular) Moiré tile. The back layer holds "
-        "BOTH silhouettes interlaced in alternating half-period columns — "
-        "hummingbird in one channel, globe in the other — and the front "
-        "layer is a pure slit mask whose open slits straddle the channel "
-        "boundaries. Snell-refracted parallax through the substrate gates "
-        "which channel the eye sees: tilting one way shows the colibrí, the "
-        "other reveals the globe, with the switch completing at a "
-        "quarter-period parallax shift. A slower-period sibling of "
-        "colibri-globe-lenticular for a comfortable hand-rocked switch."
+        "A parallax-barrier (lenticular) keepsake tile. The back layer holds "
+        "BOTH images interlaced in alternating half-period columns — the "
+        "J + P monogram in one channel, a heart-with-globe in the other — "
+        "and the front layer is a pure slit mask whose open slits straddle "
+        "the channel boundaries. Snell-refracted parallax through the "
+        "substrate gates which channel the eye sees: tilting one way shows "
+        "the monogram, the other reveals the heart, with the switch "
+        "completing at a quarter-period parallax shift. Head-on, both "
+        "images blend 50/50 through the slits."
     )
-    tags = ["moire", "lenticular", "tilt-reveal", "Colombia", "Global Travel"]
+    tags = ["moire", "lenticular", "tilt-reveal", "monogram", "Global Travel"]
     tier = 1
-    theme = "Colombia"
+    theme = "Global Travel"
     render_recipe = "stereo_lenticular"
     params = [
         ParamSpec("slit_period_um", "Slit period", "float", 60.0, 8.0, 200.0, 0.5, "μm"),
@@ -90,7 +87,7 @@ class ColibriGlobePhase(Pattern):
         n_stripes = int(math.ceil(extent_um / slit_period_um))
         check_lattice_budget(
             n_grid * n_stripes,
-            "colibri-globe-phase interlace",
+            "jp-monogram-phase interlace",
             slit_period_um=slit_period_um,
             extent_um=extent_um,
         )
@@ -104,29 +101,29 @@ class ColibriGlobePhase(Pattern):
         barrier = affinity.translate(barrier, xoff=slit_period_um / 2)
         front = ensure_multipolygon(crop(barrier, extent))
 
-        # Rasterize the two silhouettes onto a shared pixel grid so each can
-        # be sliced into vertical strips that interlace one to one with the
-        # slit lattice.
-        bird = colibri.colibri_silhouette(extent, n_grid=n_grid)
-        gl = globe.globe_silhouette(extent, n_grid=n_grid)
+        # Rasterize the two keepsake images onto a shared pixel grid so each
+        # can be sliced into vertical strips that interlace one to one with
+        # the slit lattice.
+        mono = monogram.jp_monogram_silhouette(extent, n_grid=n_grid)
+        heart = monogram.heart_globe_silhouette(extent, n_grid=n_grid)
 
         cell_um = extent_um / n_grid
         # Number of pixel columns per slit period. Each slit period gets one
-        # bird half and one globe half: left half = bird (view_a), right
-        # half = globe (view_b).
+        # monogram half and one heart half: left half = monogram (view_a),
+        # right half = heart (view_b).
         cols_per_period = max(2, int(round(slit_period_um / cell_um)))
         half = cols_per_period // 2
 
         cols = np.arange(n_grid)
         phase = (cols % cols_per_period) < half
-        bird_strips = bird & phase[None, :]
-        globe_strips = gl & (~phase[None, :])
+        mono_strips = mono & phase[None, :]
+        heart_strips = heart & (~phase[None, :])
 
-        # Scene A = hummingbird interlace (the -tilt side sees this);
-        # Scene B = globe interlace (the +tilt side sees this).
+        # Scene A = J+P monogram interlace (the -tilt side sees this);
+        # Scene B = heart-globe interlace (the +tilt side sees this).
         # Sign convention per the parallax audit: +tilt/+shift reveals view_b.
-        view_a = raster_to_polygons(bird_strips.astype(np.uint8), cell_um, extent)
-        view_b = raster_to_polygons(globe_strips.astype(np.uint8), cell_um, extent)
+        view_a = raster_to_polygons(mono_strips.astype(np.uint8), cell_um, extent)
+        view_b = raster_to_polygons(heart_strips.astype(np.uint8), cell_um, extent)
 
         # Back layer = BOTH interlace channels, per the barrier architecture
         # (all image content behind the slits). The channels occupy

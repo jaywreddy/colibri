@@ -212,3 +212,63 @@ def test_frame_scene_kept_out_of_manifests_sidecar_on_disk(isolated_data):
     assert "frame_scene" not in on_disk["recipe_data"]
     scene = json.loads((PLATES_ROOT / face["id"] / "scene.json").read_text())
     assert "segments" in scene
+
+
+# ---------------------------------------------------------------------------
+# Golden contract fixture — shared with frontend/tests/unit/assemblyGolden.test.ts
+# ---------------------------------------------------------------------------
+
+def test_golden_fixture_matches_backend() -> None:
+    """The shared fixture (tools/fixtures/assembly_golden.json) must agree
+    with the live backend math. The frontend runs the SAME cases through
+    src/assembly.ts, so a formula change that lands on only one side fails
+    one of the two suites instead of silently diverging.
+
+    Regenerate intentionally with tools/dev/gen_assembly_golden.py.
+    """
+    import json
+    from pathlib import Path
+
+    from app.assembly import (
+        FoilSpec,
+        HingeSpec,
+        cut_list,
+        hinge_layout,
+        keepout_um,
+        overlap_um,
+        seam_list,
+        validate_assembly,
+    )
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2] / "tools" / "fixtures" / "assembly_golden.json"
+    )
+    cases = json.loads(fixture_path.read_text(encoding="utf-8"))["cases"]
+    assert len(cases) >= 5
+
+    for case in cases:
+        spec = case["spec"]
+        exp = case["expected"]
+        foil = FoilSpec.from_dict(spec["foil"])
+        hinge = HingeSpec.from_dict(spec["hinge"])
+        args = (
+            spec["width_um"],
+            spec["depth_um"],
+            spec["height_um"],
+            spec["glass_thickness_um"],
+        )
+
+        raised = False
+        try:
+            validate_assembly(*args, foil, hinge)
+        except ValueError:
+            raised = True
+        assert raised == (not exp["valid"]), f"{case['name']}: validity flipped"
+        if not exp["valid"]:
+            continue
+
+        assert overlap_um(foil, args[3]) == exp["overlap_um"], case["name"]
+        assert keepout_um(foil, args[3]) == exp["keepout_um"], case["name"]
+        assert cut_list(*args) == exp["cut_list"], case["name"]
+        assert {s["id"]: s["length_um"] for s in seam_list(*args)} == exp["seams"], case["name"]
+        assert hinge_layout(hinge, spec["width_um"]) == exp["hinge"], case["name"]

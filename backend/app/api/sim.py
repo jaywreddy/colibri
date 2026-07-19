@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import time
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ..service import DATA_ROOT
@@ -132,4 +135,120 @@ def propagate(req: PropagateRequest) -> dict:
         "cols": out.get("cols"),
         "tile": out.get("tile"),
         "cached": out.get("cached", False),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 2D parallax lab (sim2d) — headless composite + contrast-vs-tilt curves.
+# Cheap numpy shifts on the already-rasterized masks; no FFT, no GPU.
+# ---------------------------------------------------------------------------
+
+
+def _load_parallax_pair(slug: str, variant: str) -> tuple[Path, dict]:
+    """Resolve a variant dir holding front.png/back.png/manifest.json.
+
+    Only the literal variant 'default' may trigger generation, and only when
+    the files are missing — any other miss is a 404. The 2D lab must never
+    kick off expensive pattern materialization for arbitrary variant hashes.
+    """
+    root = DATA_ROOT / slug / variant
+    complete = all(
+        (root / name).exists() for name in ("manifest.json", "front.png", "back.png")
+    )
+    if complete:
+        return root, json.loads((root / "manifest.json").read_text())
+    if variant != "default":
+        raise HTTPException(404, f"Variant not found: {slug}/{variant}")
+
+    from .. import service
+
+    try:
+        manifest = service.materialize(slug)
+    except KeyError as e:
+        raise HTTPException(404, f"Unknown pattern: {slug}") from e
+    return DATA_ROOT / slug / manifest["variant"], manifest
+
+
+def _open_masks(root: Path):  # -> tuple[Image, Image]
+    from PIL import Image
+
+    front = Image.open(root / "front.png").convert("L")
+    back = Image.open(root / "back.png").convert("L")
+    return front, back
+
+
+def _substrate_defaults(
+    manifest: dict, thickness_um: float | None, n: float | None
+) -> tuple[float, float, float]:
+    """(thickness_um, n, pixel_pitch_um) with manifest values as fallbacks."""
+    sub = manifest.get("substrate", {})
+    t = thickness_um if thickness_um is not None else float(sub["thickness_um"])
+    n_val = n if n is not None else float(sub["n"])
+    return t, n_val, float(manifest["pixel_pitch_um"])
+
+
+@router.get("/parallax2d/{slug}/{variant}")
+def parallax2d(
+    slug: str,
+    variant: str,
+    tilt_x_deg: float = 0.0,
+    tilt_y_deg: float = 0.0,
+    illum: str = "ambient",
+    thickness_um: float | None = None,
+    n: float | None = None,
+) -> StreamingResponse:
+    from .. import sim2d
+
+    if illum not in sim2d.ILLUMINATIONS:
+        raise HTTPException(400, f"Unknown illum: {illum}")
+    root, manifest = _load_parallax_pair(slug, variant)
+    t, n_val, pitch = _substrate_defaults(manifest, thickness_um, n)
+    front, back = _open_masks(root)
+
+    dx_um, dy_um = sim2d.parallax_shift_um(tilt_x_deg, tilt_y_deg, t, n_val)
+    img = sim2d.composite_parallax(front, back, dx_um, dy_um, pitch, illum=illum)
+    _log.info(
+        "parallax2d slug=%s variant=%s tilt=(%.1f,%.1f) illum=%s shift_um=(%.2f,%.2f)",
+        slug,
+        root.name,
+        tilt_x_deg,
+        tilt_y_deg,
+        illum,
+        dx_um,
+        dy_um,
+    )
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
+
+
+@router.get("/parallax2d/{slug}/{variant}/curve")
+def parallax2d_curve(
+    slug: str,
+    variant: str,
+    axis: str = "x",
+    thickness_um: float | None = None,
+    n: float | None = None,
+    points: int = 21,
+) -> dict:
+    from .. import sim2d
+
+    if axis not in ("x", "y"):
+        raise HTTPException(400, f"Unknown axis: {axis}")
+    root, manifest = _load_parallax_pair(slug, variant)
+    t, n_val, pitch = _substrate_defaults(manifest, thickness_um, n)
+    front, back = _open_masks(root)
+
+    points = max(2, min(int(points), 41))
+    tilts = [-30.0 + 60.0 * i / (points - 1) for i in range(points)]
+    curve = sim2d.contrast_curve(front, back, tilts, t, n_val, pitch, axis=axis)
+    return {
+        "slug": slug,
+        "variant": root.name,
+        "axis": axis,
+        "thickness_um": t,
+        "n": n_val,
+        "pixel_pitch_um": pitch,
+        "curve": curve,
     }

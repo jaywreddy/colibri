@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from functools import partial
 
 import numpy as np
 from PIL import ImageDraw
@@ -8,7 +9,7 @@ from PIL import ImageDraw
 from ._pillow import render_silhouette
 
 
-def _draw_globe(draw: ImageDraw.ImageDraw, n: int) -> None:
+def _draw_globe(draw: ImageDraw.ImageDraw, n: int, rotation_deg: float = 0.0) -> None:
     """Stylized globe silhouette: filled disk + latitude/longitude wireframe.
 
     The pattern reads as "globe" rather than "circle" because of the three
@@ -16,6 +17,14 @@ def _draw_globe(draw: ImageDraw.ImageDraw, n: int) -> None:
     apparent x-radius) and three latitude arcs (equator + two tropics) drawn
     as thin horizontal ellipses. A small landmass blob over the lower-left
     sector — abstract enough not to dominate — nods to the Colombia theme.
+
+    ``rotation_deg`` spins the globe about its polar axis: each meridian's
+    apparent longitude becomes ``lon_deg + rotation_deg`` before the cos
+    foreshortening, and the landmass blob translates horizontally across the
+    disk (wrapping around the limb), so two renders at different rotations
+    genuinely read as "the globe turned". ``rotation_deg=0`` draws the exact
+    same primitives in the same order as before the parameter existed, so the
+    default output stays byte-identical.
     """
     s = n
     cx = 0.5 * s
@@ -53,7 +62,8 @@ def _draw_globe(draw: ImageDraw.ImageDraw, n: int) -> None:
     # 3D look.
     lon_thickness = max(1, int(0.014 * s))
     for lon_deg in (-60.0, 0.0, 60.0):
-        lon = math.radians(lon_deg)
+        # Apparent longitude = true longitude + spin (rotation about the pole).
+        lon = math.radians(lon_deg + rotation_deg)
         rx = max(1.5, r * abs(math.cos(lon)))
         for i in range(lon_thickness):
             offset = i - lon_thickness // 2
@@ -91,7 +101,8 @@ def _draw_globe(draw: ImageDraw.ImageDraw, n: int) -> None:
                 outline=0,
             )
     for lon_deg in (-60.0, 0.0, 60.0):
-        lon = math.radians(lon_deg)
+        # Apparent longitude = true longitude + spin (rotation about the pole).
+        lon = math.radians(lon_deg + rotation_deg)
         rx = max(1.5, r * abs(math.cos(lon)))
         for i in range(lon_thickness):
             offset = i - lon_thickness // 2
@@ -102,6 +113,13 @@ def _draw_globe(draw: ImageDraw.ImageDraw, n: int) -> None:
             )
 
     # Small landmass blob — abstract South-America-ish shape, lower-left.
+    # Spin translates the blob horizontally across the disk face. The wrap
+    # period 4r maps 360° of rotation onto one traverse of the visible face
+    # (2r) plus the hidden back hemisphere (2r), so the blob slides off one
+    # limb and re-enters at the other. Wrap copies that land entirely on the
+    # hidden hemisphere (outside the disk's x-range) are skipped — with
+    # rotation_deg=0 only the untranslated copy draws, keeping the default
+    # output byte-identical.
     blob = [
         (cx - 0.10 * s, cy + 0.02 * s),
         (cx - 0.02 * s, cy - 0.04 * s),
@@ -109,12 +127,20 @@ def _draw_globe(draw: ImageDraw.ImageDraw, n: int) -> None:
         (cx - 0.01 * s, cy + 0.20 * s),
         (cx - 0.12 * s, cy + 0.12 * s),
     ]
-    draw.polygon(blob, fill=0)
+    wrap = 4.0 * r
+    shift = (rotation_deg / 360.0) * wrap
+    shift = (shift + wrap / 2.0) % wrap - wrap / 2.0
+    for dx in (shift, shift - wrap, shift + wrap):
+        xs = [x + dx for x, _ in blob]
+        if max(xs) < cx - r or min(xs) > cx + r:
+            continue
+        draw.polygon([(x, y) for x, (_, y) in zip(xs, blob)], fill=0)
 
 
 def globe_silhouette(
     extent_um: tuple[float, float] | float,
     n_grid: int = 256,
+    rotation_deg: float = 0.0,
 ) -> np.ndarray:
     """Binary bool grid (n_grid × n_grid) — globe disk with wireframe markings.
 
@@ -122,6 +148,10 @@ def globe_silhouette(
     wireframe lines + outside the disk. The wireframe being False means the
     silhouette has structure inside the disk, so it reads as a globe rather
     than a featureless circle when used as a Moiré mask.
+
+    ``rotation_deg`` spins the globe about its polar axis (see
+    :func:`_draw_globe`); the default 0.0 reproduces the legacy output
+    byte-for-byte.
     """
     del extent_um  # silhouette is scale-free; caller controls cell_um to hit extent
-    return render_silhouette(_draw_globe, n_grid)
+    return render_silhouette(partial(_draw_globe, rotation_deg=rotation_deg), n_grid)
