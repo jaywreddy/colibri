@@ -94,12 +94,20 @@ describe('defaultBoxSpec (contract defaults)', () => {
     expect(s.label).toBe('');
   });
 
-  it('puts wayuu-kanasu-moire with frame seeds 100+i on all six faces', () => {
+  it('applies the confirmed six-face plan with per-face frame seeds', () => {
+    // Post-merge contract: every wall carries its own showpiece (front =
+    // colibri<->globe duo switch, back = capybara scanimation, etc.) and
+    // per-face frame profiles seeded 100..105 in profile order.
     const s = api.defaultBoxSpec();
-    api.FACE_IDS.forEach((fid, i) => {
+    const expectedSeed: Record<string, number> = {
+      front: 100, back: 101, top: 102, bottom: 103, left: 104, right: 105,
+    };
+    expect(s.faces.front!.pattern_slug).toBe('globe-duo-phase');
+    const slugs = api.FACE_IDS.map((fid) => s.faces[fid]!.pattern_slug);
+    expect(new Set(slugs).size).toBe(6); // six distinct showpieces
+    api.FACE_IDS.forEach((fid) => {
       const f = s.faces[fid]!;
-      expect(f.pattern_slug).toBe('wayuu-kanasu-moire');
-      expect(f.frame.seed).toBe(100 + i);
+      expect(f.frame.seed).toBe(expectedSeed[fid]);
       expect(f.glass).toEqual(s.glass);
       // stamped keep-out: (6350-500)/2 + 500
       expect(f.weld_margin_um).toBe(3425);

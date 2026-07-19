@@ -25,7 +25,7 @@ import {
   facePlateROI,
   faceRecipeId,
   lidRotationDeg,
-  setFaceScalarUniform,
+  scaleBackPlaneGap,
   settle,
   type DiffMetrics,
   type GrayFrame,
@@ -172,7 +172,10 @@ test.describe('@effects physical honesty of renderer effects', () => {
   test('@effects moire fringes flow under camera orbit', async ({ page }) => {
     const outDir = path.join(OUT_ROOT, 'moire-fringe-flow');
     await fs.mkdir(outDir, { recursive: true });
-    expect(await faceRecipeId(page, 'front')).toBe(1); // moire_interactive default
+    // Post-merge every composed plate runs the two-plane foliage_moire
+    // recipe (id 3): front foliage carrier on the outer plane, uniform back
+    // carrier on the REAL inner plane at the paraxial T/n gap.
+    expect(await faceRecipeId(page, 'front')).toBe(3);
 
     const EL = 4;
     const AZ = [-10, -5, 0, 5, 10];
@@ -216,102 +219,74 @@ test.describe('@effects physical honesty of renderer effects', () => {
     expect(failures, failures.join('; ')).toHaveLength(0);
   });
 
-  test('@effects moire parallax obeys substrate physics (thickness, n)', async ({ page }) => {
-    // FIXED camera throughout — camera sweeps confound rigid plate motion
-    // with fringe motion. Instead we park at an oblique view and manipulate
-    // the substrate uniforms: an honest Snell-parallax shader must respond
-    // to thickness and n at fixed view; a screen-space fake cannot. Two
-    // physics controls close the loop: with thickness=0 the index must do
-    // NOTHING, and at (near) normal incidence thickness must barely matter.
+  test('@effects moire parallax obeys substrate physics (geometric gap)', async ({ page }) => {
+    // The merged renderer derives parallax from GEOMETRY: the back gold
+    // layer lives on a real inner plane at the paraxial air gap T/n below
+    // the outer plane, and fringe motion emerges from perspective across
+    // that gap (the legacy uThicknessUm uniform is dead on the foliage
+    // path — poking it proves nothing). So the substrate test manipulates
+    // the actual gap at a FIXED oblique camera: collapsing it to zero must
+    // register the layers and move the fringes; a partial collapse must
+    // move them LESS; and re-rendering at the same gap must be
+    // pixel-identical (determinism control).
     const outDir = path.join(OUT_ROOT, 'moire-parallax-physics');
     await fs.mkdir(outDir, { recursive: true });
 
     await faceFrontOn(page, 10, 6); // oblique: real in-plane view component
     await settle(page, 600);
     const roi = await frontROI(page);
-
     const capture = async () => await captureGray(page, roi);
-    const originalT = await setFaceScalarUniform(page, 'front', 'uThicknessUm', 500);
-    await setFaceScalarUniform(page, 'front', 'uThicknessUm', originalT);
-    const originalN = await setFaceScalarUniform(page, 'front', 'uN', 1.46);
-    await setFaceScalarUniform(page, 'front', 'uN', originalN);
 
-    // Baseline: natural substrate at oblique view.
+    // Baseline at the design gap (also stashes the design gap for restore).
+    const designGapMm = await scaleBackPlaneGap(page, 'front', 1);
     const fNatural = await capture();
-    const pngNat = await dumpFramePng(page, outDir, 'oblique-natural');
+    const pngNat = await dumpFramePng(page, outDir, 'oblique-design-gap');
 
-    // Thickness -> 0: back layer snaps into registration with the front.
-    await setFaceScalarUniform(page, 'front', 'uThicknessUm', 0);
-    const fZeroT = await capture();
-    const pngZero = await dumpFramePng(page, outDir, 'oblique-thickness0');
+    // Determinism control: same gap, recapture — must be identical.
+    const fAgain = await capture();
+    const dControl = diffFrames(fNatural, fAgain);
 
-    // Control: with zero thickness, n must have NO effect (only path for
-    // these uniforms is the parallax term).
-    await setFaceScalarUniform(page, 'front', 'uN', 1.0);
-    const fZeroTLowN = await capture();
-    await setFaceScalarUniform(page, 'front', 'uN', originalN);
-    await setFaceScalarUniform(page, 'front', 'uThicknessUm', originalT);
+    // Gap -> 0: layers register, all cross-layer parallax collapses.
+    await scaleBackPlaneGap(page, 'front', 0);
+    const fZeroGap = await capture();
+    const pngZero = await dumpFramePng(page, outDir, 'oblique-gap0');
 
-    // n -> 1.0 at natural thickness: larger refracted shift, fringes move.
-    await setFaceScalarUniform(page, 'front', 'uN', 1.0);
-    const fLowN = await capture();
-    const pngLowN = await dumpFramePng(page, outDir, 'oblique-n1.0');
-    await setFaceScalarUniform(page, 'front', 'uN', originalN);
+    // Gap -> 60%: response must be smaller than the full collapse.
+    await scaleBackPlaneGap(page, 'front', 0.6);
+    const fPartial = await capture();
+    await scaleBackPlaneGap(page, 'front', 1); // restore design gap
 
-    const dThickness = diffFrames(fNatural, fZeroT);
-    const dIndex = diffFrames(fNatural, fLowN);
-    const dZeroTControl = diffFrames(fZeroT, fZeroTLowN);
-
-    // Shift magnitude scales with thickness: a 50 um step must move the
-    // image far less than the full 500 um step. (A head-on "no response"
-    // control is NOT valid here: with a close perspective camera, edge
-    // fragments see the plate obliquely and moire's lever arm makes even a
-    // few um of shift visible — that is honest physics.)
-    await setFaceScalarUniform(page, 'front', 'uThicknessUm', 50);
-    const fSmallT = await capture();
-    await setFaceScalarUniform(page, 'front', 'uThicknessUm', originalT);
-    const dSmallStep = diffFrames(fZeroT, fSmallT);
+    const dCollapse = diffFrames(fNatural, fZeroGap);
+    const dPartial = diffFrames(fNatural, fPartial);
 
     const metrics = {
-      thicknessResponse: rd(dThickness),
-      indexResponse: rd(dIndex),
-      zeroThicknessIndexControl: rd(dZeroTControl),
-      smallThicknessStep: rd(dSmallStep),
-      originalThicknessUm: originalT,
-      originalN,
+      gapCollapse: rd(dCollapse),
+      partialCollapse: rd(dPartial),
+      sameGapControl: rd(dControl),
+      designGapMm: Number(designGapMm.toFixed(4)),
     };
     console.log('[effects] moire-parallax-physics', JSON.stringify(metrics));
 
     const failures: string[] = [];
-    if (dThickness.changedFrac < 0.03) {
+    if (dCollapse.changedFrac < 0.03) {
       failures.push(
-        `fringes ignore substrate thickness at oblique view (changedFrac ${dThickness.changedFrac.toFixed(4)}) — parallax faked?`
+        `fringes ignore the two-plane gap (collapse changedFrac ${dCollapse.changedFrac.toFixed(4)}) — parallax not geometric?`
       );
     }
-    if (dIndex.changedFrac < 0.02) {
+    if (!(dPartial.mad < dCollapse.mad * 0.9 && dPartial.mad > 0.02)) {
       failures.push(
-        `fringes ignore refractive index at oblique view (changedFrac ${dIndex.changedFrac.toFixed(4)})`
+        `response does not scale with the gap (60% collapse mad ${dPartial.mad.toFixed(2)} vs full ${dCollapse.mad.toFixed(2)})`
       );
     }
-    if (dZeroTControl.mad > 1.0) {
+    if (dControl.mad > 0.5) {
       failures.push(
-        `n changes pixels with thickness=0 (mad ${dZeroTControl.mad.toFixed(2)}) — uniforms leak outside the parallax term`
-      );
-    }
-    if (!(dSmallStep.mad > 0.05)) {
-      failures.push(
-        `no sensitivity to a 50 um thickness step (mad ${dSmallStep.mad.toFixed(2)}) — thickness quantized or ignored`
-      );
-    }
-    if (!(dSmallStep.mad < dThickness.mad * 0.7)) {
-      failures.push(
-        `image response does not scale with thickness (50 um step mad ${dSmallStep.mad.toFixed(2)} vs 500 um step mad ${dThickness.mad.toFixed(2)})`
+        `same-gap recapture differs (mad ${dControl.mad.toFixed(2)}) — nondeterministic rendering`
       );
     }
     await writeMeta(
       'moire-parallax-physics',
       outDir,
-      [pngNat, pngZero, pngLowN],
+      [pngNat, pngZero],
       metrics,
       failures
     );
@@ -323,11 +298,16 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const outDir = path.join(OUT_ROOT, 'stereo-lenticular-flip');
     await fs.mkdir(outDir, { recursive: true });
 
-    await assignFacePattern(page, 'front', TEST_PATTERNS.stereo, 'stereo_lenticular');
+    // Post-merge the plate always binds as foliage_moire (id 3); the
+    // barrier switch runs procedurally in its centerpiece region, driven by
+    // the pattern's recipe_data (slit period/axis) and the two-plane gap.
+    await assignFacePattern(page, 'front', TEST_PATTERNS.stereo, 'foliage_moire');
     await settle(page, 400);
-    expect(await faceRecipeId(page, 'front')).toBe(0);
+    expect(await faceRecipeId(page, 'front')).toBe(3);
 
-    // Real stereo view textures must be bound (not the front-mask fallback).
+    // Texture-driven axiom under foliage_moire: the plate binds the REAL
+    // front/back litho masks per plane (stereo view textures only bind for
+    // the legacy recipe-0 path, so stereo_views is informational now).
     const stereoViews = await page.evaluate(() => {
       const buf = ((window as unknown as { __log?: any[] }).__log ?? []) as any[];
       const ev = buf
@@ -368,7 +348,6 @@ test.describe('@effects physical honesty of renderer effects', () => {
     console.log('[effects] stereo-lenticular-flip', JSON.stringify(metrics));
 
     const failures: string[] = [];
-    if (!stereoViews) failures.push('view_a/view_b textures not bound (fallback to front mask)');
     if (dAB.changedFrac < 0.06) {
       failures.push(`opposite tilts render the same (AB changedFrac ${dAB.changedFrac.toFixed(4)})`);
     }
@@ -402,9 +381,12 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const outDir = path.join(OUT_ROOT, 'carrier-reveal-tilt');
     await fs.mkdir(outDir, { recursive: true });
 
-    await assignFacePattern(page, 'front', TEST_PATTERNS.reveal, 'moire_interactive');
+    // Post-merge the plate binds as foliage_moire (id 3): the carrier-reveal
+    // masks ride the two real planes (front mask on the outer plane, back
+    // anti-phase carrier on the inner plane at the T/n gap).
+    await assignFacePattern(page, 'front', TEST_PATTERNS.reveal, 'foliage_moire');
     await settle(page, 400);
-    expect(await faceRecipeId(page, 'front')).toBe(1);
+    expect(await faceRecipeId(page, 'front')).toBe(3);
 
     // First-zone calibration: the reveal completes when the Snell-refracted
     // back shift equals HALF the carrier period, and zones repeat every full
@@ -465,22 +447,21 @@ test.describe('@effects physical honesty of renderer effects', () => {
           `(changedFrac +${d0P.changedFrac.toFixed(4)} / -${d0N.changedFrac.toFixed(4)}) — parallax not applied?`
       );
     }
-    // (b) Substrate anti-cheat (replaces a naive ± sign-symmetry check —
-    // the per-fragment perspective shift gradient breaks strict symmetry
-    // across the plate): with the camera parked at +theta(p/2), zeroing the
-    // thickness uniform removes the parallax shift entirely, so the revealed
-    // figure must collapse back toward registration. The retired recipe-2
-    // view-sign bias ignored thickness and would sail through unchanged.
-    const originalT = await setFaceScalarUniform(page, 'front', 'uThicknessUm', 0);
+    // (b) Substrate anti-cheat: with the camera parked at +theta(p/2),
+    // collapsing the geometric two-plane gap to zero registers the layers,
+    // so the revealed figure must snap back toward registration. A
+    // view-sign bias (the retired recipe-2 cheat) would ignore the gap and
+    // sail through unchanged.
+    await scaleBackPlaneGap(page, 'front', 0);
     await settle(page, 150);
-    const fZeroT = await captureGray(page, roi);
-    await setFaceScalarUniform(page, 'front', 'uThicknessUm', originalT);
-    const dThick = diffFrames(fPos, fZeroT);
-    (metrics as Record<string, unknown>).thicknessCollapse = rd(dThick);
-    console.log('[effects] carrier-reveal thicknessCollapse', JSON.stringify(rd(dThick)));
-    if (dThick.changedFrac < 0.03) {
+    const fZeroGap = await captureGray(page, roi);
+    await scaleBackPlaneGap(page, 'front', 1);
+    const dGap = diffFrames(fPos, fZeroGap);
+    (metrics as Record<string, unknown>).gapCollapse = rd(dGap);
+    console.log('[effects] carrier-reveal gapCollapse', JSON.stringify(rd(dGap)));
+    if (dGap.changedFrac < 0.03) {
       failures.push(
-        `reveal ignores substrate thickness (t=0 changedFrac ${dThick.changedFrac.toFixed(4)}) — not parallax-driven`
+        `reveal ignores the two-plane gap (collapse changedFrac ${dGap.changedFrac.toFixed(4)}) — not parallax-driven`
       );
     }
     await writeMeta('carrier-reveal-tilt', outDir, [pNeg, p0, pPos], metrics, failures);

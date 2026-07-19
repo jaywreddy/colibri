@@ -134,8 +134,10 @@ test.describe('@lab Pattern Lab 2D preview', () => {
   test('@lab zone quick-sets appear for period-carrying patterns and land on the switch peak', async ({
     page,
   }) => {
-    // The default face pattern (wayuu) carries no slit/carrier period in
-    // recipe_data, so no zone UI is shown.
+    // A period-free pattern shows no zone UI. (Post-merge the DEFAULT face
+    // is globe-duo-phase, which does carry a carrier period — so explicitly
+    // study wayuu, which has none.)
+    await page.getByTestId('lab-pattern').selectOption('wayuu-kanasu-moire');
     await expect(page.getByTestId('lab-zone-pos')).toHaveCount(0);
 
     // A barrier pattern advertises slit_period_um (default p = 40 um) — the

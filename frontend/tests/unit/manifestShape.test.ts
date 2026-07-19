@@ -110,6 +110,8 @@ const SAMPLE_BOX: BoxManifest = {
   assembly: {
     keepout_um: 3425,
     overlap_um: 2925,
+    // Back-carrier window = overlap only (drops the safety margin).
+    back_window_um: 2925,
     glass_thickness_um: 500,
     cut_list: [
       { face: 'bottom', width_um: 50000, height_um: 50000, width_mm: 50.0, height_mm: 50.0 },
@@ -222,6 +224,7 @@ describe('RECIPE_IDS', () => {
       'stereo_lenticular',
       'moire_interactive',
       'phase_shift_overlay',
+      'foliage_moire',
     ];
     for (const n of names) {
       expect(typeof RECIPE_IDS[n]).toBe('number');
@@ -231,6 +234,6 @@ describe('RECIPE_IDS', () => {
     expect('far_field_hologram' in RECIPE_IDS).toBe(false);
     expect('stylized_amplitude' in RECIPE_IDS).toBe(false);
     const ids = Object.values(RECIPE_IDS).sort();
-    expect(ids).toEqual([0, 1, 2]);
+    expect(ids).toEqual([0, 1, 2, 3]);
   });
 });

@@ -71,7 +71,7 @@ describe('store (Ring Box Studio v2)', () => {
     useStore.getState().patchFace('top', { pattern_slug: 'emerald-facet-moire' });
     const s = useStore.getState().boxSpec;
     expect(s.faces.top!.pattern_slug).toBe('emerald-facet-moire');
-    expect(s.faces.front!.pattern_slug).toBe('wayuu-kanasu-moire');
+    expect(s.faces.front!.pattern_slug).toBe('globe-duo-phase');
   });
 
   it('patchFaceFrame merges frame fields', () => {

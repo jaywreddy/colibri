@@ -114,13 +114,40 @@ def test_back_mode_carrier_is_uniform_grating(halfcard: str):
 
 
 def test_back_mode_complement_anticorrelates_with_front(halfcard: str):
+    """Complement is a row-interlaced parallax barrier (CLAUDE.md rule: image
+    content in the BACK layer, slit mask in FRONT): the back interlaces the
+    positive halftone in one half-period row phase with the negative in the
+    other, and a vertical tilt gates one channel — the positive/negative
+    switch peaks at back shifts of +/- p/4 (sim2d.switch_metrics)."""
+    period = 20.0  # generate() default line_period_um
     gp = registry["bitmap-halftone"].generate(
         image=halfcard, extent_um=EXTENT, back_mode="complement"
     )
-    f_left, f_right = _half_areas(gp.front)
-    b_left, b_right = _half_areas(gp.back)
-    assert f_left > f_right  # front: gold follows the dark (left) half
-    assert b_right > b_left  # back: gold follows the light (right) half
+
+    # Front is a pure slit barrier: ~50% coverage and every gold band spans
+    # the full width — no image content may leak into the front layer.
+    assert 0.45 <= gp.extra["coverage_front"] <= 0.55
+    for g in gp.front.geoms:
+        x0, _, x1, _ = g.bounds
+        assert (x1 - x0) > 0.9 * EXTENT, "slit band does not span the extent"
+
+    # Rasterize the real geometry (half-cell pitch keeps PIL edge fill under
+    # half a cell of bleed) and measure the switch along the vertical axis.
+    pitch = gp.extra["cell_um"] / 2.0
+    fr = np.asarray(rasterize(gp.front, gp.extent_um, pitch), dtype=np.float32) / 255.0
+    bk = np.asarray(rasterize(gp.back, gp.extent_um, pitch), dtype=np.float32) / 255.0
+    m = switch_metrics(fr, bk, pitch, period, shift_um=period / 4.0, axis="y")
+    # +p/4 gates the positive channel with the negative fully extinguished;
+    # -p/4 the reverse — and the two views show different (opposite-tone)
+    # images through the apertures.
+    assert m["vis_a_plus"] > 0.3 and m["vis_a_minus"] < 0.05
+    assert m["vis_b_minus"] > 0.3 and m["vis_b_plus"] < 0.05
+    assert m["separation"] > 50.0
+    assert m["corr"] < 0.2
+
+    # Switch metadata pins the straddle-registration geometry.
+    assert gp.extra["switch_shift_um"] == pytest.approx(period / 4.0)
+    assert gp.extra["switch_half_angle_deg"] > 0.0
 
 
 def test_back_mode_phase_reveal_ships_a_shifted_copy(halfcard: str):

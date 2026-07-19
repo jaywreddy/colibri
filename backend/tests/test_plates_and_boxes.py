@@ -478,39 +478,36 @@ def test_plate_svg_central_scaled_to_aperture(isolated_data):
     assert pair is not None
     front_svg, back_svg = pair
 
+    # Post-merge the SVG writer rasterizes the SAME composed plate the
+    # preview shows (budget-aware fab pitch), so the "central at native
+    # extent" failure mode is structurally impossible — the writer-agnostic
+    # invariants that remain worth pinning: current version marker, true-mm
+    # physical size, and real geometry that spans the plate (not a stub) yet
+    # never overshoots the half-extent.
+    from app.plates import PLATE_SVG_VERSION
+
+    half_w = spec.width_um / 2.0
     for svg_path in (front_svg, back_svg):
         svg = svg_path.read_text(encoding="utf-8")
+        assert PLATE_SVG_VERSION in svg[:256], f"{svg_path.name}: stale writer version"
         # Physical size is explicit mm; user units stay um via the viewBox.
         assert 'width="8.0000mm"' in svg and 'height="8.0000mm"' in svg, svg[:300]
 
-        gm = re.search(r'<g id="central" transform="scale\(([-0-9.eE]+)\)">', svg)
-        assert gm is not None, f"{svg_path.name}: central group is not aperture-scaled"
-        scale = float(gm.group(1))
-        assert scale > 1.0, "central pattern should upscale to the aperture here"
-
-        # Every central path coordinate, scaled, must land inside the
-        # aperture — and the pattern must actually FILL it, not sit tiny in
-        # the middle of empty glass.
-        start = svg.index(gm.group(0))
-        end = svg.index("</g>", start)
-        chunk = svg[start:end]
         coords: list[float] = []
-        for d_attr in re.findall(r'd="([^"]+)"', chunk):
+        for d_attr in re.findall(r'd="([^"]+)"', svg):
             coords.extend(
                 abs(float(v))
                 for v in re.findall(r"-?\d+\.?\d*(?:[eE]-?\d+)?", d_attr)
             )
-        assert coords, f"{svg_path.name}: central group has no path geometry"
-        reach_um = max(coords) * scale
-        half_ap = aperture_um / 2.0
-        assert reach_um <= half_ap * 1.01 + 1.0, (
-            f"{svg_path.name}: scaled central overshoots the aperture "
-            f"({reach_um:.1f} um > {half_ap:.1f} um)"
+        assert len(coords) > 200, f"{svg_path.name}: implausibly little geometry"
+        reach_um = max(coords)
+        assert reach_um <= half_w * 1.01 + 1.0, (
+            f"{svg_path.name}: geometry overshoots the plate "
+            f"({reach_um:.1f} um > {half_w:.1f} um)"
         )
-        assert reach_um >= half_ap * 0.5, (
-            f"{svg_path.name}: central does not fill the aperture "
-            f"({reach_um:.1f} um vs half-aperture {half_ap:.1f} um) — "
-            f"native-extent regression?"
+        assert reach_um >= aperture_um / 2.0 * 0.5, (
+            f"{svg_path.name}: geometry does not reach the aperture "
+            f"({reach_um:.1f} um) — composite missing?"
         )
 
 
@@ -576,8 +573,12 @@ def test_recipe_data_keys_flow_to_box_faces(isolated_data):
     )
     manifest = materialize_box(spec)
 
+    # Post-merge contract: EVERY composed plate advertises the two-plane
+    # foliage_moire recipe (the plate is a box-first moire carrier), but the
+    # central pattern's own recipe_data keys must still merge through — the
+    # Pattern Lab zone UI and any central-recipe consumers read them there.
     stereo = manifest["faces"]["front"]
-    assert stereo["render_recipe"] == "stereo_lenticular"
+    assert stereo["render_recipe"] == "foliage_moire"
     rd = stereo["recipe_data"]
     for key in ("view_a_png", "view_b_png", "slit_axis_deg", "slit_period_um"):
         assert key in rd, f"stereo recipe_data missing {key!r} (frontend reads it)"
@@ -588,7 +589,7 @@ def test_recipe_data_keys_flow_to_box_faces(isolated_data):
     assert "frame_scene" not in rd
 
     reveal = manifest["faces"]["back"]
-    assert reveal["render_recipe"] == "moire_interactive"
+    assert reveal["render_recipe"] == "foliage_moire"
     rd = reveal["recipe_data"]
     for key in ("switch_axis_deg", "carrier_period_um"):
         assert key in rd, f"reveal recipe_data missing {key!r} (lab zone UI reads it)"

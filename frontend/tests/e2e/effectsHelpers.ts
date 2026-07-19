@@ -234,6 +234,40 @@ export async function dumpFramePng(page: Page, outDir: string, name: string): Pr
   return p;
 }
 
+/**
+ * Scale the geometric two-plane gap of one face. The merged renderer places
+ * the BACK gold layer on a REAL inner plane at the paraxial air gap T/n below
+ * the outer plane — parallax emerges from perspective across that gap, not
+ * from a thickness uniform. Scaling the gap is therefore the honest substrate
+ * manipulation: factor 0 registers the layers (parallax collapses), factor 1
+ * restores the design gap. Returns the design gap in scene mm.
+ */
+export async function scaleBackPlaneGap(
+  page: Page,
+  faceId: string,
+  factor: number
+): Promise<number> {
+  return await page.evaluate(
+    ([fid, k]) => {
+      const s = (window as any).__studio;
+      const front = s.faces[fid].shader;
+      const back = s.faces[fid].shaderBack;
+      let outerZ: number | null = null;
+      let inner: any = null;
+      s.scene.traverse((o: any) => {
+        if (o.isMesh && o.material === front && outerZ === null) outerZ = o.position.z;
+        if (o.isMesh && o.material === back && !inner) inner = o;
+      });
+      if (outerZ === null || !inner) throw new Error(`two-plane meshes not found for ${fid}`);
+      const ud = inner.userData as { __designGap?: number };
+      if (ud.__designGap === undefined) ud.__designGap = outerZ - inner.position.z;
+      inner.position.z = outerZ - ud.__designGap * (k as number);
+      return ud.__designGap;
+    },
+    [faceId, factor] as const
+  );
+}
+
 /** Set a shader uniform on one face (numbers only). Returns the old value. */
 export async function setFaceScalarUniform(
   page: Page,
