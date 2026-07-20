@@ -45,8 +45,8 @@ def globe_silhouette(
     :func:`app.patterns.geo.render.render_globe`, centered on ~32 N / 52 W so
     Colombia, the continental US, and western Europe all read at once, with
     Colombia emphasized. Signature and output semantics are unchanged from the
-    prior versions, so callers (colibri_globe_phase, plates composition) keep
-    working untouched.
+    prior versions, so callers (colibri_globe_lenticular, colibri_globe_moire,
+    plates composition) keep working untouched.
 
     ``rotation_deg`` spins the earth about its polar axis by offsetting the
     orthographic projection's center longitude — with real geography this is a

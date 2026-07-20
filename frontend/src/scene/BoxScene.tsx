@@ -1249,10 +1249,6 @@ export default function BoxScene() {
               u.uViewA.value = front;
               u.uViewB.value = front;
             }
-            if (recipe === 'phase_shift_overlay') {
-              u.uSwitchAxis.value = ((Number(rd.switch_axis_deg ?? 0) || 0) * Math.PI) / 180;
-              u.uCarrierPeriodUm.value = Number(rd.carrier_period_um ?? 20.0) || 20.0;
-            }
             if (recipe === 'foliage_moire') {
               // Two-plane geometric renderer. The FRONT (outer) plane draws the
               // foliage louvre (slit period/angle) + colibrí carrier; the BACK
@@ -1261,8 +1257,9 @@ export default function BoxScene() {
               // single-plane beat formula. Preview periods must resolve at
               // >=2-3 px/period at default zoom or the real planes alias (the old
               // 70 µm carrier was sub-pixel — see the two-plane rig matrix).
-              u.uCarrierPeriodUm.value = Number(rd.carrier_period_um ?? 220.0) || 220.0;
-              u.uSlitPeriodUm.value = Number(rd.slit_period_um ?? 239.8) || 239.8;
+              // NOTE: uCarrierPeriodUm / uSlitPeriodUm are bound ONLY from the
+              // preview_* / fab_*-derived values below — the manifest's
+              // advertised true pitch never drives the shader directly.
               u.uCarrierAngle.value = ((Number(rd.carrier_angle_deg ?? 0) || 0) * Math.PI) / 180;
               u.uSlitAngle.value = ((Number(rd.slit_axis_deg ?? 3) || 3) * Math.PI) / 180;
               u.uGratingDuty.value = Number(rd.grating_duty ?? 0.5) || 0.5;
@@ -1291,8 +1288,6 @@ export default function BoxScene() {
                 Number(rd.preview_slit_period_um ??
                   (Number(rd.fab_front_period_um ?? 22.0 * 1.09) || 22.0 * 1.09) * 5.0) ||
                 110.0 * 1.09;
-              u.uFrameAngleSpan.value =
-                ((Number(rd.frame_angle_span_deg ?? 3.5) || 3.5) * Math.PI) / 180;
               // Centerpiece switch / water-comb / barrier pitch: the fab 60 µm
               // value → ~5° crossing at the T/n air gap.
               u.uCenterPeriodUm.value = Number(rd.fab_center_period_um ?? 60.0) || 60.0;

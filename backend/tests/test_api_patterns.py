@@ -6,24 +6,26 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 
-# Catalog contract after the 2026-07-19 parallax-honesty rebuild:
-# - "colibri-globe-phase" KEPT but rebuilt as a parallax barrier (both images
-#   interlaced in BACK, slit in FRONT, stereo_lenticular) — its old two-image
-#   front/back phase split was structurally incapable of switching under
-#   honest parallax. It is now a deprecation candidate (architecturally
-#   identical to colibri-globe-lenticular at a slower default period).
-# - "jp-monogram-phase" kept but rebuilt as a stereo_lenticular barrier
-#   (see test_monogram_barrier_manifest_ships_view_urls below).
-# - "monogram-carrier-reveal" ADDED — the honest T5 carrier reveal (single
-#   image halftoned onto a carrier in FRONT, exact anti-phase carrier in
-#   BACK, moire_interactive).
+# Catalog contract after the 2026-07 parallax-honesty rebuilds:
+# - "jp-monogram-phase", "globe-duo-phase", "gear-quill-switch" and
+#   "colibri-flap-phase" are parallax barriers (both images interlaced in
+#   BACK, pure slit comb in FRONT, stereo_lenticular) — the two-image
+#   front/back phase split they once shipped was structurally incapable of
+#   switching under honest parallax.
+# - "colibri-globe-phase" REMOVED — after its barrier rebuild it was
+#   architecturally identical to colibri-globe-lenticular (only a slower
+#   default period), so the redundant twin was dropped.
+# - "monogram-carrier-reveal" — the honest T5 carrier reveal (single image
+#   halftoned onto a carrier in FRONT, exact anti-phase carrier in BACK,
+#   moire_interactive).
+# - "food-pair-chirp", "jamon-tray", "inscription-line", "monogram-jp" are
+#   single-layer front-only shimmers (moire_interactive; empty back).
 EXPECTED_SLUGS = {
     # Original catalog
     "wayuu-kanasu-moire",
     "emerald-facet-moire",
     "colibri-globe-lenticular",
     "colibri-globe-moire",
-    "colibri-globe-phase",
     # Taxonomy rebuild additions (barrier switches, carrier reveal, bitmap)
     "globe-rotation-stereo",
     "orchid-shimmer-moire",
@@ -103,18 +105,22 @@ def test_unknown_slug_returns_404(client: TestClient) -> None:
 
 # ---------------------------------------------------------------------------
 # Render-recipe manifest round-trip — every manifest must stamp its class
-# render_recipe and the recipe must be one of the three names the shader
-# actively switches on.
+# render_recipe and the recipe must be one of the names the shader actively
+# switches on for PATTERN manifests (ids 0 stereo_lenticular and
+# 1 moire_interactive; id 3 foliage_moire is bound only by composed PLATE
+# manifests, never by a pattern class).
 # ---------------------------------------------------------------------------
 
-# NOTE: phase_shift_overlay (recipe 2) has no registered users after the
-# honesty rebuild — its "switch" was a view-sign bias, and both former users
-# were rebuilt as barriers. It stays in the valid set only because the
-# shader still switches on the id; drop it here if/when recipe 2 is deleted.
+# NOTE: phase_shift_overlay (recipe 2) is RETIRED with zero users — its
+# "switch" was a shader view-sign bias, not physics. The barrier rebuilds
+# (jp-monogram-phase, globe-duo-phase, gear-quill-switch, colibri-flap-phase)
+# and the single-layer retags (food-pair-chirp, jamon-tray, inscription-line,
+# monogram-jp → moire_interactive) removed every user; the name is deleted
+# from base.RECIPE_NAMES and the frontend deleted shader id 2. Numeric ids
+# 0/1/3 are stable with a permanent hole at 2.
 _VALID_RECIPES = {
     "stereo_lenticular",
     "moire_interactive",
-    "phase_shift_overlay",
 }
 
 

@@ -20,7 +20,9 @@ uniform vec3 uBacklightColor;
 uniform vec3 uAmbientColor;
 
 // Which render recipe to run. Numeric IDs match RECIPE_IDS in frontend/src/api.ts:
-//   0 stereo_lenticular, 1 moire_interactive, 2 phase_shift_overlay.
+//   0 stereo_lenticular, 1 moire_interactive, 3 foliage_moire (every composed
+//   box plate). Id 2 (phase_shift_overlay) is RETIRED — the hole is
+//   intentional so 0/1/3 never renumber.
 uniform int uRecipe;
 
 // --- stereo_lenticular uniforms (only read when uRecipe == 0) ---------------
@@ -29,7 +31,11 @@ uniform sampler2D uViewB;          // tilt-negative scene
 uniform float uSlitOrientation;    // radians; slit-normal direction (0 = +X)
 uniform float uSlitPeriodUm;       // slit period Λ_slit (μm)
 
-// --- phase_shift_overlay uniforms (only read when uRecipe == 2) -------------
+// --- shared foliage/centerpiece uniforms (read when uRecipe == 3) -----------
+// Historically declared for the retired phase_shift_overlay recipe, but they
+// are LIVE on the foliage_moire path: uCarrierPeriodUm drives the frame back
+// carrier and uSwitchAxis the capybara body shimmer + the legacy 2-phase
+// centerpiece fallback. Do NOT delete with recipe 2.
 uniform float uSwitchAxis;         // radians; axis we project view onto
 uniform float uCarrierPeriodUm;    // carrier stripe period (μm)
 
@@ -253,48 +259,10 @@ vec3 runStereoLenticular(vec3 viewTangent) {
   return color;
 }
 
-// ----------------------------------------------------------------------------
-// Recipe 2: phase_shift_overlay — both layers carry image content, but the
-// back's stripe carrier is offset by half a period from the front's. Parallax
-// shift through the substrate slides the back layer; the sign of the view
-// projection biases which carrier phase the eye samples. Head-on, the two
-// interlace; tilt one way and the front (hummingbird) phase dominates,
-// tilt the other and the back (globe) phase dominates.
-// ----------------------------------------------------------------------------
-vec3 runPhaseShiftOverlay(vec3 viewTangent) {
-  vec2 shift = parallax_offset(viewTangent, uThicknessUm, uN, uExtentUm);
-
-  // EMERGENT phase switch. Both layers carry baked stripe-carrier image content;
-  // the back's carrier is half a period out of phase with the front's. The FRONT
-  // is the top layer (always visible); the BACK is only seen THROUGH the front
-  // gaps — an honest occlusion. Parallax slides the back carrier (vUv - shift):
-  // when its lines fall into the front gaps the back image shines through
-  // (globe), when they hide behind the front lines it recedes (hummingbird
-  // dominates). The reveal thus EMERGES from the parallax-driven overlap of the
-  // two carriers — no view-projection bias formula.
-  float frontGold = texture2D(uFront, vUv).r;
-  float backGold  = texture2D(uBack,  vUv - shift).r;
-
-  float backVisible = backGold * (1.0 - frontGold); // back seen through front gaps
-  float reflected = frontGold + backVisible;
-
-  // Transmission only opens where neither layer covers the pixel — the gap
-  // between both carriers' stripes, which only aligns via parallax.
-  float transmission = (1.0 - frontGold) * (1.0 - backGold);
-
-  vec3 color;
-  if (uIllumination == 0) {
-    vec3 goldShade = GOLD * reflected * (0.3 + 0.7 * max(0.0, vLightDirTangent.z));
-    color = goldShade + vec3(0.05) * transmission;
-  } else if (uIllumination == 1) {
-    color = uLaserColor * transmission * (0.45 + 0.55 * max(0.0, vLightDirTangent.z));
-    color += GOLD * 0.12 * reflected;
-  } else {
-    color = uBacklightColor * transmission;
-    color += GOLD_BACK * reflected * 0.25;
-  }
-  return color;
-}
+// (Recipe 2, phase_shift_overlay, was RETIRED and its runPhaseShiftOverlay
+// function deleted: a front-layer image can never vanish under parallax
+// because the front mask does not move with tilt. Its former users are now
+// stereo_lenticular barriers or moire_interactive single-layer art.)
 
 // ----------------------------------------------------------------------------
 // Recipe 3: foliage_moire — box-first moiré carrier.
@@ -669,11 +637,10 @@ void main() {
   }
 
   // Legacy single-plane recipes (standalone-pattern previews) stay opaque.
+  // (uRecipe == 2 no longer exists — phase_shift_overlay is retired.)
   vec3 color;
   if (uRecipe == 0) {
     color = runStereoLenticular(viewTangent);
-  } else if (uRecipe == 2) {
-    color = runPhaseShiftOverlay(viewTangent);
   } else {
     // Default + uRecipe == 1: moire_interactive.
     color = runMoireInteractive(viewTangent);

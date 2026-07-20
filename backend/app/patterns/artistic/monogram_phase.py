@@ -20,29 +20,21 @@ import numpy as np
 from shapely import affinity
 from shapely.geometry import MultiPolygon
 
-from .._helpers import check_lattice_budget, crop, linear_grating, raster_to_polygons
+from .._helpers import (
+    check_lattice_budget,
+    crop,
+    exterior_tilt_deg,
+    linear_grating,
+    raster_to_polygons,
+)
 from ..base import (
     GeneratedPattern,
     ParamSpec,
     Pattern,
-    Substrate,
     ensure_multipolygon,
     register,
 )
 from ..motifs import monogram
-
-_SUB = Substrate()
-
-
-def _exterior_tilt_deg(shift_um: float, t_um: float = _SUB.thickness_um, n: float = _SUB.n) -> float:
-    """Exterior tilt that produces a back-layer parallax shift of `shift_um`.
-
-    Inverse of the Snell-refracted parallax through the substrate:
-    θ(s) = asin(n · sin(atan(s / t))). The old metadata used atan(p/(2t)) —
-    wrong shift (switch completes at s = p/4, not p/2, because the slit
-    straddles the channel boundary) AND missing the Snell factor n.
-    """
-    return math.degrees(math.asin(min(1.0, n * math.sin(math.atan(shift_um / t_um)))))
 
 
 @register
@@ -141,8 +133,8 @@ class JPMonogramPhase(Pattern):
             extra={
                 # Switch completes at a quarter-period shift (slit straddles
                 # the channel boundary); the clean first zone ends at p/2.
-                "switch_half_angle_deg": _exterior_tilt_deg(slit_period_um / 4),
-                "zone_half_angle_deg": _exterior_tilt_deg(slit_period_um / 2),
+                "switch_half_angle_deg": exterior_tilt_deg(slit_period_um / 4),
+                "zone_half_angle_deg": exterior_tilt_deg(slit_period_um / 2),
             },
             extra_layers={
                 "view_a": ensure_multipolygon(view_a),

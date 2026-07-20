@@ -30,8 +30,8 @@ seed:
 # compute (see CLAUDE.md). Chunk order keeps the heavy files
 # (plates_and_boxes, api_patterns, frames, patterns_roundtrip) paired with at
 # most one other file; chunk 2 is six light/fast files.
-# Chunk 5 (sim2d + showcase patterns + bitmap halftone) is synthetic/small-
-# extent and runs in ~2 s.
+# Chunk 5 (sim2d + pattern types + showcase patterns + bitmap halftone) is
+# synthetic/small-extent and runs in ~2 s.
 # Backend pytest (Layer 1) — 5 sequential memory-safe chunks
 test-backend flags="":
     cd backend; uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q {{flags}}
@@ -57,7 +57,7 @@ test-visual:
 
 # Physical-honesty effects suite: pixel-metric verification that every
 # renderer effect is view-dependent, time-invariant, texture-driven, and
-# obeys the substrate physics (thickness/n scaling). Dumps PNG frame
+# obeys the substrate physics (geometric two-plane gap scaling). Dumps PNG frame
 # sequences + metrics under frontend/test-results/visual/latest/effects/.
 # Deterministic, no LLM. HEAVY (Playwright, spins up both servers) — never
 # run alongside another compute process.
@@ -87,6 +87,19 @@ test-all: test-backend test-unit test-e2e
 test-ci: (test-backend "--maxfail=1")
     cd frontend; pnpm test:unit --reporter=verbose
     cd frontend; $env:CI='1'; pnpm test:e2e --reporter=dot
+
+# Pack all 6 box plates onto a 4-inch wafer GDS (writes backend/data/wafer/).
+# HEAVY — materializes all six plates and writes fine-pitch GDS; run alone,
+# never alongside another compute process (see CLAUDE.md).
+export-wafer:
+    cd backend; uv run python -m app.export_wafer --out data/wafer/wafer.gds
+
+# Grating-pitch E2E probe: Playwright driving the real UI, asserting the
+# preset -> /boxes/generate -> shader-rebind chain per pitch. Requires both
+# servers already up (`just dev`). HEAVY — run alone, never alongside
+# another compute process.
+test-pitch:
+    cd frontend; pnpm exec node scripts/e2e-pitch.mjs
 
 # Wipe generated pattern cache (regenerate via `just seed`)
 clean:

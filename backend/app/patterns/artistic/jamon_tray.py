@@ -48,7 +48,7 @@ class JamonTray(Pattern):
     tags = ["tilt-shimmer", "food", "Spain", "jamon", "front-only"]
     tier = 1
     theme = "Colombia"
-    render_recipe = "phase_shift_overlay"
+    render_recipe = "moire_interactive"
     params = [
         ParamSpec("period_um", "Carrier period", "float", 20.0, 6.0, 80.0, 0.5, "μm"),
         ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
@@ -91,14 +91,13 @@ class JamonTray(Pattern):
             extent_um=extent,
             pixel_pitch_um=cell_um,
             min_feature_um=carrier_g.period_um * 0.5,
+            # Informational only — kept out of recipe_data on purpose: the
+            # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
+            # carries a period key, and with an empty back layer there is no
+            # mask-level tilt effect to quick-set to.
             extra={
                 "carrier_period_um": carrier_g.period_um,
-                "coarsened": bool(carrier_g.coarsened),
-            },
-            recipe_data={
-                # Vertical carrier → horizontal shimmer axis, same handling as
-                # monogram-jp / food-pair-chirp / colibri-globe-phase.
                 "switch_axis_deg": 0.0,
-                "carrier_period_um": carrier_g.period_um,
+                "coarsened": bool(carrier_g.coarsened),
             },
         )

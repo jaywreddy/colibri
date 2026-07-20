@@ -149,9 +149,9 @@ def gear_quill_silhouette(
 # ===========================================================================
 # SPLIT SILHOUETTES for the gear<->quill TILT SWITCH (gear-quill-switch pattern)
 # ---------------------------------------------------------------------------
-# The switch packs two images into a phase-offset carrier (front = gear, back =
-# quill+book) and lets substrate parallax reveal one or the other with tilt —
-# the same mechanism as colibri_globe_phase. For that to read cleanly each
+# The switch interlaces the two images into alternating half-period back-layer
+# columns behind a slit barrier (parallax-barrier construction, same as
+# jp-monogram-phase) so tilt reveals one or the other. For that to read cleanly each
 # image must stand ALONE and fill a comparable footprint (matched visual
 # weight): a bold CENTERED gear for "the engineer", a bold CENTERED open book
 # with a quill for "the historian". These are deliberately re-centered and

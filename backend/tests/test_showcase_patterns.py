@@ -1,9 +1,9 @@
-"""Sanity checks for the showcase patterns: the two parallax-barrier image
+"""Sanity checks for the showcase patterns: the parallax-barrier image
 switches rebuilt from the retired phase overlays (J+P monogram ↔ heart,
-colibrí ↔ globe), the spinning-globe lenticular, the Cattleya shimmer, the
-new J+P carrier reveal, and the globe-motif rotation support they build on.
-Extents are kept small so each generate() stays in the sub-second range on
-the constrained dev host."""
+CA ↔ Colombia duo-globe, gear ↔ quill, colibrí wing beat), the spinning-globe
+lenticular, the Cattleya shimmer, the J+P carrier reveal, and the globe-motif
+rotation support they build on. Extents are kept small so each generate()
+stays in the sub-second range on the constrained dev host."""
 from __future__ import annotations
 
 import math
@@ -20,15 +20,23 @@ SHOWCASE_SLUGS = [
     "globe-rotation-stereo",
     "orchid-shimmer-moire",
     "jp-monogram-phase",
-    "colibri-globe-phase",
+    "globe-duo-phase",
+    "gear-quill-switch",
+    "colibri-flap-phase",
     "monogram-carrier-reveal",
 ]
 
-# The two slugs rebuilt from phase overlays into parallax barriers: both
-# images interlaced in the BACK layer, pure slit mask in FRONT.
+# The slugs rebuilt from phase overlays into parallax barriers: both images
+# interlaced in the BACK layer as half-period column channels, pure FULL-FIELD
+# slit mask in FRONT (never clipped to the silhouettes — a union-gated comb is
+# itself a static front image; the front-coverage test below is the tripwire
+# for that defect class). colibri-globe-phase, once first in this list, was
+# removed as a redundant twin of colibri-globe-lenticular.
 BARRIER_SLUGS = [
     "jp-monogram-phase",
-    "colibri-globe-phase",
+    "globe-duo-phase",
+    "gear-quill-switch",
+    "colibri-flap-phase",
 ]
 
 # Small extent keeps raster grids and lattice cell counts tiny.

@@ -26,6 +26,7 @@
         "valid": true,
         "overlap_um": 2925.0,
         "keepout_um": 3425.0,
+        "back_window_um": 2925.0,
         "cut_list": [
           {
             "face": "bottom",
@@ -141,6 +142,7 @@
         "valid": true,
         "overlap_um": 2628.0,
         "keepout_um": 3028.0,
+        "back_window_um": 2628.0,
         "cut_list": [
           {
             "face": "bottom",

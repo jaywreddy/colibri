@@ -257,7 +257,7 @@ ART_LEVEL = 255     # 1.0 in the shader
 # PLUS a travelling spectral sheen (preview stand-in for a real sub-5 µm fan).
 # In fab (ensure_plate_svg) the same pixels are OR-ed with a 4.4 µm 45° grating
 # from effects.gratings.diffraction_accent_grating. Small designed accent zones
-# only (colibrí gorget, steam-curl tips, gear hub, monogram flourish tips) —
+# only (steam-curl tips, gear hub, monogram flourish tips) —
 # keep them tiny so the sub-5 µm feature count stays inside the lattice budget.
 RAINBOW_LEVEL = 200
 
@@ -427,14 +427,19 @@ WATER_SCAN_SLUG = "capybara-scanimation"
 # phase-offset construction (A on front, B on back, half-period shift) for a TRUE
 # lenticular/Poemotion BARRIER INTERLACE: both silhouettes live on the BACK layer
 # in alternating lanes (A even, B odd, lane pitch = half the barrier pitch) and
-# the FRONT layer is a neutral slit barrier (open duty 0.5) over their union, so
+# the FRONT layer is a neutral slit comb over the FULL centerpiece art box —
+# never clipped to the silhouettes (a union-gated comb is itself a static front
+# image: its envelope is the union, which can never vanish under parallax — the
+# measured ~0.31 front residual of the half rebuild). With the image-free comb,
 # tilting one way shows ONLY A and the other ONLY B — a hard swap, not a
 # redistribution. The barrier pitch is FAB_CENTER_PERIOD_UM (60 µm), so the swap
 # crosses at the same comfortable ~5° tilt the old switch targeted. The preview
 # shader draws the lanes/barrier procedurally (uSwitchInterlace); the fab SVG +
 # fine GDS bake the same architecture at fab pitches (see ensure_plate_svg /
-# export_fine), and the standalone generators mirror it.
-SWITCH_INTERLACE_SLUGS = frozenset({"globe-duo-phase", "gear-quill-switch"})
+# export_fine), and the standalone generators mirror it (full-field comb there).
+SWITCH_INTERLACE_SLUGS = frozenset(
+    {"globe-duo-phase", "gear-quill-switch", "colibri-flap-phase"}
+)
 # Fab (SVG/GDS) barrier-grid parameters — the standalone builder's defaults
 # (60 µm slit pitch, N=4 → 15 µm slot, 24 µm body-shimmer carrier). These bake
 # the REAL slit barrier + interleaved ripple frames into the box back plate.
@@ -450,9 +455,11 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     ``FRONT_GRATING_RATIO``; a per-face base angle keyed off the frame seed
     keeps each face's carrier visually distinct without changing the physics.
 
-    The CENTERPIECE carrier (colibrí↔globe tilt switch): a finer vertical
-    stripe carrier with a ±X switch axis, phase-shifted by half a period
-    between the two silhouettes in the shader.
+    The CENTERPIECE carrier: a finer vertical stripe carrier with a ±X switch
+    axis. On the barrier-interlace faces (SWITCH_INTERLACE_SLUGS) the shader
+    draws the neutral comb + interleaved lanes at this pitch instead; on the
+    front-only shimmer faces (monogram/inscription/food/jamón) it is the
+    procedural glimmer carrier.
     """
     base_angle = (spec.frame.seed * 17.0) % 180.0
     # User-tunable grating pitch drives the REAL back carrier + leaf louvre
@@ -475,7 +482,8 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     preview_front = preview_carrier * FRONT_GRATING_RATIO
     # Water scanimation: only the capybara back face turns it on (N>0). Every
     # other face emits N=0, so the shader's water-scan branch is a no-op and the
-    # centerpiece keeps its 2-phase colibrí/globe switch — pixel-identical.
+    # centerpiece keeps its own path (barrier interlace or legacy 2-phase
+    # shimmer) — pixel-identical.
     is_water = spec.pattern_slug == WATER_SCAN_SLUG
     water_n = WATER_SCAN_N_PHASES if is_water else 0
     # Art-box registration for the flow wake. The centerpiece is a SQUARE of side
@@ -516,8 +524,9 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         "switch_axis_deg": CENTER_SWITCH_AXIS_DEG,
         # Barrier-interlace tilt switch (Task 3): the shader draws the neutral
         # barrier (outer) + interleaved A/B lanes (inner) at the fab barrier pitch
-        # instead of the phase-offset carrier. True only on the two hard-swap
-        # faces; every other face keeps the phase-offset centerpiece.
+        # instead of the phase-offset carrier. True only on the hard-swap faces
+        # (SWITCH_INTERLACE_SLUGS); every other face keeps the legacy 2-phase
+        # centerpiece (which post-rebuild means the front-only shimmer faces).
         "switch_interlace": spec.pattern_slug in SWITCH_INTERLACE_SLUGS,
         # Water scanimation (capybara back face). N>0 makes the shader render an
         # N-phase travelling-ripple flow over the back-art (water) region of the
@@ -625,22 +634,15 @@ def _centerpiece_masks(
     silhouette ignore it.
     """
     params = params or {}
-    if slug == "colibri-globe-phase":
-        from .patterns.motifs import colibri, globe
-
-        n = max(64, int(n_px))
-        return (
-            colibri.colibri_silhouette((1.0, 1.0), n_grid=n),
-            globe.globe_silhouette((1.0, 1.0), n_grid=n),
-        )
     if slug == "colibri-flap-phase":
-        # Wing-flap A/B tilt switch: the SAME hummingbird in two wing poses.
-        # FRONT = pose "up" (hover V, carrier phase 0); BACK = pose "down"
-        # (mid-downstroke + trailing speed slivers, carrier phase π). Body,
-        # head, beak, neck, tail and feet are pixel-registered between poses
-        # (colibri._draw_colibri only swaps the wing set), so the shader's
-        # centerpiece phase-switch reads as ONE bird flapping — not two birds.
-        # Mirrors the colibrí/globe branch; the shader supplies the glimmer.
+        # Wing-flap A/B tilt switch: the SAME hummingbird in two wing poses —
+        # A = pose "up" (hover V), B = pose "down" (mid-downstroke + trailing
+        # speed slivers). Body, head, beak, neck, tail and feet are
+        # pixel-registered between poses (colibri._draw_colibri only swaps the
+        # wing set). The slug is in SWITCH_INTERLACE_SLUGS, so this (A, B)
+        # pair feeds the BARRIER INTERLACE: both poses interleaved in
+        # alternating back lanes under the neutral front comb, reading as ONE
+        # bird beating its wings — not two birds.
         from .patterns.motifs import colibri
 
         n = max(64, int(n_px))
@@ -804,7 +806,7 @@ def _centerpiece_masks(
 
 # --- diffraction rainbow accent zones ---------------------------------------
 # Each accent zone is a SMALL patch of the centerpiece the confirmed plan calls
-# out (colibrí gorget, steam-curl tips, gear hub, monogram flourish tips). The
+# out (steam-curl tips, gear hub, monogram flourish tips). The
 # zone is defined in the same normalized 0..1 art box the motif silhouette uses
 # (y-DOWN, matching the Pillow motifs), as a centered ellipse / rect, then AND-ed
 # with the art silhouette so only gold pixels inside the shape become accent.
@@ -824,11 +826,7 @@ def _front_accent_zone(slug: str, art: "np.ndarray") -> "np.ndarray | None":
     def _ellipse(cx: float, cy: float, rx: float, ry: float) -> "np.ndarray":
         return ((xs - cx) / rx) ** 2 + ((ys - cy) / ry) ** 2 <= 1.0
 
-    if slug == "colibri-globe-phase":
-        # Gorget = the hummingbird's throat patch. The colibrí faces right with
-        # its head/throat upper-right in the art box; a small ellipse there.
-        zone = _ellipse(0.62, 0.40, 0.10, 0.07)
-    elif slug == "food-pair-chirp":
+    if slug == "food-pair-chirp":
         # Steam-curl TIPS: a thin band across the top of the steam column above
         # the cup (the cup sits left; steam rises to ~y<0.30).
         zone = (xs > 0.18) & (xs < 0.42) & (ys < 0.30)
@@ -1477,20 +1475,31 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             g = _grating_grid(fw, fh, pitch, front_period, duty, ang)
             frame_grating |= in_bucket & g
         # Centerpiece front layer. Two constructions:
-        #   * barrier-interlace (globe-duo / gear-quill): a NEUTRAL slit barrier
-        #     (60 µm pitch, open duty 0.5 → one 30 µm lane) over the union of both
-        #     silhouettes — the front layer carries NO image, only the barrier
-        #     that gates which back lane class shows on tilt. Phase −0.25 aligns
-        #     the open slot to straddle an A|B lane boundary head-on (matches the
-        #     preview shader's slitBarCoverage phase 0.25 bar), so ± tilt reveals
-        #     A or B cleanly.
-        #   * legacy phase-switch: the FRONT silhouette filled with the vertical
-        #     switch carrier (phase 0).
+        #   * barrier-interlace (SWITCH_INTERLACE_SLUGS): a NEUTRAL slit comb
+        #     (60 µm pitch, open duty 0.5 → one 30 µm lane) over the FULL
+        #     centerpiece art box — the CENTERPIECE_FILL square, NOT the union
+        #     of the silhouettes. A union-clipped comb is itself a static front
+        #     image (its envelope is the union, which never moves with tilt —
+        #     the measured ~0.31 front residual), and physically the comb must
+        #     cover every column any back lane can slide under within the first
+        #     zone (≥ p/2 beyond the union), so the full art-box square is the
+        #     clean choice — same treatment the capybara water band gets (bars
+        #     across the whole band). Phase −0.25 aligns the open slot to
+        #     straddle an A|B lane boundary head-on (matches the preview
+        #     shader's slitBarCoverage phase 0.25 bar), so ± tilt reveals A or
+        #     B cleanly.
+        #   * legacy phase-switch (front-only shimmer faces): the FRONT
+        #     silhouette filled with the vertical switch carrier (phase 0).
         # Both exclude the accent zone, which gets the sub-5 µm diffraction grating.
         if is_interlace:
-            union_art = front_art | back_art
+            art_box = np.zeros((fh, fw), dtype=bool)
+            if side_px > 0:
+                bx0 = max(0, cxg - side_px // 2)
+                by0 = max(0, cyg - side_px // 2)
+                art_box[by0 : min(fh, by0 + side_px), bx0 : min(fw, bx0 + side_px)] = True
+                _mask_rim(art_box, spec.weld_margin_um, pitch)
             barrier_bar = _grating_grid(fw, fh, pitch, center_period, 0.5, center_axis, phase=-0.25)
-            art_carrier = union_art & barrier_bar & ~front_accent
+            art_carrier = art_box & barrier_bar & ~front_accent
         else:
             center_grating = _grating_grid(fw, fh, pitch, center_period, duty, center_axis)
             art_carrier = front_art & center_grating & ~front_accent
@@ -1586,7 +1595,8 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
 # Bump when the SVG compose geometry changes: cached plate SVGs are only
 # reused if they carry the current marker, so a formula fix (e.g. the
 # aperture-scaling fix) invalidates stale files under unchanged spec hashes.
-PLATE_SVG_VERSION = "plate-svg-v3"
+# v4: barrier-interlace front comb spans the full art box (was union-gated).
+PLATE_SVG_VERSION = "plate-svg-v4"
 
 
 def _svg_is_current(svg_path: Path) -> bool:

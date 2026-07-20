@@ -4,8 +4,9 @@
 13.7 GB host that has kernel-bugchecked under heavy parallel compute.
 - NEVER run two long compute processes at once (no parallel pytest, no test run
   alongside a dev server build, no concurrent pattern generation).
-- Run backend tests in small chunks: max 2 test files per pytest invocation,
-  one invocation at a time. Budget: ~1 GB peak, seconds-to-a-minute per chunk.
+- Run backend tests in the proven justfile chunk order; never more than 2
+  HEAVY test files per invocation, one invocation at a time. Budget: ~1 GB
+  peak, seconds-to-a-minute per chunk.
 - Never generate patterns beyond their default extents. The lattice-budget
   guard (`app/patterns/_helpers.py`, 400k-cell cap) is the last line of
   defense, not permission to push it.
@@ -20,9 +21,10 @@
   uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_export_gds_stub.py tests/test_theme_metadata.py tests/test_variant_hash.py -q
   uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q
   uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_sim_numerics.py -q
-  uv run --extra dev pytest tests/test_sim2d.py tests/test_showcase_patterns.py tests/test_bitmap_halftone.py -q
+  uv run --extra dev pytest tests/test_sim2d.py tests/test_pattern_types.py tests/test_showcase_patterns.py tests/test_bitmap_halftone.py -q
   ```
-  (Chunk 2 is six files but they are all light/fast; the heavy files —
+  (Chunk 2 is six files and chunk 5 is four, but all of them are light/fast —
+  chunk 5's files are synthetic/small-extent, ~2 s total; the heavy files —
   plates_and_boxes, api_patterns, frames, patterns_roundtrip — never share a
   chunk with more than one other file.)
 - `just test-unit` / `just test-e2e` — frontend vitest / Playwright. E2E starts
@@ -41,10 +43,15 @@
   (`uv run --directory backend python ../tools/dev/gen_assembly_golden.py`) —
   both test suites pin their implementation to it.
 - **renderer honesty:** every optical effect must be view-dependent,
-  time-invariant, litho-mask-driven, and parameterized by the substrate
-  (Snell parallax). No procedural/time-animated shader fakes. The @effects
-  suite (`frontend/tests/e2e/effectsPhysical.spec.ts`) enforces this on the
-  live WebGL buffer — keep it green when touching shaders or BoxScene.
+  time-invariant, litho-mask-driven, and GEOMETRIC — the back gold layer
+  renders on a real inner plane at the paraxial T/n air gap below the outer
+  plane, cross-layer illusions emerge from perspective across that gap, and
+  every composed plate binds render_recipe `foliage_moire`. No
+  procedural/time-animated shader fakes. The @effects suite
+  (`frontend/tests/e2e/effectsPhysical.spec.ts`) enforces this on the live
+  WebGL buffer by scaling the actual plane gap
+  (`effectsHelpers.ts::scaleBackPlaneGap`) — keep it green when touching
+  shaders or BoxScene.
 - **image-switch patterns are parallax barriers:** BOTH images interlaced in
   the BACK layer, slit/phase mask in FRONT. A front-layer image can never
   vanish under parallax (the front mask does not move with tilt) — the old

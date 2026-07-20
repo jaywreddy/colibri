@@ -31,8 +31,13 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageOps
 
-from .._helpers import check_lattice_budget, empty_layer, raster_to_polygons
-from ..base import GeneratedPattern, ParamSpec, Pattern, Substrate, register
+from .._helpers import (
+    check_lattice_budget,
+    empty_layer,
+    exterior_tilt_deg,
+    raster_to_polygons,
+)
+from ..base import GeneratedPattern, ParamSpec, Pattern, register
 
 # Demo bitmaps live in the repo (drawn by tools/dev/gen_demo_bitmaps.py).
 # Module-level Path so tests can monkeypatch the directory; every reader goes
@@ -247,24 +252,10 @@ class BitmapHalftone(Pattern):
         }
         if back_mode == "complement":
             # Barrier switch geometry (straddle registration): the positive /
-            # negative flip completes at a back shift of p/4; Snell maps the
-            # in-substrate angle out (same audited formula as the lenticular
-            # barriers).
-            sub = Substrate()
+            # negative flip completes at a back shift of p/4; shared Snell
+            # helper (same audited formula as the lenticular barriers).
             extra["switch_shift_um"] = line_period_um / 4.0
-            extra["switch_half_angle_deg"] = float(
-                math.degrees(
-                    math.asin(
-                        min(
-                            1.0,
-                            sub.n
-                            * math.sin(
-                                math.atan(line_period_um / 4.0 / sub.thickness_um)
-                            ),
-                        )
-                    )
-                )
-            )
+            extra["switch_half_angle_deg"] = exterior_tilt_deg(line_period_um / 4.0)
 
         return GeneratedPattern(
             front=front,

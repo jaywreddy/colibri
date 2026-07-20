@@ -39,13 +39,16 @@ class ColibriGlobeMoire(Pattern):
         "A pure Moiré tile: hummingbird and globe silhouettes are each carved "
         "into a high-frequency line grating, but the two gratings differ in "
         "orientation and period. Stacked on the two faces of the substrate, "
-        "they beat against each other. Parallax-shifted sampling through the "
-        "quartz makes the beat phase walk with the camera, so the hummingbird "
-        "dominates at one tilt and the globe at the opposite tilt. Beat "
-        "wavelength obeys 1/d_beat ≈ |1/Λ_front − 1/Λ_back| for the period "
-        "mismatch plus a rotational contribution from the angle mismatch."
+        "they beat against each other. Both silhouettes are always visible — "
+        "the front bird can never vanish under parallax (its mask does not "
+        "move with tilt) — but parallax-shifted sampling through the quartz "
+        "makes the BEAT PHASE walk with the camera, so a shimmer band sweeps "
+        "across the pair as the plate rocks (per-region brightness "
+        "modulation, not an image switch). Beat wavelength obeys "
+        "1/d_beat ≈ |1/Λ_front − 1/Λ_back| for the period mismatch plus a "
+        "rotational contribution from the angle mismatch."
     )
-    tags = ["moire", "tilt-reveal", "Colombia", "Global Travel"]
+    tags = ["moire", "tilt-shimmer", "Colombia", "Global Travel"]
     tier = 1
     theme = "Colombia"
     render_recipe = "moire_interactive"

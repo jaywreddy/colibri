@@ -316,11 +316,23 @@ test.describe('@effects physical honesty of renderer effects', () => {
       return ev?.stereo_views ?? false;
     });
 
-    // Tilt across the slit axis: slit normal at uSlitOrientation radians in
-    // tangent space; tangent +X maps to camera azimuth for the front face.
-    const slitRad = (await page.evaluate(
-      () => (window as any).__studio.faces.front.shader.uniforms.uSlitOrientation.value
-    )) as number;
+    // Tilt across the slit axis. Under foliage_moire the recipe-0
+    // uSlitOrientation uniform is never bound for composed plates (it sits at
+    // its material-creation default), so read the axis from the manifest the
+    // pattern actually shipped — the same source plates.py drives the
+    // composed-plate barrier from — mirroring how the carrier-reveal test
+    // reads its period. Tangent +X maps to camera azimuth for the front face.
+    const axisResp = await page.request.get(`/patterns/${TEST_PATTERNS.stereo}/default`);
+    expect(axisResp.ok(), `GET /patterns/${TEST_PATTERNS.stereo}/default failed`).toBeTruthy();
+    const axisRd = ((await axisResp.json()) as { recipe_data?: Record<string, unknown> })
+      .recipe_data ?? {};
+    const slitAxisDeg =
+      typeof axisRd.slit_axis_deg === 'number'
+        ? (axisRd.slit_axis_deg as number)
+        : typeof axisRd.switch_axis_deg === 'number'
+          ? (axisRd.switch_axis_deg as number)
+          : 0;
+    const slitRad = (slitAxisDeg * Math.PI) / 180;
     const alongAzimuth = Math.abs(Math.cos(slitRad)) >= 0.5;
     const TILT = 14;
     const view = async (t: number) => {

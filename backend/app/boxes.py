@@ -51,8 +51,8 @@ BACK_PATTERN_SLUG = "capybara-scanimation"   # capybara + water scanimation
 LEFT_PATTERN_SLUG = "jamon-tray"             # jamón + tray (food-pair-chirp stays in catalog)
 RIGHT_PATTERN_SLUG = "gear-quill-switch"     # gear ↔ quill+book tilt switch
 
-# Per-face default centerpiece slug (the confirmed plan). front keeps the
-# colibrí↔globe switch; each other wall its own motif.
+# Per-face default centerpiece slug (the confirmed plan). front carries the
+# rotating CA↔Colombia duo-globe barrier switch; each other wall its own motif.
 _FACE_PATTERN_SLUG: dict[str, str] = {
     "front": DEFAULT_FACE_PATTERN_SLUG,
     "back": BACK_PATTERN_SLUG,
@@ -200,14 +200,15 @@ def default_box_spec() -> BoxSpec:
 
       * TOP (lid) → the interlocked cursive J+P monogram (``monogram-jp``),
         a front-only tilt shimmer — the engagement engraving.
-      * FRONT → the colibrí↔globe tilt-switch (``colibri-globe-phase``, on the
-        real-geography globe) with a diffraction-rainbow gorget accent.
+      * FRONT → the California↔Colombia duo-globe barrier switch
+        (``globe-duo-phase``, real Natural Earth geography): one globe that
+        appears to rotate between the couple's two homes as the box tilts.
       * BACK → the capybara + water scanimation (``capybara-scanimation``): a
         still capybara on a waterline with an N-phase ripple field below it that
         FLOWS on tilt (shader water-scan path in preview; real slit barrier +
         interleaved ripple frames baked in the fab SVG).
-      * LEFT → coffee cup + arepa with chirped-steam shimmer
-        (``food-pair-chirp``); the steam tips are a sub-5 µm diffraction accent.
+      * LEFT → jamón ibérico on its jamonero (``jamon-tray``), a front-only
+        gold-stripe glimmer (``food-pair-chirp`` stays in the catalog).
       * RIGHT → the gear↔quill+book tilt-switch (``gear-quill-switch``, "the
         engineer and the historian") with a diffraction-rainbow hub accent.
       * BOTTOM (hidden) → a cursive inscription line (``inscription-line``),

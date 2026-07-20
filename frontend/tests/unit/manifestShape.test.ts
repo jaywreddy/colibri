@@ -216,14 +216,13 @@ describe('RECIPE_IDS', () => {
   it('maps each recipe name to the plate.frag switch constant', () => {
     expect(RECIPE_IDS.stereo_lenticular).toBe(0);
     expect(RECIPE_IDS.moire_interactive).toBe(1);
-    expect(RECIPE_IDS.phase_shift_overlay).toBe(2);
+    expect(RECIPE_IDS.foliage_moire).toBe(3);
   });
 
   it('covers every RenderRecipe name and has no stale entries', () => {
     const names: RenderRecipe[] = [
       'stereo_lenticular',
       'moire_interactive',
-      'phase_shift_overlay',
       'foliage_moire',
     ];
     for (const n of names) {
@@ -233,7 +232,11 @@ describe('RECIPE_IDS', () => {
     expect('near_field_carpet' in RECIPE_IDS).toBe(false);
     expect('far_field_hologram' in RECIPE_IDS).toBe(false);
     expect('stylized_amplitude' in RECIPE_IDS).toBe(false);
+    // phase_shift_overlay (id 2) is RETIRED and must never silently return.
+    expect('phase_shift_overlay' in RECIPE_IDS).toBe(false);
+    // The HOLE at 2 is the important pin: it proves 0/1/3 never renumbered
+    // when the retired recipe was deleted.
     const ids = Object.values(RECIPE_IDS).sort();
-    expect(ids).toEqual([0, 1, 2, 3]);
+    expect(ids).toEqual([0, 1, 3]);
   });
 });

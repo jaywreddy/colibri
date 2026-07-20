@@ -21,8 +21,8 @@ def test_compose_plate_unions_frame_and_pattern(isolated_data):
     from app.plates import FrameSpec, PlateSpec, compose_plate
 
     spec = PlateSpec(
-        pattern_slug="colibri-globe-phase",
-        # Rebuilt as a barrier — its params are the slit family now.
+        pattern_slug="colibri-globe-lenticular",
+        # A barrier pattern — its params are the slit family.
         pattern_params={"slit_period_um": 30.0, "extent_um": 1000.0},
         frame=FrameSpec(seed=7),
         width_um=10000.0,
@@ -298,8 +298,9 @@ def test_default_box_spec_matches_contract():
     assert (spec.width_um, spec.depth_um, spec.height_um) == (50000.0, 50000.0, 40000.0)
     assert set(spec.faces) == set(FACE_IDS)
     # Confirmed six-face plan (rev: round-8 user decisions — front carries the
-    # rotating CA↔Colombia duo-globe, left the jamón tray; colibri-globe-phase
-    # and food-pair-chirp remain in the catalog).
+    # rotating CA↔Colombia duo-globe, left the jamón tray; food-pair-chirp
+    # remains in the catalog; colibri-globe-phase was later removed as a
+    # redundant twin of colibri-globe-lenticular).
     expected_slug = {
         "front": "globe-duo-phase",
         "back": "capybara-scanimation",

@@ -12,8 +12,9 @@ class InscriptionLine(Pattern):
     """Hidden cursive inscription for the box bottom — front-only shimmer.
 
     A single centred line of formal script (Great Vibes copperplate) carved
-    into a fine gold stripe carrier on the FRONT face; the BACK face is left as
-    plain carrier, so the line *glimmers* against the back as the box is tilted
+    into a fine gold stripe carrier on the FRONT face; the BACK face is left
+    empty (plain glass — inside a box the plate compositor puts the uniform
+    back carrier behind it), so the line *glimmers* as the box is tilted
     (front-only glimmer, same treatment as the J+P monogram lid) rather than
     switching to a second image. This is the private line the couple reads when
     they lift the box — engraved the way a jeweller inscribes the inside of a
@@ -36,8 +37,8 @@ class InscriptionLine(Pattern):
     ``plates._centerpiece_masks`` (front = inscription, back = empty) and draws
     the grating procedurally in the shader; this standalone ``generate`` exists
     so the pattern registers in the catalog and ``/patterns`` can preview it. It
-    re-uses the same ``phase_shift_overlay`` carrier scheme as the monogram for
-    a consistent front-only shimmer.
+    is a front-only stripe-carrier shimmer (moire_interactive), the same
+    single-layer treatment as the monogram.
     """
 
     slug = "inscription-line"
@@ -47,14 +48,15 @@ class InscriptionLine(Pattern):
         "initials and their year, set the way a jeweller inscribes the inside "
         "of a band (Great Vibes copperplate with a small heart flourish). "
         "Carved into a fine gold stripe carrier so the line shimmers with a "
-        "moiré highlight as the box is tilted, the back face left as plain "
-        "carrier so it reads as a front-only glimmer. Meant for the hidden box "
-        "bottom; the year is an editable pattern parameter."
+        "moiré highlight as the box is tilted, the back face left empty "
+        "(plain glass; inside a box the plate compositor puts the uniform "
+        "back carrier behind it) so it reads as a front-only glimmer. Meant "
+        "for the hidden box bottom; the year is an editable pattern parameter."
     )
     tags = ["inscription", "engagement", "cursive", "tilt-shimmer", "bottom", "hidden"]
     tier = 1
     theme = "Colombia"
-    render_recipe = "phase_shift_overlay"
+    render_recipe = "moire_interactive"
 
     # NOTE on editability: ParamSpec.type is one of float|int|bool|choice
     # (backend app/patterns/base.py) and the frontend ParameterPanel renders
@@ -149,9 +151,13 @@ class InscriptionLine(Pattern):
             extent_um=extent,
             pixel_pitch_um=cell_um,
             min_feature_um=period_um * 0.5,
-            extra={"carrier_period_um": period_um, "text": text},
-            recipe_data={
-                "switch_axis_deg": 0.0,
+            # Informational only — kept out of recipe_data on purpose: the
+            # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
+            # carries a period key, and with an empty back layer there is no
+            # mask-level tilt effect to quick-set to.
+            extra={
                 "carrier_period_um": period_um,
+                "switch_axis_deg": 0.0,
+                "text": text,
             },
         )

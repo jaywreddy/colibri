@@ -232,6 +232,7 @@ def test_golden_fixture_matches_backend() -> None:
     from app.assembly import (
         FoilSpec,
         HingeSpec,
+        back_window_um,
         cut_list,
         hinge_layout,
         keepout_um,
@@ -269,6 +270,7 @@ def test_golden_fixture_matches_backend() -> None:
 
         assert overlap_um(foil, args[3]) == exp["overlap_um"], case["name"]
         assert keepout_um(foil, args[3]) == exp["keepout_um"], case["name"]
+        assert back_window_um(foil, args[3]) == exp["back_window_um"], case["name"]
         assert cut_list(*args) == exp["cut_list"], case["name"]
         assert {s["id"]: s["length_um"] for s in seam_list(*args)} == exp["seams"], case["name"]
         assert hinge_layout(hinge, spec["width_um"]) == exp["hinge"], case["name"]

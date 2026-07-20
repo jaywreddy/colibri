@@ -13,9 +13,13 @@
  *   2. Time-invariant  — a static camera yields a static frame. No uTime.
  *   3. Texture-driven  — imagery comes from the backend litho masks
  *                        (front/back PNGs), bound per-face from the manifest.
- *   4. Parameterized   — the parallax obeys t·sinθ/(n·cosθ′): it collapses
- *                        at thickness→0 and shrinks as n grows. A procedural
- *                        or scrolling fake cannot satisfy this.
+ *   4. Geometric       — the back gold layer renders on a REAL inner plane at
+ *                        the paraxial T/n air gap below the outer plane; every
+ *                        cross-layer illusion emerges from perspective across
+ *                        that gap. Collapsing the gap to zero registers the
+ *                        layers (parallax vanishes); a partial collapse moves
+ *                        the fringes proportionally less. A screen-space or
+ *                        scrolling fake cannot satisfy this.
  */
 
 /**
@@ -23,27 +27,25 @@
  * 2026-07-19 after the parallax-honesty audit (app/sim2d.py + the taxonomy
  * investigation):
  *
- * - moire: stays on the default box face pattern (wayuu) so the moire tests
- *   exercise exactly what ships. Verified honest (fringes flow and invert
- *   within a half period under pure back-mask shift).
+ * - moire: the moire tests run against the default box front face — whatever
+ *   default_box_spec ships there (currently globe-duo-phase, see
+ *   backend/app/boxes.py) — rendered through the two-plane foliage_moire
+ *   recipe like every composed plate.
  * - stereo: stays on globe-rotation-stereo (parallax barrier: slit front,
- *   both interlaced scenes in BACK — measured 0.82/0.00 channel separation
+ *   both interlaced scenes in BACK — measured 0.895/0.000 channel separation
  *   at ±p/4 shift). jp-monogram-phase is ALSO a stereo_lenticular barrier
  *   after its rebuild and may be the stronger showpiece, but we do not swap
  *   the test pattern without a fresh composite to judge it by.
- * - reveal: the phase_shift_overlay recipe (2) was retired — its two-image
- *   front/back phase split could never switch under honest parallax (the
- *   front layer does not move; the 3D "flip" was an explicit view-sign bias
- *   cheat). Its slot in the suite is now the honest T5 carrier reveal
+ * - reveal: the phase_shift_overlay recipe (2) is RETIRED with zero catalog
+ *   users and deleted from the shader/API — its two-image front/back phase
+ *   split could never switch under honest parallax (the front layer does not
+ *   move; the 3D "flip" was an explicit view-sign bias cheat). Its former
+ *   users were rebuilt as stereo_lenticular barriers or retagged to
+ *   moire_interactive. Its slot in the suite is the honest T5 carrier reveal
  *   (single image halftoned onto a stripe carrier in FRONT, uniform
- *   image-free carrier in BACK, rendered by moire_interactive).
- *   COORDINATION NOTE: 'heart-carrier-reveal' is the slug assumed for the
- *   pattern-rebuild phase's new carrier-reveal pattern — if that phase
- *   registered a different slug, update it here and in
- *   backend/tests/test_api_patterns.py (EXPECTED_SLUGS + its recipe test).
+ *   image-free carrier in BACK).
  */
 export const TEST_PATTERNS = {
-  moire: 'wayuu-kanasu-moire',
   stereo: 'globe-rotation-stereo',
   reveal: 'monogram-carrier-reveal',
 } as const;
@@ -84,12 +86,13 @@ export const EFFECT_SCENARIOS: Record<string, EffectScenario> = {
   'moire-parallax-physics': {
     name: 'moire-parallax-physics',
     claim:
-      'The fringes are caused by the substrate: at a FIXED oblique view, the through-glass parallax shift (t*sin/n) sets the fringe positions, so changing thickness or refractive index moves the fringes, the response scales with the thickness step, and with thickness=0 the index has exactly zero effect.',
+      'The fringes are caused by the substrate GEOMETRY: the back gold layer renders on a real inner plane at the paraxial T/n air gap below the outer plane, so at a FIXED oblique view the gap sets the fringe positions. Collapsing the gap to zero registers the layers and moves the fringes; a partial (60%) collapse moves them proportionally less; recapturing at the same gap is pixel-identical.',
     signature:
-      'Frames at the same camera position with thickness 500um / 0um / n=1.0: the gold plate imagery is the same design but the beat fringes sit at clearly different positions.',
+      'Frames at the same oblique camera position at the design gap / gap 0 / 60% gap: the gold plate imagery is the same design but the beat fringes sit at clearly different positions, with the partial collapse moving them less than the full one.',
     failModes: [
-      'Identical frames when thickness or n changes (parallax faked in screen space)',
-      'Index changes pixels even at thickness=0 (uniforms leak outside the parallax term)',
+      'Fringes unchanged when the inner plane is registered to the outer (gap collapse ignored — parallax faked in screen space)',
+      'Response does not scale with the gap (partial collapse moves fringes as much as full)',
+      'Same-gap recapture differs (nondeterministic rendering)',
     ],
   },
   'stereo-lenticular-flip': {
@@ -97,7 +100,7 @@ export const EFFECT_SCENARIOS: Record<string, EffectScenario> = {
     claim:
       'The stereo lenticular plate is a parallax-barrier: slits over two interlaced scene masks. Tilting the view across the slit axis flips which baked scene (view A vs view B) is visible; head-on, a close camera splits the plate into left/right viewing zones showing each scene.',
     signature:
-      'Two captures tilted +14deg and -14deg across the slit axis show clearly different imagery on the plate; the head-on capture shows a spatial mix (both scenes present in different zones across the plate). (The recipe-0 shader mixes the two views by view sign at half-width asin(n*sin(atan(p/(4t)))); the physical plate re-flips periodically beyond the first zone.)',
+      'Two captures tilted +14deg and -14deg across the slit axis show clearly different imagery on the plate; the head-on capture shows a spatial mix (both scenes present in different zones across the plate). (In the box preview the outer plane is a neutral slit barrier over BOTH silhouettes interlaced on the inner plane at the paraxial T/n gap; the flip EMERGES from perspective across that gap — no view-sign mix — and re-flips periodically beyond the first zone.)',
     failModes: [
       'Both tilts show the same image (view textures not bound or mix not view-driven)',
       'Head-on capture identical to one extreme (hard switch, no blend zone)',
@@ -106,9 +109,9 @@ export const EFFECT_SCENARIOS: Record<string, EffectScenario> = {
   'carrier-reveal-tilt': {
     name: 'carrier-reveal-tilt',
     claim:
-      'The carrier reveal is the honest replacement for the retired phase_shift_overlay recipe: the FRONT layer carries the figure halftoned onto a stripe carrier, the BACK is a uniform image-free carrier at the same period, and the render is pure moire_interactive mask sampling (no view-sign bias). Tilting to the half-period Snell shift theta(p/2) = asin(n*sin(atan(p/(2t)))) de-registers the carriers and the figure contrast appears; the effect depends only on the tilt MAGNITUDE, so opposite tilts must match — the physical signature that separates it from the old recipe-2 cheat, whose flip came from an explicit view-sign term.',
+      'The carrier reveal is the honest replacement for the retired phase_shift_overlay recipe: the figure is halftoned onto a stripe carrier in the FRONT mask on the outer plane, and a uniform image-free anti-phase carrier at the same period sits on the inner plane at the paraxial T/n gap (the box preview binds foliage_moire, two real planes — no view-sign bias). Tilting to the half-period Snell shift theta(p/2) = asin(n*sin(atan(p/(2t)))) de-registers the carriers by perspective across the gap and the figure contrast appears; zeroing the gap re-registers them and the reveal collapses. The effect depends only on the tilt MAGNITUDE, so opposite tilts must match — the physical signature that separates it from the old recipe-2 cheat, whose flip came from an explicit view-sign term.',
     signature:
-      'Head-on the plate reads as a near-uniform fine carrier; at the manifest-derived tilt +/-theta(p/2) the figure stands out clearly, and zeroing the substrate thickness collapses it back to registration (the reveal is parallax-driven, not view-sign biased).',
+      'Head-on the plate reads as a near-uniform fine carrier; at the manifest-derived tilt +/-theta(p/2) the figure stands out clearly, and zeroing the two-plane gap collapses it back to registration (the reveal is parallax-driven, not view-sign biased).',
     failModes: [
       'Tilting to theta(p/2) produces no contrast change (carriers not de-registering — parallax not applied)',
       'Opposite tilts differ strongly (view-sign bias — the retired phase_shift_overlay cheat)',

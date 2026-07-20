@@ -8,7 +8,7 @@ from shapely import affinity
 from shapely.geometry import MultiPolygon, Point, Polygon, box
 from shapely.ops import unary_union
 
-from .base import ensure_multipolygon
+from .base import Substrate, ensure_multipolygon
 
 
 # Hard ceiling on the lattice cells a single generator call may BUILD
@@ -36,6 +36,24 @@ def check_lattice_budget(n_cells: int, what: str, **dials: float) -> None:
         f"{MAX_LATTICE_CELLS:,}. Increase period_um or shrink extent_um — the "
         "plate compositor upscales the pattern raster to fill the aperture, "
         "so patterns never need multi-mm extents at micron periods."
+    )
+
+
+def exterior_tilt_deg(shift_um: float, substrate: Substrate | None = None) -> float:
+    """Exterior tilt angle that produces a back-layer parallax shift of
+    ``shift_um`` through the substrate.
+
+    Inverse of the Snell-refracted parallax: θ(s) = asin(n · sin(atan(s / t))).
+    The audited switch metadata for every parallax barrier uses this with
+    s = p/4 (switch completes when the slit crosses a channel boundary — the
+    slit straddles the boundary head-on) and s = p/2 (end of the clean first
+    zone). The legacy metadata used atan(p/(2t)) — wrong shift AND missing the
+    index factor n. Single source of truth so a Substrate change can never
+    desync the per-pattern angle stamps.
+    """
+    sub = substrate if substrate is not None else Substrate()
+    return math.degrees(
+        math.asin(min(1.0, sub.n * math.sin(math.atan(shift_um / sub.thickness_um))))
     )
 
 

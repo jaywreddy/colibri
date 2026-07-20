@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 from app.assembly import (  # noqa: E402
     FoilSpec,
     HingeSpec,
+    back_window_um,
     cut_list,
     hinge_layout,
     keepout_um,
@@ -58,6 +59,11 @@ def case(
             {
                 "overlap_um": overlap_um(foil, glass_thickness_um),
                 "keepout_um": keepout_um(foil, glass_thickness_um),
+                # Back-carrier keep-out rim (foil overlap only, no safety) —
+                # the newest cross-suite formula; pinned by both
+                # backend/tests/test_assembly.py and
+                # frontend/tests/unit/assemblyGolden.test.ts.
+                "back_window_um": back_window_um(foil, glass_thickness_um),
                 "cut_list": cut_list(width_um, depth_um, height_um, glass_thickness_um),
                 "seams": {
                     s["id"]: s["length_um"]

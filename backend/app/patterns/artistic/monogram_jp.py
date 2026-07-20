@@ -21,8 +21,9 @@ class MonogramJP(Pattern):
     ``plates._centerpiece_masks`` (front = monogram, back = empty) and draws the
     grating procedurally in the shader; this standalone ``generate`` exists so
     the pattern registers in the catalog and the ``/patterns`` endpoint can
-    preview it. It re-uses the same phase_shift_overlay carrier scheme as the
-    colibrí↔globe pair for a consistent shimmer treatment.
+    preview it. It is a front-only stripe-carrier shimmer (moire_interactive):
+    single-layer gold art whose motion, inside a box, comes from the
+    plate-level foliage carrier behind it.
     """
 
     slug = "monogram-jp"
@@ -32,13 +33,14 @@ class MonogramJP(Pattern):
         "way an engraver would set them on a signet or a wedding invitation "
         "(Great Vibes copperplate swashes). Carved into a fine gold stripe "
         "carrier so the letters shimmer with a moiré highlight as the lid tilts, "
-        "the back face left as plain carrier so the monogram reads as a "
-        "front-only glimmer rather than a two-image switch."
+        "the back face left empty (plain glass; inside a box the plate "
+        "compositor puts the uniform back carrier behind it) so the monogram "
+        "reads as a front-only glimmer rather than a two-image switch."
     )
     tags = ["monogram", "engagement", "cursive", "tilt-shimmer", "lid"]
     tier = 1
     theme = "Colombia"
-    render_recipe = "phase_shift_overlay"
+    render_recipe = "moire_interactive"
     params = [
         ParamSpec("period_um", "Carrier period", "float", 20.0, 6.0, 80.0, 0.5, "μm"),
         ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
@@ -78,9 +80,9 @@ class MonogramJP(Pattern):
             extent_um=extent,
             pixel_pitch_um=cell_um,
             min_feature_um=period_um * 0.5,
-            extra={"carrier_period_um": period_um},
-            recipe_data={
-                "switch_axis_deg": 0.0,
-                "carrier_period_um": period_um,
-            },
+            # Informational only — kept out of recipe_data on purpose: the
+            # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
+            # carries a period key, and with an empty back layer there is no
+            # mask-level tilt effect to quick-set to.
+            extra={"carrier_period_um": period_um, "switch_axis_deg": 0.0},
         )

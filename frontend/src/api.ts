@@ -18,11 +18,15 @@ export type ParamSpec = {
 /**
  * Names map 1:1 to the `uRecipe` switch in plate.frag. Keep in sync with
  * RECIPE_NAMES in backend/app/patterns/base.py.
+ *
+ * Id 2 (phase_shift_overlay) is RETIRED with zero catalog users — its
+ * two-image front/back phase split could never switch under honest parallax
+ * (the front mask does not move with tilt). The numeric hole at 2 is
+ * intentional: ids 0/1/3 are stable and must never be renumbered.
  */
 export type RenderRecipe =
   | 'stereo_lenticular'
   | 'moire_interactive'
-  | 'phase_shift_overlay'
   | 'foliage_moire';
 
 export type PatternDescriptor = {
@@ -62,7 +66,7 @@ export type PatternManifest = {
 export const RECIPE_IDS: Record<RenderRecipe, number> = {
   stereo_lenticular: 0,
   moire_interactive: 1,
-  phase_shift_overlay: 2,
+  // 2 = retired phase_shift_overlay — hole kept so 3 never renumbers.
   foliage_moire: 3,
 };
 

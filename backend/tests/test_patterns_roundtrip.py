@@ -21,7 +21,6 @@ def test_all_patterns_registered():
         "emerald-facet-moire",
         "colibri-globe-lenticular",
         "colibri-globe-moire",
-        "colibri-globe-phase",
         # Taxonomy rebuild additions
         "globe-rotation-stereo",
         "orchid-shimmer-moire",
@@ -66,10 +65,12 @@ def test_lenticular_pattern_has_view_a_view_b_layers():
 
 
 def test_rebuilt_phase_pattern_is_a_barrier():
-    """colibri-globe-phase was rebuilt as a parallax barrier (the two-image
+    """jp-monogram-phase was rebuilt as a parallax barrier (the two-image
     front/back phase split could not switch under honest parallax): it must
-    now ship the slit metadata + interlaced view layers like every barrier."""
-    cls = registry["colibri-globe-phase"]
+    ship the slit metadata + interlaced view layers like every barrier.
+    (colibri-globe-phase, the original subject of this pin, was removed as a
+    redundant twin of colibri-globe-lenticular after its own rebuild.)"""
+    cls = registry["jp-monogram-phase"]
     assert cls.render_recipe == "stereo_lenticular"
     gp = cls.generate(**cls.defaults())
     assert "slit_period_um" in gp.recipe_data

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import math
-
 import numpy as np
 from shapely import affinity
 from shapely.geometry import MultiPolygon
 
-from .._helpers import crop, linear_grating, raster_to_polygons
+from .._helpers import crop, exterior_tilt_deg, linear_grating, raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, ensure_multipolygon, register
 from ..motifs import globe
 
@@ -22,7 +20,9 @@ class GlobeRotationStereo(Pattern):
         "sees +Δ/2 — meridians foreshorten differently and the landmass "
         "slides across the disk. Snell-refracted parallax through the "
         "substrate gates which channel the eye sees, so rocking the plate "
-        "left ↔ right spins the earth. Switch half-angle ≈ arctan(p/2·t)."
+        "left ↔ right spins the earth. The switch completes at a "
+        "quarter-period parallax shift (Snell-corrected exterior angle in "
+        "extra.switch_half_angle_deg)."
     )
     tags = ["moire", "lenticular", "tilt-reveal", "Global Travel"]
     tier = 1
@@ -94,14 +94,10 @@ class GlobeRotationStereo(Pattern):
             extra={
                 "rotation_delta_deg": rotation_delta_deg,
                 # Switch completes at a back shift of p/4 (slit straddles the
-                # channel boundary); Snell maps the in-substrate angle out.
-                "switch_half_angle_deg": float(
-                    np.degrees(
-                        math.asin(
-                            min(1.0, 1.46 * math.sin(math.atan(slit_period_um / 4 / 500.0)))
-                        )
-                    )
-                ),
+                # channel boundary); the clean first zone ends at p/2. Shared
+                # Snell helper — see patterns._helpers.exterior_tilt_deg.
+                "switch_half_angle_deg": exterior_tilt_deg(slit_period_um / 4),
+                "zone_half_angle_deg": exterior_tilt_deg(slit_period_um / 2),
             },
             extra_layers={
                 "view_a": ensure_multipolygon(view_a),

@@ -65,10 +65,15 @@ def _as_multipolygon(geom: BaseGeometry) -> MultiPolygon:
     return MultiPolygon(polys)
 
 
+# Shader recipes the catalog may reference. Kept in sync with the frontend's
+# RenderRecipe union / RECIPE_IDS map (frontend/src/api.ts): stereo_lenticular
+# id 0, moire_interactive id 1, foliage_moire id 3 (every composed box plate).
+# "phase_shift_overlay" (id 2) was RETIRED 2026-07 with zero users — its
+# "switch" was a shader view-sign bias, not physics; the numeric ids 0/1/3
+# stay stable with a permanent hole at 2.
 RECIPE_NAMES = {
     "stereo_lenticular",
     "moire_interactive",
-    "phase_shift_overlay",
     "foliage_moire",
 }
 

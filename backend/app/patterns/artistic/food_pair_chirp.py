@@ -67,7 +67,7 @@ class FoodPairChirp(Pattern):
     tags = ["chirp", "tilt-shimmer", "diffraction", "Colombia", "coffee"]
     tier = 1
     theme = "Colombia"
-    render_recipe = "phase_shift_overlay"
+    render_recipe = "moire_interactive"
     params = [
         ParamSpec("period_um", "Body carrier period", "float", 20.0, 6.0, 80.0, 0.5, "μm"),
         ParamSpec("steam_base_period_um", "Steam base period", "float", 22.0, 8.0, 80.0, 0.5, "μm"),
@@ -148,19 +148,23 @@ class FoodPairChirp(Pattern):
             pixel_pitch_um=cell_um,
             # Finest feature is half the finest effective steam period.
             min_feature_um=min(steam_tip_eff, steam_base_eff) * 0.5,
+            # Carrier period + axis are informational only, kept out of
+            # recipe_data on purpose: the Pattern Lab zone UI offers tilt
+            # quick-sets whenever recipe_data carries a period key, and with an
+            # empty back layer there is no mask-level tilt effect to quick-set
+            # to.
             extra={
                 "body_period_um": body_g.period_um,
+                "carrier_period_um": body_g.period_um,
+                "switch_axis_deg": 0.0,
                 "steam_base_period_um": steam_base_eff,
                 "steam_tip_period_um": steam_tip_eff,
                 "coarsened": bool(steam_g.coarsened or body_g.coarsened),
             },
             recipe_data={
-                # Vertical body carrier → horizontal shimmer axis, same handling
-                # as monogram-jp / colibri-globe-phase.
-                "switch_axis_deg": 0.0,
-                "carrier_period_um": body_g.period_um,
                 # Steam chirp span for any per-zone shader shimmer the integrator
-                # wires; the fine end is the diffraction-accent zone.
+                # wires; the fine end is the diffraction-accent zone. (No
+                # carrier period key here — see the extra note above.)
                 "chirp_period_start_um": steam_base_eff,
                 "chirp_period_end_um": steam_tip_eff,
                 "chirp_axis_deg": 90.0,

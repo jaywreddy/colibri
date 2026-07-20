@@ -26,16 +26,9 @@ import math
 
 import numpy as np
 
-from .._helpers import check_lattice_budget, raster_to_polygons
-from ..base import GeneratedPattern, ParamSpec, Pattern, Substrate, register
+from .._helpers import check_lattice_budget, exterior_tilt_deg, raster_to_polygons
+from ..base import GeneratedPattern, ParamSpec, Pattern, register
 from ..motifs import monogram
-
-_SUB = Substrate()
-
-
-def _exterior_tilt_deg(shift_um: float, t_um: float = _SUB.thickness_um, n: float = _SUB.n) -> float:
-    """Exterior tilt for a back-layer parallax shift: θ(s) = asin(n·sin(atan(s/t)))."""
-    return math.degrees(math.asin(min(1.0, n * math.sin(math.atan(shift_um / t_um)))))
 
 
 @register
@@ -120,8 +113,8 @@ class MonogramCarrierReveal(Pattern):
                 "carrier_period_um": period_um,
                 # Monogram fully dissolved into the ground at θ(p/2); dark
                 # again (re-interlocked) at θ(p). Sign-symmetric.
-                "vanish_angle_deg": _exterior_tilt_deg(period_um / 2),
-                "cycle_angle_deg": _exterior_tilt_deg(period_um),
+                "vanish_angle_deg": exterior_tilt_deg(period_um / 2),
+                "cycle_angle_deg": exterior_tilt_deg(period_um),
             },
             # The period rides in recipe_data (not just extra): the Pattern
             # Lab's zone quick-sets and the catalog contract read it there.

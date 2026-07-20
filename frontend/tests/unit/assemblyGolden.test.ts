@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { defaultBoxSpec, type BoxSpec } from '../../src/api';
 import {
+  backWindowUm,
   cutList,
   hingeLayout,
   keepoutUm,
@@ -33,6 +34,7 @@ type GoldenCase = {
     valid: boolean;
     overlap_um?: number;
     keepout_um?: number;
+    back_window_um?: number;
     cut_list?: { face: string; width_um: number; height_um: number; width_mm: number; height_mm: number }[];
     seams?: Record<string, number>;
     hinge?: {
@@ -78,6 +80,9 @@ describe('assembly contract golden fixture (shared with backend)', () => {
 
       expect(overlapUm(spec)).toBeCloseTo(c.expected.overlap_um!, 6);
       expect(keepoutUm(spec)).toBeCloseTo(c.expected.keepout_um!, 6);
+      // Back-carrier window keep-out — the newest shared formula
+      // (assembly.py::back_window_um <-> assembly.ts::backWindowUm).
+      expect(backWindowUm(spec)).toBeCloseTo(c.expected.back_window_um!, 6);
 
       const cuts = new Map(cutList(spec).map((x) => [x.face, x]));
       for (const e of c.expected.cut_list!) {

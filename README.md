@@ -36,14 +36,22 @@ backend/   FastAPI (Python, uv). ALL geometry in micrometers (um).
                          lazy SVG (ensure_plate_svg), cache under data/plates/<hash>
   app/service.py         pattern materialize + disk cache under data/<slug>/<variant>
   app/patterns/          pattern registry, moire motifs, frame engine (frames/),
-                         bitmap/ (photo -> halftone plates, assets/bitmaps/)
+                         bitmap/ (photo -> halftone plates, assets/bitmaps/),
+                         geo/ (Natural Earth orthographic globe silhouettes,
+                         rotation via lon0)
+  app/export_fine.py / export_gds.py / export_wafer.py
+                         fine-pitch GDS + 4-inch (100 mm) wafer packing
+                         (GET /export/wafer/plan)
   app/sim2d.py           headless 2D dual-layer parallax compositor + contrast
                          metrics (the lightweight alternative to the 3D preview)
   app/api/               routers: /patterns /plates /boxes /export /sim
                          (incl. /sim/parallax2d composite + curve endpoints)
 frontend/  Vite + React + TypeScript + vanilla three.js. UI displays mm.
   src/assembly.ts        client-side MIRROR of backend/app/assembly.py
-  src/scene/BoxScene.tsx 3D preview; src/store.ts zustand state
+  src/scene/BoxScene.tsx 3D preview — two-plane geometric renderer: back gold
+                         on a real inner plane at the paraxial T/n gap, every
+                         composed plate binds foliage_moire, PBR metal
+                         finishes; src/store.ts zustand state
   src/lab/composite2d.ts + src/ui/PatternLab.tsx
                          2D Pattern Lab: canvas dual-layer preview with tilt
                          sliders/drag, illumination, and live param regen
@@ -55,6 +63,13 @@ tools/     visual verification harness (visual_verifier.py + tools/dev/)
 seam/hinge layout, validation). Any change to one MUST be mirrored in the other;
 both sides must produce identical numbers for the same spec.
 
+**Default box:** the six-face default plan (`backend/app/boxes.py`) is
+front = `globe-duo-phase` (California/Colombia globe switch),
+right = `gear-quill-switch`, back = `capybara-scanimation`,
+left = `jamon-tray`, top = `monogram-jp`, bottom = `inscription-line`.
+The catalog registers 17 patterns (16 artistic showpieces + the
+bitmap-halftone photo pipeline).
+
 **Lazy caches:** nothing materializes at startup. Pattern variants, composed
 plates, and boxes are generated on first request and cached on disk under
 `backend/data/` (content-addressed by spec hash). The whole directory is
@@ -64,7 +79,7 @@ Plate SVGs are also lazy: built on first fab-export request, not at compose time
 ## Tests
 
 ```sh
-just test-backend   # backend pytest, run as 4 sequential chunks (see below)
+just test-backend   # backend pytest, run as 5 sequential chunks (see below)
 just test-unit      # frontend vitest
 just test-e2e       # Playwright E2E (spins up both servers itself)
 just test-all       # all three layers, sequentially
@@ -85,16 +100,20 @@ renderer. It verifies four axioms on the live WebGL buffer with deterministic
 pixel metrics:
 
 1. **View-dependent** — moiré fringes flow under camera orbit; the stereo
-   lenticular flips scenes across the slit axis; the phase overlay reveals
-   layers across the switch axis.
+   lenticular flips scenes across the slit axis; the carrier reveal
+   de-registers across the switch axis (front figure on a stripe carrier,
+   uniform anti-phase carrier on the inner plane).
 2. **Time-invariant** — a parked camera yields pixel-identical frames (no
    time-animated shader fakes).
 3. **Texture-driven** — imagery binds from the backend litho masks; stereo
    view textures must really bind (no front-mask fallback).
-4. **Substrate physics** — at a fixed oblique view the fringes respond to
-   `uThicknessUm`/`uN`, the response scales with the thickness step, and with
-   thickness=0 the index has exactly zero effect (the uniforms act only
-   through the Snell parallax term).
+4. **Substrate physics (geometric gap)** — the back gold layer lives on a
+   REAL inner plane at the paraxial T/n air gap below the outer plane. At a
+   fixed oblique view, collapsing that two-plane gap to zero registers the
+   layers and moves the fringes; a partial collapse moves them proportionally
+   less; recapturing at the same gap is pixel-identical. The suite manipulates
+   the actual plane gap (`effectsHelpers.ts::scaleBackPlaneGap`) — the legacy
+   `uThicknessUm` uniform is dead on the foliage path.
 
 It also covers the lid transition (monotonic hinge rotation + closed-frame
 round-trip), illumination modes (distinct + laser-colored), and turntable
@@ -131,7 +150,7 @@ from real kernel bugchecks (2026-06-10). Read these before touching geometry cod
   The remaining `unary_union` calls in `_helpers.py` live only in caller-less
   helpers (`dot_array`, `zone_plate`, `ring_grating`, `chevron_stripes`) — each
   carries a docstring stating its concat-safety class if revived.
-- **Chunked test runs.** The backend suite is run as 4 sequential pytest
+- **Chunked test runs.** The backend suite is run as 5 sequential pytest
   invocations (`just test-backend`), each peaking around ~1 GB. Never run the
   whole suite in one process or chunks in parallel; never run two heavy compute
   processes concurrently. See `CLAUDE.md` for operator rules.

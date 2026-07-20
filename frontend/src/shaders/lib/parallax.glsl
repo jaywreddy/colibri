@@ -3,10 +3,11 @@
 // tangent-space along `viewTangent` (unit vector, +z = out of plate).
 //
 // Returns the UV offset to *add* to the front-face UV to sample the
-// corresponding point on the back face. Every recipe in the catalog uses
-// this — moire_interactive, stereo_lenticular, and phase_shift_overlay all
-// reduce to "sample two layers separated by a refracting slab", just with
-// different downstream logic.
+// corresponding point on the back face. The single-plane legacy recipes use
+// this — moire_interactive and stereo_lenticular both reduce to "sample two
+// layers separated by a refracting slab", just with different downstream
+// logic. (foliage_moire is GEOMETRIC — two real planes — and never calls it;
+// phase_shift_overlay is retired.)
 //
 // `extentUm` is the plate's physical (width, height): UV u spans the width
 // and UV v the height, so the um shift converts to UV per-axis. Ring-box

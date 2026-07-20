@@ -242,6 +242,10 @@ class ZoneMasks:
     front_art: np.ndarray                  # centerpiece front silhouette
     back_art: np.ndarray                   # centerpiece back silhouette
     front_accent: np.ndarray               # rainbow accent subset of front_art
+    # Full centerpiece art box (the CENTERPIECE_FILL square, weld-rim clipped).
+    # The barrier-interlace front comb spans this WHOLE square — never the
+    # silhouette union (a union-gated comb is itself a static front image).
+    art_box: np.ndarray | None = None
     # Scanimation (capybara back only); None otherwise. The barrier + back frames
     # are EMITTED as exact vector rects (see the scanimation vector builders) —
     # only ``capy_body`` (the dry silhouette that carries the shimmer grating) and
@@ -274,6 +278,7 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     front_art = np.zeros((fh, fw), dtype=bool)
     back_art = np.zeros((fh, fw), dtype=bool)
     front_accent = np.zeros((fh, fw), dtype=bool)
+    art_box = np.zeros((fh, fw), dtype=bool)
 
     # --- FRONT perimeter foliage band (graylevel = angle bucket) -----------
     active_w, active_h = spec.active_dims()
@@ -315,6 +320,12 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     aperture = P._aperture(spec)
     side_px = max(8, int(round(P.CENTERPIECE_FILL * aperture / pitch_um))) if aperture > 0 else 0
     if side_px > 0:
+        # Full art-box square (the CENTERPIECE_FILL footprint) — the zone the
+        # barrier-interlace front comb spans, independent of the silhouettes.
+        ax0 = max(0, fw // 2 - side_px // 2)
+        ay0 = max(0, fh // 2 - side_px // 2)
+        art_box[ay0 : min(fh, ay0 + side_px), ax0 : min(fw, ax0 + side_px)] = True
+        _mask_rim(art_box, spec.weld_margin_um, pitch_um)
         masks = P._centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
         if masks is not None:
             def _place(art: np.ndarray) -> np.ndarray:
@@ -348,6 +359,7 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         front_art=front_art,
         back_art=back_art,
         front_accent=front_accent,
+        art_box=art_box,
     )
 
     # --- SCANIMATION (capybara back face) ----------------------------------
@@ -780,17 +792,24 @@ def build_plate_fine(spec: Any, face: str) -> PlateFine:
             )
 
     # --- FRONT centerpiece (60 µm vertical) --------------------------------
-    # Barrier-interlace faces (globe-duo / gear-quill): the FRONT layer is a
-    # NEUTRAL slit barrier (open duty 0.5 → one 30 µm lane, phase −0.25) over the
-    # UNION of both silhouettes — no image, only the gate that reveals one back
-    # lane class per tilt. The barrier bar is a controlled 30 µm feature (≫ 2 µm
-    # floor). Legacy phase-switch faces: the FRONT silhouette filled with the
-    # phase-0 switch carrier. Both exclude the accent zone (4.4 µm grating).
+    # Barrier-interlace faces (SWITCH_INTERLACE_SLUGS): the FRONT layer is a
+    # NEUTRAL slit comb (open duty 0.5 → one 30 µm lane, phase −0.25) over the
+    # FULL centerpiece art box — never the union of the silhouettes. A
+    # union-gated comb is itself a static front image (its envelope is the
+    # union, which cannot move with tilt — the measured ~0.31 front residual),
+    # and the comb must cover every column any back lane can slide under
+    # within the first zone (≥ p/2 beyond the union), so the whole
+    # CENTERPIECE_FILL square gets the comb — the same treatment the capybara
+    # water band already gets. The comb bar is a controlled 30 µm feature
+    # (≫ 2 µm floor). Legacy phase-switch faces (front-only shimmer): the
+    # FRONT silhouette filled with the phase-0 switch carrier. Both exclude
+    # the accent zone (4.4 µm grating).
     if is_interlace:
-        union_art = _erode_zone((zm.front_art | zm.back_art) & ~zm.front_accent, 1)
-        if union_art.any():
+        comb_box = zm.art_box if zm.art_box is not None else (zm.front_art | zm.back_art)
+        comb_zone = _erode_zone(comb_box & ~zm.front_accent, 1)
+        if comb_zone.any():
             _emit_grating(
-                union_art, pitch, extent, center_period, 0.5, center_axis,
+                comb_zone, pitch, extent, center_period, 0.5, center_axis,
                 -0.25, front_rects_parts, front_angled,
             )
     elif zm.front_art.any():
