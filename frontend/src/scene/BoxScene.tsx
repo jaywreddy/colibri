@@ -1222,11 +1222,29 @@ export default function BoxScene() {
           for (const tex of texs) {
             tex.colorSpace = THREE.LinearSRGBColorSpace;
             tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-            tex.magFilter = THREE.LinearFilter;
-            tex.minFilter = THREE.LinearFilter;
             tex.generateMipmaps = false;
-            tex.anisotropy = 8;
             tex.needsUpdate = true;
+          }
+          // The front/back masks (texs[0], texs[1]) are LABEL/CODE textures, not
+          // continuous tone: runFoliageMoireLayer decodes r through hard region
+          // thresholds (FRAME_MIN/RAINBOW_MIN/ART_MIN) and a quantized angle-bucket
+          // floor(). Bilinear interpolation across any boundary manufactures
+          // intermediate codes that never existed in the mask, decoding to the
+          // wrong bucket / wrong region in a thin edge band — which reads as a
+          // "traced" outline on every motif and a black stripe wherever the ramp
+          // dips below the gold threshold. Sample them NEAREST. (anisotropy is a
+          // no-op without a mipmap chain, so it is intentionally dropped here.)
+          for (const mask of [front, back]) {
+            mask.magFilter = THREE.NearestFilter;
+            mask.minFilter = THREE.NearestFilter;
+          }
+          // The stereo view PNGs (texs[2], texs[3]) ARE continuous-tone scenes —
+          // keep them bilinear so the lenticular interlace stays smooth.
+          for (const view of [viewA, viewB]) {
+            if (!view) continue;
+            view.magFilter = THREE.LinearFilter;
+            view.minFilter = THREE.LinearFilter;
+            view.anisotropy = 8;
           }
           for (const old of rt.textures) old.dispose();
           rt.textures = texs;
