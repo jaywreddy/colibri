@@ -240,6 +240,11 @@ type Ctx = {
   root: THREE.Group;
   buildGroup: THREE.Group | null;
   lidPivot: THREE.Group | null;
+  /**
+   * ITEM 7 — the soft ground-shadow blob of the CURRENT build, so the light-direction
+   * effect can drive it. Null in flat layout, which has no ground plane.
+   */
+  groundShadow: THREE.Mesh | null;
   faces: Record<FaceId, FaceRT>;
   raycastTargets: THREE.Mesh[];
   rebuildDisposables: RebuildDisposables;
@@ -362,6 +367,64 @@ function makeShadowTexture(): THREE.CanvasTexture {
   c2d.fillStyle = grad;
   c2d.fillRect(0, 0, size, size);
   return new THREE.CanvasTexture(canvas);
+}
+
+/**
+ * ITEM 7 — pose the ground-shadow blob from the key-light direction.
+ *
+ * There is no shadow mapping anywhere in the scene (see the dropped-items note in the
+ * plan: `plate.frag` has no `<shadowmap_pars_fragment>` so the plates could not
+ * RECEIVE shadows, the depth pass ignores `alphaToCoverage` so the pattern planes
+ * would CAST as solid opaque rectangles, and the transmissive slab would cast solid
+ * black). The blob is the honest cheap stand-in — but it used to be completely INERT
+ * to the light: you could swing the light-azimuth slider all the way around and the
+ * shadow would not move, which reads as obviously fake and left the light control
+ * decoupled from the scene's grounding.
+ *
+ * This projects the light direction onto the ground plane and drives three things:
+ *   - offset, away from the light, growing with cot(elevation);
+ *   - elongation along that same azimuth (a low light rakes the blob out);
+ *   - opacity, from the elevation (a high light gives a tight dark contact shadow;
+ *     a low one gives a long faint smear).
+ *
+ * `casterH` is the effective caster height (half the box height) and `reach` bounds
+ * the offset so a near-horizon light cannot fling the blob out of frame.
+ *
+ * Static per light setting — no time term, no history — so time-invariance,
+ * determinism, the lid round-trip and the turntable-off gates are all unaffected. The
+ * blob also sits below the box, outside every plate ROI (facePlateROI projects the
+ * OUTER PLANE's geometry bbox), with renderOrder -1 and depthWrite false.
+ */
+function poseGroundShadow(
+  shadow: THREE.Mesh,
+  lightAzDeg: number,
+  lightElDeg: number,
+  casterH: number,
+  reach: number
+): void {
+  const az = (lightAzDeg * Math.PI) / 180;
+  // Clamp the elevation away from the horizon so cot() stays finite.
+  const el = THREE.MathUtils.clamp((lightElDeg * Math.PI) / 180, 0.14, Math.PI / 2);
+  const cot = Math.cos(el) / Math.sin(el);
+
+  // Ground-plane offset, directly away from the light's horizontal bearing.
+  const dist = Math.min(casterH * cot, reach);
+  shadow.position.x = -Math.sin(az) * dist;
+  shadow.position.z = -Math.cos(az) * dist;
+
+  // In-plane rotation so the blob's local +X runs along that same bearing. The mesh is
+  // already flattened by rotation.x = -PI/2 (local +X -> world +X, local +Y -> world
+  // -Z); with three's default 'XYZ' Euler order the z term is applied first, i.e.
+  // about the plane's own normal, so it is a genuine in-plane spin. Solving
+  // (cos t, 0, -sin t) = (-sin az, 0, -cos az) gives t = az + PI/2.
+  shadow.rotation.set(-Math.PI / 2, 0, az + Math.PI / 2);
+
+  // Rake it out along that bearing as the light drops; keep the transverse axis fixed.
+  shadow.scale.set(1 + 0.55 * Math.min(cot, 3.0), 1, 1);
+
+  // A high light gives a tight dark contact shadow, a low one a long faint smear.
+  const m = shadow.material as THREE.MeshBasicMaterial;
+  m.opacity = THREE.MathUtils.clamp(0.3 + 0.7 * Math.sin(el), 0.18, 1.0);
 }
 
 /** Azimuth (OrbitControls theta) that faces each wall head-on. */
@@ -773,6 +836,7 @@ export default function BoxScene() {
     ctx.rebuildDisposables = D;
     ctx.raycastTargets = [];
     ctx.lidPivot = null;
+    ctx.groundShadow = null;
 
     const geo = <T extends THREE.BufferGeometry>(g: T): T => {
       D.geoms.push(g);
@@ -959,10 +1023,24 @@ export default function BoxScene() {
           })
         )
       );
-      shadow.rotation.x = -Math.PI / 2;
       shadow.position.y = -H / 2 - 0.8;
       shadow.renderOrder = -1;
       group.add(shadow);
+      // ITEM 7 — pose it from the CURRENT light immediately (rotation.x included), so a
+      // fresh build is never briefly wrong before the light effect first runs.
+      ctx.groundShadow = shadow;
+      // Carry the two build-time scalars poseGroundShadow needs so the light effect,
+      // which has no access to this closure, can re-pose the blob on its own.
+      shadow.userData.casterH = H / 2;
+      shadow.userData.reach = 0.75 * shadowSize;
+      const lightSt = useStore.getState();
+      poseGroundShadow(
+        shadow,
+        lightSt.lightAzimuthDeg,
+        lightSt.lightElevationDeg,
+        H / 2,
+        0.75 * shadowSize
+      );
     }
 
     if (sceneLayout === 'flat') {
@@ -1303,6 +1381,7 @@ export default function BoxScene() {
       root,
       buildGroup: null,
       lidPivot: null,
+      groundShadow: null,
       faces,
       raycastTargets: [],
       rebuildDisposables: { geoms: [], mats: [], texs: [] },
@@ -1967,6 +2046,13 @@ export default function BoxScene() {
       ctx.faces[fid].shaderBack.uniforms.uLightWorld.value.set(x, y, z);
     }
     ctx.keyLight.position.set(x, y, z);
+    // ITEM 7 — the ground shadow follows the key light. Null in flat layout, which has
+    // no ground plane.
+    if (ctx.groundShadow) {
+      const casterH = Number(ctx.groundShadow.userData.casterH) || 1;
+      const reach = Number(ctx.groundShadow.userData.reach) || 1;
+      poseGroundShadow(ctx.groundShadow, lightAz, lightEl, casterH, reach);
+    }
     requestRender();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lightAz, lightEl, reinitTick]);
