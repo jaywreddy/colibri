@@ -695,10 +695,18 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
   } else if (uIllumination == 2) {
     color = GOLD_BACK * cov * 0.4;
   } else {
-    // Ambient. Outer plane = bright first-surface gold; inner plane is deeper /
-    // dimmer so the bare carrier recedes behind the foliage. The dim/hot buckets
-    // (water barrier / flowing water) override that default so the scanimation
-    // reads: the barrier recedes and the water behind it glows.
+    // Ambient. Both planes are the SAME gold under the same lighting; the inner one
+    // is darker only by its physical two-interface transmission (item 5's T2), which
+    // is ~0.93 head-on and falls toward 0.42 at 80° — so the recession is now a real
+    // view-dependent second-surface cue rather than a fixed dimming factor. The
+    // dim/hot buckets (water barrier / flowing water) still override the default so
+    // the scanimation reads: the barrier recedes and the water behind it glows.
+    //
+    // NOTE for the visual re-check: retiring the old ~40% arbitrary back-plane
+    // dimming raises the inner plane's baseline substantially. That is the physically
+    // correct budget, but the dimCov/hotCov bucket balance was tuned against the old
+    // constants, so the water-barrier vs. flowing-water read is the one thing here
+    // that wants eyes on it (see the commit message).
     // ITEM 2d — coefficients RE-DERIVED for linear-light shading. Every constant
     // here was originally hand-tuned against display-space output; with GOLD now
     // linear and <tonemapping_fragment>/<colorspace_fragment> in main(), the same
@@ -744,16 +752,41 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     vec3 h = normalize(lightTangent + viewTangent);
     float spec = pow(max(0.0, h.z), 80.0);
 
+    // ITEM 5 — the inner plane's dimming is now REAL SECOND-SURFACE PHYSICS instead
+    // of hand-picked numbers. It used to be tint = mix(GOLD_BACK, GOLD, 0.55) and a
+    // separate, lower `lift` — roughly 40% arbitrary dimming with no derivation. The
+    // correct budget for a layer on the far surface is TWO air/quartz transmissions:
+    // light enters the front face (1 - Rq), reflects off the back gold, and exits the
+    // front face (1 - Rq again, by reciprocity) — so (1 - Rq)^2.
+    //
+    // R0 is DERIVED from uN (bound from the manifest), not hardcoded, so a different
+    // substrate index is honored automatically instead of silently keeping fused
+    // silica's numbers.
+    float r0 = (uN - 1.0) / (uN + 1.0);
+    r0 = r0 * r0;                                   // 0.035 at n = 1.46
+    float Rq = r0 + (1.0 - r0) * schlick;           // Schlick, shares item 4's term
+    float T2 = (1.0 - Rq) * (1.0 - Rq);
+    // Outer gold is deposited on the AIR-side face, so nothing attenuates it.
+    float layerT = isBack ? T2 : 1.0;
+    //
+    // DELIBERATE DEVIATION from the plan, which also asked for `Rq` as a veiling-glare
+    // term on the outer plane: there is no physical source for it here. The outer gold
+    // sits on the air-exposed surface, so there is no air/quartz interface ABOVE it to
+    // reflect a veil, and where the gold does NOT cover, the quartz slab mesh
+    // (MeshPhysicalMaterial, its own ior/Fresnel) already renders that first-surface
+    // flare itself. Adding it in this shader would be a fabricated effect and/or a
+    // double count, which the honesty contract forbids. The view-dependent depth cue
+    // survives intact through T2 alone.
+
     float normalCov = clamp(cov - dimCov - hotCov, 0.0, 1.0);
-    vec3 tint = isBack ? mix(GOLD_BACK, GOLD, 0.55) : GOLD;
     // The old "glint" term's BROAD (ndl-driven) energy is folded into `lift` here,
     // because the specular replacing it is a tight pow(.,80) lobe that carries almost
-    // none of it. Outer: 0.155 + 1.00*ndl plus the glint's 0.045 + 0.30*ndl = the
-    // 0.20 + 1.30*ndl item 2 solved for. Inner: the same fold, and it is hue-safe
-    // because GOLD ~= 1.60 * mix(GOLD_BACK, GOLD, 0.55) to within 0.5% per channel,
-    // so the glint's GOLD tint collapses cleanly into the back tint.
-    float lift = isBack ? (0.079 + 0.61 * ndl) : (0.20 + 1.30 * ndl);
-    color = tint * normalCov * lift * fresnelGain;
+    // none of it: 0.155 + 1.00*ndl plus the glint's 0.045 + 0.30*ndl = the
+    // 0.20 + 1.30*ndl item 2 solved for. There is no longer an isBack variant — both
+    // planes are the same gold under the same lighting, and the ONLY thing that makes
+    // the inner one darker is now T2 below.
+    float lift = 0.20 + 1.30 * ndl;
+    color = GOLD * normalCov * lift * fresnelGain;
     color += F * spec * normalCov * 0.5 * ndl;
     // Recessed barrier: dim, so the flowing water behind it dominates the read.
     color += mix(GOLD_BACK, GOLD, 0.15) * dimCov * (0.05 + 0.08 * ndl);
@@ -770,7 +803,13 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // already converts sRGB -> linear working space, so this is a no-op at the
     // current binding and correct if that binding ever changes. Applied after the
     // sheen on purpose: the illuminant spectrum modulates the diffracted spectrum too.
-    color *= uAmbientColor;
+    //
+    // `layerT` (item 5) rides along here so it attenuates the WHOLE second-surface
+    // radiance, not just the main lobe — the hot bucket (inner water crests, inner
+    // interlace reveal) travels the same two-interface path. It is exactly 1.0 on the
+    // outer plane, so the dim bucket and the diffraction sheen (both outer-only) are
+    // untouched by construction.
+    color *= uAmbientColor * layerT;
   }
   return vec4(color, clamp(cov, 0.0, 1.0));
 }
