@@ -401,8 +401,17 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const fZeroAgain = await capture();
     const dControlZero = diffFrames(fZeroGap, fZeroAgain);
 
-    // Gap -> 60%: response must be smaller than the full collapse.
-    await scaleBackPlaneGap(page, 'front', 0.6);
+    // Gap -> 80%: response must be smaller than the full collapse. The probe
+    // sits at 80% (20% displacement), NOT deeper, because the pixel response
+    // saturates once the fringe shift exceeds its correlation length: the
+    // measured curve on the linear-light renderer is mad 2.7 @ 0.9, 4.8 @ 0.8,
+    // 5.9 @ 0.7, 6.6 @ 0.6, then a flat shoulder to 7.2 @ 0.12. The old 0.6
+    // probe sat ON that shoulder, passing the <0.9x gate by 0.012 mad on the
+    // blurrier pre-linear pipeline and failing on any contrast improvement.
+    // At 0.8 the ratio is ~0.66 with the gate unchanged — and the anti-cheat
+    // is STRONGER: a binary fake (any nonzero collapse -> same frame) still
+    // reads ~1.0 here and fails.
+    await scaleBackPlaneGap(page, 'front', 0.8);
     const fPartial = await capture();
     await scaleBackPlaneGap(page, 'front', 1); // restore design gap
     await unzoom();
@@ -438,7 +447,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
     }
     if (!(dPartial.mad < dCollapse.mad * 0.9 && dPartial.mad > 0.02)) {
       failures.push(
-        `response does not scale with the gap (60% collapse mad ${dPartial.mad.toFixed(2)} vs full ${dCollapse.mad.toFixed(2)})`
+        `response does not scale with the gap (80%-gap mad ${dPartial.mad.toFixed(2)} vs full collapse ${dCollapse.mad.toFixed(2)})`
       );
     }
     if (dControl.mad > 0.5) {

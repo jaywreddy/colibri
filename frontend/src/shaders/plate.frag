@@ -2,10 +2,18 @@ precision highp float;
 
 #include './lib/parallax.glsl'
 
+// ITEM 3 — world-space surface basis from plate.vert; the view and light directions
+// are built PER FRAGMENT in main() and passed down as explicit parameters. The old
+// vViewDirTangent / vLightDirTangent varyings are gone: they interpolated normalized
+// directions across a 4-vertex quad spanning a whole 50 mm face (see plate.vert).
 varying vec2 vUv;
-varying vec3 vViewDirTangent;
-varying vec3 vLightDirTangent;
+varying vec3 vWorldPos;
 varying vec3 vNormalWorld;
+varying vec3 vTangentWorld;
+varying vec3 vBitangentWorld;
+
+// Key-light direction in world space. Treated as a DIRECTIONAL light — see main().
+uniform vec3 uLightWorld;
 
 uniform sampler2D uFront;
 uniform sampler2D uBack;
@@ -17,7 +25,7 @@ uniform float uN;              // refractive index of substrate
 uniform int uIllumination;     // 0=ambient, 1=laser, 2=backlight
 uniform vec3 uLaserColor;
 uniform vec3 uBacklightColor;
-uniform vec3 uAmbientColor;
+uniform vec3 uAmbientColor;    // ambient illuminant tint (linear; white today)
 
 // Which render recipe to run. Numeric IDs match RECIPE_IDS in frontend/src/api.ts:
 //   0 stereo_lenticular, 1 moire_interactive, 3 foliage_moire (every composed
@@ -179,25 +187,44 @@ uniform vec2 uArtBoxCenterUv;            // uv center of the art box
 // disables the whole feature so pre-accent manifests render identically.
 uniform float uRainbowLevel;       // L of the accent level, normalized 0..1 (<0 = off)
 
-const vec3 GOLD = vec3(0.902, 0.737, 0.314);
-const vec3 GOLD_BACK = vec3(0.4, 0.32, 0.12);
+// ITEM 2b — these are LINEAR-LIGHT reflectances. They used to be sRGB display
+// codes multiplied by lighting terms and written straight to the framebuffer, i.e.
+// the whole plate was lit in GAMMA space: a `lift` of 0.30 on an sRGB code is only
+// 0.30^2.4 ~= 0.065 of full linear radiance — ~4.6x darker than intended, which is
+// why the terminator was harsh and why the rig needed a 0.30 ambient floor and an
+// AmbientLight(0.5) to compensate. main() now runs <tonemapping_fragment> +
+// <colorspace_fragment>, so this file is linear throughout and the plates share ONE
+// transfer function with the metalwork for the first time.
+//
+// The values are the exact sRGB->linear images of the previous constants, so the old
+// LOOK is the porting baseline; the lighting coefficients below were then re-derived
+// to hold displayed mid-tone brightness (see runFoliageMoireLayer's ambient branch).
+// Moving GOLD to measured Au F0 is a separate art call — item 4 does that for the
+// SPECULAR lobe only, where F0 is the physically meaningful quantity.
+const vec3 GOLD = vec3(0.791, 0.503, 0.080);       // was sRGB (0.902, 0.737, 0.314)
+const vec3 GOLD_BACK = vec3(0.133, 0.084, 0.013);  // was sRGB (0.4,   0.32,  0.12)
 
-vec3 ambientLit(vec3 base) {
-  // Simple Lambert + subtle specular on gold
-  float ndl = max(0.0, vLightDirTangent.z);
-  float ndv = max(0.0, vViewDirTangent.z);
-  vec3 h = normalize(vLightDirTangent + vViewDirTangent);
-  float ndh = max(0.0, h.z);
-  float spec = pow(ndh, 80.0) * 0.35;
-  return base * (0.2 + 0.9 * ndl) + vec3(1.0, 0.85, 0.6) * spec * (0.3 + ndv);
-}
+// ITEM 4 — normal-incidence Fresnel reflectance (F0) of evaporated gold, linear.
+// This is a MEASURED physical constant, not an art value: it is what sets both the
+// colour of the specular lobe and the rate at which the metal desaturates toward
+// white as the view goes grazing, which is the actual visual signature of gold.
+// Kept separate from GOLD (the diffuse-lobe albedo, which is the ported old look) so
+// the head-on appearance the item-2 retune calibrated is not disturbed.
+const vec3 GOLD_F0 = vec3(1.000, 0.766, 0.336);
+
+// (The `ambientLit` helper that used to sit here was DEAD — nothing ever called it —
+// and it read the two varyings item 3 removed. It did contain the only correct
+// half-vector specular in the file, which is now implemented for real, inline, in
+// runFoliageMoireLayer's ambient branch. Deliberately deleted rather than fixed up:
+// a second, divergent copy of the lighting model is exactly how the branch drifted
+// into having no view-dependent response at all.)
 
 // ----------------------------------------------------------------------------
 // Recipe 1: moire_interactive — sample front & back with physical parallax.
 // The Snell-refracted shift means rotating/orbiting the camera actually
 // produces moving moiré fringes.
 // ----------------------------------------------------------------------------
-vec3 runMoireInteractive(vec3 viewTangent) {
+vec3 runMoireInteractive(vec3 viewTangent, vec3 lightTangent) {
   vec2 shift = parallax_offset(viewTangent, uThicknessUm, uN, uExtentUm);
   float frontGold = texture2D(uFront, vUv).r;
   float backGold  = texture2D(uBack,  vUv - shift).r;
@@ -209,12 +236,12 @@ vec3 runMoireInteractive(vec3 viewTangent) {
 
   vec3 color;
   if (uIllumination == 0) {
-    vec3 goldShade = GOLD * reflected * (0.3 + 0.7 * max(0.0, vLightDirTangent.z));
+    vec3 goldShade = GOLD * reflected * (0.3 + 0.7 * max(0.0, lightTangent.z));
     color = goldShade + vec3(0.04) * transmission;
     float overlap = frontGold * backGold;
     color *= (1.0 - 0.35 * overlap);
   } else if (uIllumination == 1) {
-    color = uLaserColor * transmission * (0.45 + 0.55 * max(0.0, vLightDirTangent.z));
+    color = uLaserColor * transmission * (0.45 + 0.55 * max(0.0, lightTangent.z));
     color += GOLD * 0.12 * reflected;
   } else {
     color = uBacklightColor * transmission;
@@ -229,7 +256,7 @@ vec3 runMoireInteractive(vec3 viewTangent) {
 // vector on the slit-normal axis picks which scene is visible through the
 // slits. Switch half-angle ≈ arctan(p/2·t).
 // ----------------------------------------------------------------------------
-vec3 runStereoLenticular(vec3 viewTangent) {
+vec3 runStereoLenticular(vec3 viewTangent, vec3 lightTangent) {
   vec2 shift = parallax_offset(viewTangent, uThicknessUm, uN, uExtentUm);
 
   // EMERGENT parallax barrier. A front comb (opaque bars, slit open half of each
@@ -272,11 +299,11 @@ vec3 runStereoLenticular(vec3 viewTangent) {
 
   vec3 color;
   if (uIllumination == 0) {
-    vec3 sceneGold = GOLD * transmission * (0.35 + 0.7 * max(0.0, vLightDirTangent.z));
-    vec3 barrier = GOLD * frontGold * (0.2 + 0.5 * max(0.0, vLightDirTangent.z)) * 0.6;
+    vec3 sceneGold = GOLD * transmission * (0.35 + 0.7 * max(0.0, lightTangent.z));
+    vec3 barrier = GOLD * frontGold * (0.2 + 0.5 * max(0.0, lightTangent.z)) * 0.6;
     color = sceneGold + barrier;
   } else if (uIllumination == 1) {
-    color = uLaserColor * transmission * (0.5 + 0.5 * max(0.0, vLightDirTangent.z));
+    color = uLaserColor * transmission * (0.5 + 0.5 * max(0.0, lightTangent.z));
     color += GOLD * 0.08 * frontGold;
   } else {
     color = uBacklightColor * transmission * 0.9;
@@ -303,21 +330,48 @@ vec3 runStereoLenticular(vec3 viewTangent) {
 // `angle`, period `periodUm`, duty `duty`. Antialiased via fwidth so it never
 // shimmers into aliasing regardless of zoom — the coverage smoothly averages
 // to `duty` when a pixel spans many lines.
+// ITEM 6 — EXACT box prefilter for a duty-cycle pulse train.
+//
+// Both analytic gratings used to prefilter with a pair of smoothsteps plus an ad-hoc
+// `collapse = smoothstep(0.35, 0.9, w)` fade to the mean. That fade starts destroying
+// real structure at w ~= 0.35 periods/pixel — well BELOW the w = 0.5 Nyquist limit —
+// so fringe contrast was being thrown away in a band where it is still legitimately
+// representable, and was hard-flattened above w = 0.9 where a true box filter still
+// carries a decaying |sin(pi*w*duty)|/(pi*w) ripple.
+//
+// `pulseIntegral` is the antiderivative of the unit-period pulse (gold where
+// fract(x) is in [0, duty)); differencing it across the pixel footprint is the exact
+// area average. Verified: G(0) = 0, G(duty) = duty, G(1) = duty, and the average
+// equals `duty` EXACTLY at w = 1 (and at every integer w), decaying to it in between —
+// so collapse-to-the-mean is now exactly monotone in w rather than a tuned guess.
+float pulseIntegral(float x, float duty) {
+  return floor(x) * duty + min(fract(x), duty);
+}
+
+// Box average of the pulse train over a window of width `w` centred on `coord`.
+//
+// PRECISION: `coord` reaches a few thousand periods on a 50 mm face at a 20 um pitch,
+// and differencing two pulseIntegral values of that magnitude would catastrophically
+// cancel for a small w (float32 has ~1e-4 resolution at 1250, which is the same order
+// as the window itself). So reduce to one period FIRST — the box average is periodic
+// in `coord` with period 1 — and only then integrate over the span. All magnitudes
+// then scale with `w`, not with `coord`.
+float boxPulse(float coord, float duty, float w) {
+  w = max(w, 1e-4);
+  float lo = fract(coord - 0.5 * w);          // window start, reduced into [0, 1)
+  // pulseIntegral(lo) collapses to min(lo, duty) because floor(lo) == 0.
+  return clamp((pulseIntegral(lo + w, duty) - min(lo, duty)) / w, 0.0, 1.0);
+}
+
 float gratingCoveragePhase(vec2 pUm, float angle, float periodUm, float duty, float phase) {
   float c = cos(angle);
   float s = sin(angle);
   float coord = (pUm.x * c + pUm.y * s) / max(1.0, periodUm) + phase; // in periods
-  float f = fract(coord);
-  // Distance-to-edge antialiasing: width of one pixel in period units.
-  float w = fwidth(coord);
-  // Two smoothstep edges make a band [0, duty] = gold. Clamp AA width so we
-  // gracefully fade to the mean coverage (duty) when lines subpixel-collapse.
-  float aa = clamp(w, 0.0004, 0.5);
-  float line = smoothstep(0.0, aa, f) - smoothstep(duty, duty + aa, f);
-  // When a pixel spans >~1 period, fade to the average duty (prevents moiré
-  // aliasing against the pixel grid — the real fringes come from layer beats).
-  float collapse = smoothstep(0.35, 0.9, w);
-  return mix(line, duty, collapse);
+  // fwidth(coord) is exactly the right support: the projected extent of the pixel
+  // parallelogram onto the grating axis is |dFdx| + |dFdy|. No AA floor is needed —
+  // fwidth already IS one pixel, so the ramp is one pixel wide by construction, which
+  // is the minimal correct antialiasing.
+  return boxPulse(coord, duty, fwidth(coord));
 }
 
 float gratingCoverage(vec2 pUm, float angle, float periodUm, float duty) {
@@ -508,14 +562,11 @@ vec2 barrierPUm(vec2 pUm) {
 // (openFrac = 1/N) and the barrier-interlace switch (openFrac = 0.5).
 float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
   float coord = pUm.x / max(1.0, pitchUm) + phase;
-  float f = fract(coord);
-  float w = fwidth(coord);
-  float aa = clamp(w, 0.0004, 0.5);
-  // Gold where f >= openFrac (the closed bar). Two smoothstep edges keep the
-  // slot open [0, openFrac) and the bar solid [openFrac, 1).
-  float bar = smoothstep(openFrac, openFrac + aa, f);
-  float collapse = smoothstep(0.35, 0.9, w);
-  return mix(bar, 1.0 - openFrac, collapse);
+  // ITEM 6 — exact box average (see boxPulse). boxPulse returns the OPEN-slot
+  // coverage, i.e. the pulse that is gold-free over [0, openFrac); this function
+  // returns the gold BAR, so it is the complement. Collapses to the mean bar coverage
+  // (1 - openFrac) exactly at w = 1 rather than being faded there by hand.
+  return 1.0 - boxPulse(coord, openFrac, fwidth(coord));
 }
 
 // Single real surface (outer front OR inner back, per uLayer). Draws ONLY this
@@ -524,7 +575,7 @@ float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
 // perspective projection of the two physical planes in the scene. Returns
 // straight colour + alpha (= gold coverage), so gaps are transparent and the
 // inner plane shows through the outer one.
-vec4 runFoliageMoireLayer(vec3 viewTangent) {
+vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
   float mR = texture2D(uFront, vUv).r;   // THIS layer's own mask
   float oR = texture2D(uBack, vUv).r;    // the OTHER layer's mask (the switch's
                                          // second silhouette — see uSwitchInterlace)
@@ -659,7 +710,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
     }
   }
 
-  float ndl = max(0.0, vLightDirTangent.z);
+  float ndl = max(0.0, lightTangent.z);
   vec3 color;
   if (uIllumination == 1) {
     // Laser transmission: bright where the layer is OPEN (gaps) — but the alpha
@@ -668,46 +719,195 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
   } else if (uIllumination == 2) {
     color = GOLD_BACK * cov * 0.4;
   } else {
-    // Ambient. Outer plane = bright first-surface gold; inner plane is deeper /
-    // dimmer so the bare carrier recedes behind the foliage. The dim/hot buckets
-    // (water barrier / flowing water) override that default so the scanimation
-    // reads: the barrier recedes and the water behind it glows.
+    // Ambient. Both planes are the SAME gold under the same lighting; the inner one
+    // is darker only by its physical two-interface transmission (item 5's T2), which
+    // is ~0.93 head-on and falls toward 0.42 at 80° — so the recession is now a real
+    // view-dependent second-surface cue rather than a fixed dimming factor. The
+    // dim/hot buckets (water barrier / flowing water) still override the default so
+    // the scanimation reads: the barrier recedes and the water behind it glows.
+    //
+    // NOTE for the visual re-check: retiring the old ~40% arbitrary back-plane
+    // dimming raises the inner plane's baseline substantially. That is the physically
+    // correct budget, but the dimCov/hotCov bucket balance was tuned against the old
+    // constants, so the water-barrier vs. flowing-water read is the one thing here
+    // that wants eyes on it (see the commit message).
+    // ITEM 2d — coefficients RE-DERIVED for linear-light shading. Every constant
+    // here was originally hand-tuned against display-space output; with GOLD now
+    // linear and <tonemapping_fragment>/<colorspace_fragment> in main(), the same
+    // numbers would read wrong at both ends (dark side washed out, because the old
+    // 0.30 floor was compensating for gamma-space lighting; highlights rolled off,
+    // because they used to hard-clip). The retune target is the PREVIOUS BUILD'S
+    // DISPLAYED MID-TONE BRIGHTNESS, so measured @effects deltas stay in the same
+    // band: at ndl = 0.5, full coverage, the outer plane lands within ~0.5% of the
+    // old displayed channel mean, the inner plane within ~1%, and the dim/hot buckets
+    // within ~1%. The dark end comes back ~5% dim and the peak ~13% dim — the peak is
+    // NeutralToneMapping's shoulder replacing a hard clip, which is the entire point:
+    // the clipped peak used to collapse R and G to near-equal and read yellow-white
+    // instead of gold.
+    //
+    // ITEM 4 — real conductor response. This branch previously NEVER read the view
+    // direction (except inside diffractionSheen): its whole shading was
+    // tint * normalCov * lift plus a second term LABELLED "glint" that used ndl, not
+    // a half-vector, so it was not specular at all. Net effect: the gold litho layer
+    // had zero view-dependent material response and no specular lobe — flat diffuse
+    // paint. Real evaporated gold on quartz is a near-mirror conductor whose
+    // reflectance rises toward unity and desaturates toward white at grazing
+    // incidence, and that angular behaviour IS what makes gold read as gold.
+    //
+    // This is MATERIAL RESPONSE, not a synthesised optical effect: view-dependent,
+    // time-invariant (no time term anywhere), litho-mask-driven (every term is gated
+    // by normalCov, so it appears only where gold actually exists) and geometric.
+    // Categorically different from the self-admitted preview stand-in in
+    // diffractionSheen.
+    // clamp (not max): fp drift can push a normalized z fractionally above 1.0,
+    // and GLSL pow() is undefined for a negative base — NaN on some drivers.
+    float ndv = clamp(viewTangent.z, 0.0, 1.0);
+    float schlick = pow(1.0 - ndv, 5.0);
+    vec3 F = GOLD_F0 + (1.0 - GOLD_F0) * schlick;
+    // NORMALIZED Fresnel for the diffuse-ish lobe: exactly 1.0 at normal incidence,
+    // rising toward 1/F0 = (1.0, 1.31, 2.98) at grazing. Folding it in this way adds
+    // gold's correct angular desaturation WITHOUT shifting the head-on brightness the
+    // item-2 retune just calibrated. Over the ±14° cone the suite samples, schlick
+    // runs 0 -> 0.031, so this gain runs 1.0 -> ~(1.00, 1.01, 1.06): a physically
+    // correct term that is near-constant everywhere the tests look while varying
+    // strongly at the 60-80° views a user actually orbits to.
+    vec3 fresnelGain = F / GOLD_F0;
+    // A REAL half-vector specular lobe, carrying gold's own spectral character (F)
+    // rather than the white highlight a naive rig would give — a white highlight on
+    // gold is precisely what made the metal read as chrome.
+    //
+    // Guard the normalize: when the light is exactly opposite the view direction the
+    // sum is the zero vector and normalize() returns NaN, which would propagate
+    // straight into gl_FragColor as a hard artifact (and poison the pixel metrics).
+    // There is no specular lobe in that configuration anyway.
+    vec3 hSum = lightTangent + viewTangent;
+    float hLen = length(hSum);
+    float spec = (hLen > 1e-4) ? pow(max(0.0, hSum.z / hLen), 80.0) : 0.0;
+
+    // ITEM 5 — the inner plane's dimming is now REAL SECOND-SURFACE PHYSICS instead
+    // of hand-picked numbers. It used to be tint = mix(GOLD_BACK, GOLD, 0.55) and a
+    // separate, lower `lift` — roughly 40% arbitrary dimming with no derivation. The
+    // correct budget for a layer on the far surface is TWO air/quartz transmissions:
+    // light enters the front face (1 - Rq), reflects off the back gold, and exits the
+    // front face (1 - Rq again, by reciprocity) — so (1 - Rq)^2.
+    //
+    // R0 is DERIVED from uN (bound from the manifest), not hardcoded, so a different
+    // substrate index is honored automatically instead of silently keeping fused
+    // silica's numbers.
+    float r0 = (uN - 1.0) / (uN + 1.0);
+    r0 = r0 * r0;                                   // 0.035 at n = 1.46
+    float Rq = r0 + (1.0 - r0) * schlick;           // Schlick, shares item 4's term
+    float T2 = (1.0 - Rq) * (1.0 - Rq);
+    // Outer gold is deposited on the AIR-side face, so nothing attenuates it.
+    float layerT = isBack ? T2 : 1.0;
+    //
+    // DELIBERATE DEVIATION from the plan, which also asked for `Rq` as a veiling-glare
+    // term on the outer plane: there is no physical source for it here. The outer gold
+    // sits on the air-exposed surface, so there is no air/quartz interface ABOVE it to
+    // reflect a veil, and where the gold does NOT cover, the quartz slab mesh
+    // (MeshPhysicalMaterial, its own ior/Fresnel) already renders that first-surface
+    // flare itself. Adding it in this shader would be a fabricated effect and/or a
+    // double count, which the honesty contract forbids. The view-dependent depth cue
+    // survives intact through T2 alone.
+
     float normalCov = clamp(cov - dimCov - hotCov, 0.0, 1.0);
-    vec3 tint = isBack ? mix(GOLD_BACK, GOLD, 0.55) : GOLD;
-    float lift = isBack ? (0.22 + 0.5 * ndl) : (0.30 + 0.72 * ndl);
-    color = tint * normalCov * lift;
-    color += GOLD * 0.3 * normalCov * (0.3 + 0.7 * ndl) * (isBack ? 0.4 : 1.0); // glint
+    // The old "glint" term's BROAD (ndl-driven) energy is folded into `lift` here,
+    // because the specular replacing it is a tight pow(.,80) lobe that carries almost
+    // none of it: 0.155 + 1.00*ndl plus the glint's 0.045 + 0.30*ndl = the
+    // 0.20 + 1.30*ndl item 2 solved for. There is no longer an isBack variant — both
+    // planes are the same gold under the same lighting, and the ONLY thing that makes
+    // the inner one darker is now T2 below.
+    float lift = 0.20 + 1.30 * ndl;
+    color = GOLD * normalCov * lift * fresnelGain;
+    color += F * spec * normalCov * 0.5 * ndl;
     // Recessed barrier: dim, so the flowing water behind it dominates the read.
-    color += mix(GOLD_BACK, GOLD, 0.15) * dimCov * (0.14 + 0.22 * ndl);
+    color += mix(GOLD_BACK, GOLD, 0.15) * dimCov * (0.05 + 0.08 * ndl);
     // Flowing water: bright first-surface gold regardless of plane.
-    color += GOLD * hotCov * (0.45 + 0.7 * ndl);
+    color += GOLD * hotCov * (0.43 + 0.67 * ndl);
     // Diffraction accent: OUTER plane only, labelled angle-hue sheen.
     if (!isBack && rainbowHere > 0.0) {
       color += diffractionSheen(viewTangent, pUm, ndl) * rainbowHere;
     }
+    // Ambient illuminant tint. uAmbientColor was bound by BoxScene but read by no
+    // branch in any recipe — inert plumbing. Consume it here (rather than delete the
+    // uniform, which is part of the material's bound surface) so the ambient
+    // illuminant can actually be coloured. It is white today, and Color.setHex
+    // already converts sRGB -> linear working space, so this is a no-op at the
+    // current binding and correct if that binding ever changes. Applied after the
+    // sheen on purpose: the illuminant spectrum modulates the diffracted spectrum too.
+    //
+    // `layerT` (item 5) rides along here so it attenuates the WHOLE second-surface
+    // radiance, not just the main lobe — the hot bucket (inner water crests, inner
+    // interlace reveal) travels the same two-interface path. It is exactly 1.0 on the
+    // outer plane, so the dim bucket and the diffraction sheen (both outer-only) are
+    // untouched by construction.
+    color *= uAmbientColor * layerT;
   }
   return vec4(color, clamp(cov, 0.0, 1.0));
 }
 
 void main() {
-  vec3 viewTangent = normalize(vViewDirTangent);
+  // ITEM 3 — build the view and light directions PER FRAGMENT, then project them onto
+  // the interpolated world basis. `cameraPosition` is declared by three's own fragment
+  // prefix, so this needs no new uniform.
+  vec3 tangentWorld   = normalize(vTangentWorld);
+  vec3 bitangentWorld = normalize(vBitangentWorld);
+  vec3 normalWorld    = normalize(vNormalWorld);
 
-  // Recipe 3 (foliage_moire = every box face) is the TWO-PLANE geometric path:
-  // it returns its own alpha so the two real surfaces composite in the scene.
-  if (uRecipe == 3) {
-    gl_FragColor = runFoliageMoireLayer(viewTangent);
-    return;
-  }
+  vec3 viewDirWorld = normalize(cameraPosition - vWorldPos);
+  // DIRECTIONAL, not positional. plate.vert used to treat uLightWorld as a POINT
+  // light (normalize(uLightWorld - worldPos)) while the scene's keyLight is a
+  // THREE.DirectionalLight fed that very same vector — the plate and the PBR rig
+  // disagreed about what the uniform means. Numerically this is near-neutral today
+  // (the root scale of ~0.028 makes plate world positions tiny against the 3-unit
+  // light distance), which is exactly why it is safe to unify now, before the
+  // divergence can grow into something that has to be untangled under a regression.
+  vec3 lightDirWorld = normalize(uLightWorld);
 
-  // Legacy single-plane recipes (standalone-pattern previews) stay opaque.
+  vec3 viewTangent = vec3(
+    dot(viewDirWorld, tangentWorld),
+    dot(viewDirWorld, bitangentWorld),
+    dot(viewDirWorld, normalWorld)
+  );
+  vec3 lightTangent = vec3(
+    dot(lightDirWorld, tangentWorld),
+    dot(lightDirWorld, bitangentWorld),
+    dot(lightDirWorld, normalWorld)
+  );
+
+  // ITEM 2c — SINGLE exit point so every recipe runs the colour pipeline. The three
+  // chunks below operate on `gl_FragColor` BY NAME, so the old recipe-3 early
+  // `return` would have skipped them; hence the if/else-if/else shape rather than an
+  // early-out. Recipe 3 (foliage_moire = every box face) is the TWO-PLANE geometric
+  // path and returns its own alpha so the two real surfaces composite in the scene;
+  // the legacy single-plane recipes (standalone-pattern previews) stay opaque.
   // (uRecipe == 2 no longer exists — phase_shift_overlay is retired.)
-  vec3 color;
-  if (uRecipe == 0) {
-    color = runStereoLenticular(viewTangent);
+  if (uRecipe == 3) {
+    gl_FragColor = runFoliageMoireLayer(viewTangent, lightTangent);
+  } else if (uRecipe == 0) {
+    gl_FragColor = vec4(runStereoLenticular(viewTangent, lightTangent), 1.0);
   } else {
     // Default + uRecipe == 1: moire_interactive.
-    color = runMoireInteractive(viewTangent);
+    gl_FragColor = vec4(runMoireInteractive(viewTangent, lightTangent), 1.0);
   }
 
-  gl_FragColor = vec4(color, 1.0);
+  // makePlateShader builds a ShaderMaterial (NOT RawShaderMaterial), so three's full
+  // fragment prefix — toneMapping(), toneMappingExposure, linearToOutputTexel() — is
+  // already prepended and resolveIncludes() runs on this file. The angle-bracket form
+  // survives vite-plugin-glsl untouched: its include regex character class explicitly
+  // excludes '<' and '>', so only the './lib/parallax.glsl' form above is its
+  // business. No build-tooling change is needed.
+  //
+  // Per-pass correctness (this is what makes the two-plane renderer safe): three
+  // disables tone mapping and forces LinearSRGBColorSpace whenever it is rendering
+  // into a render target. These two chunks therefore write LINEAR, un-tone-mapped
+  // values into the glass slab's transmission backdrop RT — where the inner plane
+  // lives — and tone-mapped, sRGB-encoded values into the default framebuffer. The
+  // inner plane gets tone-mapped exactly once, by the glass fragment that composites
+  // it; the outer plane exactly once, directly. No double application.
+  //
+  // sRGBTransferOETF passes .a through untouched, so alphaToCoverage (which reads
+  // the gold-coverage alpha) is unaffected.
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
 }

@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildStudioEnvScene } from './studioEnv';
-import { makeFoilMaps, makeSolderMaps, makeStripHeatColor, hashStr } from './metalTextures';
+import {
+  makeFoilMaps,
+  makeSolderMaps,
+  makeStripHeatColor,
+  hashStr,
+  setMetalTextureAnisotropy,
+} from './metalTextures';
 import { makeBeadGeometry, makeCornerBlob } from './solderBead';
 import vert from '../shaders/plate.vert';
 import frag from '../shaders/plate.frag';
@@ -240,6 +246,11 @@ type Ctx = {
   root: THREE.Group;
   buildGroup: THREE.Group | null;
   lidPivot: THREE.Group | null;
+  /**
+   * ITEM 7 — the soft ground-shadow blob of the CURRENT build, so the light-direction
+   * effect can drive it. Null in flat layout, which has no ground plane.
+   */
+  groundShadow: THREE.Mesh | null;
   faces: Record<FaceId, FaceRT>;
   raycastTargets: THREE.Mesh[];
   rebuildDisposables: RebuildDisposables;
@@ -364,6 +375,64 @@ function makeShadowTexture(): THREE.CanvasTexture {
   return new THREE.CanvasTexture(canvas);
 }
 
+/**
+ * ITEM 7 — pose the ground-shadow blob from the key-light direction.
+ *
+ * There is no shadow mapping anywhere in the scene (see the dropped-items note in the
+ * plan: `plate.frag` has no `<shadowmap_pars_fragment>` so the plates could not
+ * RECEIVE shadows, the depth pass ignores `alphaToCoverage` so the pattern planes
+ * would CAST as solid opaque rectangles, and the transmissive slab would cast solid
+ * black). The blob is the honest cheap stand-in — but it used to be completely INERT
+ * to the light: you could swing the light-azimuth slider all the way around and the
+ * shadow would not move, which reads as obviously fake and left the light control
+ * decoupled from the scene's grounding.
+ *
+ * This projects the light direction onto the ground plane and drives three things:
+ *   - offset, away from the light, growing with cot(elevation);
+ *   - elongation along that same azimuth (a low light rakes the blob out);
+ *   - opacity, from the elevation (a high light gives a tight dark contact shadow;
+ *     a low one gives a long faint smear).
+ *
+ * `casterH` is the effective caster height (half the box height) and `reach` bounds
+ * the offset so a near-horizon light cannot fling the blob out of frame.
+ *
+ * Static per light setting — no time term, no history — so time-invariance,
+ * determinism, the lid round-trip and the turntable-off gates are all unaffected. The
+ * blob also sits below the box, outside every plate ROI (facePlateROI projects the
+ * OUTER PLANE's geometry bbox), with renderOrder -1 and depthWrite false.
+ */
+function poseGroundShadow(
+  shadow: THREE.Mesh,
+  lightAzDeg: number,
+  lightElDeg: number,
+  casterH: number,
+  reach: number
+): void {
+  const az = (lightAzDeg * Math.PI) / 180;
+  // Clamp the elevation away from the horizon so cot() stays finite.
+  const el = THREE.MathUtils.clamp((lightElDeg * Math.PI) / 180, 0.14, Math.PI / 2);
+  const cot = Math.cos(el) / Math.sin(el);
+
+  // Ground-plane offset, directly away from the light's horizontal bearing.
+  const dist = Math.min(casterH * cot, reach);
+  shadow.position.x = -Math.sin(az) * dist;
+  shadow.position.z = -Math.cos(az) * dist;
+
+  // In-plane rotation so the blob's local +X runs along that same bearing. The mesh is
+  // already flattened by rotation.x = -PI/2 (local +X -> world +X, local +Y -> world
+  // -Z); with three's default 'XYZ' Euler order the z term is applied first, i.e.
+  // about the plane's own normal, so it is a genuine in-plane spin. Solving
+  // (cos t, 0, -sin t) = (-sin az, 0, -cos az) gives t = az + PI/2.
+  shadow.rotation.set(-Math.PI / 2, 0, az + Math.PI / 2);
+
+  // Rake it out along that bearing as the light drops; keep the transverse axis fixed.
+  shadow.scale.set(1 + 0.55 * Math.min(cot, 3.0), 1, 1);
+
+  // A high light gives a tight dark contact shadow, a low one a long faint smear.
+  const m = shadow.material as THREE.MeshBasicMaterial;
+  m.opacity = THREE.MathUtils.clamp(0.3 + 0.7 * Math.sin(el), 0.18, 1.0);
+}
+
 /** Azimuth (OrbitControls theta) that faces each wall head-on. */
 const FACE_AZIMUTH: Partial<Record<FaceId, number>> = {
   front: 0,
@@ -458,9 +527,29 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
 function makeGlassMaterial(): THREE.MeshPhysicalMaterial {
   return new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
-    transmission: 0.85,
+    // ITEM 1 — substrate honesty. The inner gold plane is only ever seen THROUGH
+    // this material, so its transmission sampling is the LAST low-pass filter
+    // applied to the back layer; no shader-side work can recover detail that has
+    // already been smeared here.
+    //
+    // `roughness` sets the transmission blur LOD directly (three's
+    // transmission_pars_fragment):
+    //     lod = log2(transmissionSamplerSize.x) * roughness * clamp(2*ior - 2, 0, 1)
+    // At roughness 0.06 / ior 1.46 (factor 0.92) on a ~1400 px viewport that is
+    // lod ~= 0.58 — the back carrier arrives bicubic-blurred across ~1.5 device
+    // pixels. At 0.012 it is lod ~= 0.115. 0.06 describes GROUND glass; a
+    // lambda/10-polished fused-silica window is an order of magnitude smoother,
+    // so the new value is also the more physical one.
+    //
+    // `transmission` 0.85 left 15% of a white-diffuse-lit slab composited OVER the
+    // back plane as a milky veil that flattened back-layer contrast globally. Bare
+    // polished fused silica transmits ~92%.
+    //
+    // Both are set here only — the rebuild loop overwrites `ior` from spec.glass.n
+    // but never these two, so this single edit persists across rebuilds.
+    transmission: 0.94,
     ior: 1.46,
-    roughness: 0.06,
+    roughness: 0.012,
     metalness: 0.0,
     // No volume: the T/n inner-plane placement is the only refractive
     // displacement in the scene (see the rebuild loop's g.thickness note).
@@ -753,6 +842,7 @@ export default function BoxScene() {
     ctx.rebuildDisposables = D;
     ctx.raycastTargets = [];
     ctx.lidPivot = null;
+    ctx.groundShadow = null;
 
     const geo = <T extends THREE.BufferGeometry>(g: T): T => {
       D.geoms.push(g);
@@ -939,10 +1029,24 @@ export default function BoxScene() {
           })
         )
       );
-      shadow.rotation.x = -Math.PI / 2;
       shadow.position.y = -H / 2 - 0.8;
       shadow.renderOrder = -1;
       group.add(shadow);
+      // ITEM 7 — pose it from the CURRENT light immediately (rotation.x included), so a
+      // fresh build is never briefly wrong before the light effect first runs.
+      ctx.groundShadow = shadow;
+      // Carry the two build-time scalars poseGroundShadow needs so the light effect,
+      // which has no access to this closure, can re-pose the blob on its own.
+      shadow.userData.casterH = H / 2;
+      shadow.userData.reach = 0.75 * shadowSize;
+      const lightSt = useStore.getState();
+      poseGroundShadow(
+        shadow,
+        lightSt.lightAzimuthDeg,
+        lightSt.lightElevationDeg,
+        H / 2,
+        0.75 * shadowSize
+      );
     }
 
     if (sceneLayout === 'flat') {
@@ -1157,7 +1261,47 @@ export default function BoxScene() {
       shadowTex.dispose();
       return;
     }
-    renderer.setPixelRatio(window.devicePixelRatio);
+    // ITEM 2e — cap the device pixel ratio at 2. `transmission` makes three render
+    // the scene TWICE per frame (the backdrop RT, then the beauty pass), so an
+    // uncapped 3x DPR is ~18x the fill of a 1x single pass — and items 3-5 make the
+    // plate fragment shader materially more expensive. 2x is past the point of
+    // visible return for the fine litho masks.
+    //
+    // Deliberately NOT a store field with UI: a store-dependent pixel-ratio effect
+    // can re-assert the app ratio mid-probe and silently invalidate a
+    // zoomForMicroPatterns capture. Note also that onResize() below calls setSize()
+    // only, never setPixelRatio — that is load-bearing, because it is what stops a
+    // ResizeObserver tick from clobbering the ratio zoomForMicroPatterns saves and
+    // restores itself.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // ITEM 2a — tone mapping. The plate rig sums key 2.1 + fill 0.8 + rim 1.3 +
+    // frontFill 1.05 + ambient 0.5 ~= 5.7 of irradiance, so with no tone map the
+    // highlights HARD-CLIP — and clipping is what destroys hue exactly where a
+    // conductor is diagnostic: gold peaks near linear (1.19, 0.97, 0.41) and clamps
+    // to (1.0, 0.97, 0.41), where R and G collapse to near-equal and every bright
+    // gold highlight reads yellow-white (the single biggest reason the metal used to
+    // read as chrome-ish plastic).
+    //
+    // NeutralToneMapping specifically, NOT ACES or AgX: it returns `color` UNCHANGED
+    // below its StartCompression = 0.76 peak, so mid-range differences are preserved
+    // EXACTLY. ACES multiplies by exposure/0.6 and reshapes the whole range; AgX
+    // log2's the full domain. Both compress mid-tone contrast globally, which attacks
+    // every changedFrac floor in the @effects suite — most dangerously the tightest,
+    // opposite-tilt >= 0.06.
+    //
+    // Note the RENDER-TARGET GUARD that makes this safe for the two-plane renderer:
+    // three applies tone mapping + the sRGB OETF only when _currentRenderTarget is
+    // null. The plates therefore write LINEAR, un-tone-mapped values into the glass
+    // slab's transmission backdrop RT (where the inner plane lives) and tone-mapped
+    // sRGB values into the default framebuffer. The inner plane is tone-mapped
+    // exactly once, by the glass fragment that composites it; the outer plane exactly
+    // once, directly. There is no double-tone-map to fear.
+    renderer.toneMapping = THREE.NeutralToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    // Let the foil/solder maps use the GPU's real anisotropy limit (commonly 16) rather
+    // than the 8/4 they were hardcoded to. Set before any build runs, so no map is ever
+    // built at the stale default.
+    setMetalTextureAnisotropy(renderer.capabilities.getMaxAnisotropy());
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
@@ -1247,6 +1391,7 @@ export default function BoxScene() {
       root,
       buildGroup: null,
       lidPivot: null,
+      groundShadow: null,
       faces,
       raycastTargets: [],
       rebuildDisposables: { geoms: [], mats: [], texs: [] },
@@ -1303,6 +1448,9 @@ export default function BoxScene() {
       window.clearTimeout(restoreTimer);
       const c = ctxRef.current;
       if (c) {
+        // A fresh context may report a different anisotropy limit; re-assert it before
+        // the rebuild below re-derives the metal maps.
+        setMetalTextureAnisotropy(c.renderer.capabilities.getMaxAnisotropy());
         c.envTex.dispose();
         c.pmrem.dispose();
         const env = makeStudioEnv(c.renderer);
@@ -1911,6 +2059,13 @@ export default function BoxScene() {
       ctx.faces[fid].shaderBack.uniforms.uLightWorld.value.set(x, y, z);
     }
     ctx.keyLight.position.set(x, y, z);
+    // ITEM 7 — the ground shadow follows the key light. Null in flat layout, which has
+    // no ground plane.
+    if (ctx.groundShadow) {
+      const casterH = Number(ctx.groundShadow.userData.casterH) || 1;
+      const reach = Number(ctx.groundShadow.userData.reach) || 1;
+      poseGroundShadow(ctx.groundShadow, lightAz, lightEl, casterH, reach);
+    }
     requestRender();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lightAz, lightEl, reinitTick]);
