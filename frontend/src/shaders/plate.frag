@@ -330,21 +330,48 @@ vec3 runStereoLenticular(vec3 viewTangent, vec3 lightTangent) {
 // `angle`, period `periodUm`, duty `duty`. Antialiased via fwidth so it never
 // shimmers into aliasing regardless of zoom — the coverage smoothly averages
 // to `duty` when a pixel spans many lines.
+// ITEM 6 — EXACT box prefilter for a duty-cycle pulse train.
+//
+// Both analytic gratings used to prefilter with a pair of smoothsteps plus an ad-hoc
+// `collapse = smoothstep(0.35, 0.9, w)` fade to the mean. That fade starts destroying
+// real structure at w ~= 0.35 periods/pixel — well BELOW the w = 0.5 Nyquist limit —
+// so fringe contrast was being thrown away in a band where it is still legitimately
+// representable, and was hard-flattened above w = 0.9 where a true box filter still
+// carries a decaying |sin(pi*w*duty)|/(pi*w) ripple.
+//
+// `pulseIntegral` is the antiderivative of the unit-period pulse (gold where
+// fract(x) is in [0, duty)); differencing it across the pixel footprint is the exact
+// area average. Verified: G(0) = 0, G(duty) = duty, G(1) = duty, and the average
+// equals `duty` EXACTLY at w = 1 (and at every integer w), decaying to it in between —
+// so collapse-to-the-mean is now exactly monotone in w rather than a tuned guess.
+float pulseIntegral(float x, float duty) {
+  return floor(x) * duty + min(fract(x), duty);
+}
+
+// Box average of the pulse train over a window of width `w` centred on `coord`.
+//
+// PRECISION: `coord` reaches a few thousand periods on a 50 mm face at a 20 um pitch,
+// and differencing two pulseIntegral values of that magnitude would catastrophically
+// cancel for a small w (float32 has ~1e-4 resolution at 1250, which is the same order
+// as the window itself). So reduce to one period FIRST — the box average is periodic
+// in `coord` with period 1 — and only then integrate over the span. All magnitudes
+// then scale with `w`, not with `coord`.
+float boxPulse(float coord, float duty, float w) {
+  w = max(w, 1e-4);
+  float lo = fract(coord - 0.5 * w);          // window start, reduced into [0, 1)
+  // pulseIntegral(lo) collapses to min(lo, duty) because floor(lo) == 0.
+  return clamp((pulseIntegral(lo + w, duty) - min(lo, duty)) / w, 0.0, 1.0);
+}
+
 float gratingCoveragePhase(vec2 pUm, float angle, float periodUm, float duty, float phase) {
   float c = cos(angle);
   float s = sin(angle);
   float coord = (pUm.x * c + pUm.y * s) / max(1.0, periodUm) + phase; // in periods
-  float f = fract(coord);
-  // Distance-to-edge antialiasing: width of one pixel in period units.
-  float w = fwidth(coord);
-  // Two smoothstep edges make a band [0, duty] = gold. Clamp AA width so we
-  // gracefully fade to the mean coverage (duty) when lines subpixel-collapse.
-  float aa = clamp(w, 0.0004, 0.5);
-  float line = smoothstep(0.0, aa, f) - smoothstep(duty, duty + aa, f);
-  // When a pixel spans >~1 period, fade to the average duty (prevents moiré
-  // aliasing against the pixel grid — the real fringes come from layer beats).
-  float collapse = smoothstep(0.35, 0.9, w);
-  return mix(line, duty, collapse);
+  // fwidth(coord) is exactly the right support: the projected extent of the pixel
+  // parallelogram onto the grating axis is |dFdx| + |dFdy|. No AA floor is needed —
+  // fwidth already IS one pixel, so the ramp is one pixel wide by construction, which
+  // is the minimal correct antialiasing.
+  return boxPulse(coord, duty, fwidth(coord));
 }
 
 float gratingCoverage(vec2 pUm, float angle, float periodUm, float duty) {
@@ -535,14 +562,11 @@ vec2 barrierPUm(vec2 pUm) {
 // (openFrac = 1/N) and the barrier-interlace switch (openFrac = 0.5).
 float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
   float coord = pUm.x / max(1.0, pitchUm) + phase;
-  float f = fract(coord);
-  float w = fwidth(coord);
-  float aa = clamp(w, 0.0004, 0.5);
-  // Gold where f >= openFrac (the closed bar). Two smoothstep edges keep the
-  // slot open [0, openFrac) and the bar solid [openFrac, 1).
-  float bar = smoothstep(openFrac, openFrac + aa, f);
-  float collapse = smoothstep(0.35, 0.9, w);
-  return mix(bar, 1.0 - openFrac, collapse);
+  // ITEM 6 — exact box average (see boxPulse). boxPulse returns the OPEN-slot
+  // coverage, i.e. the pulse that is gold-free over [0, openFrac); this function
+  // returns the gold BAR, so it is the complement. Collapses to the mean bar coverage
+  // (1 - openFrac) exactly at w = 1 rather than being faded there by hand.
+  return 1.0 - boxPulse(coord, openFrac, fwidth(coord));
 }
 
 // Single real surface (outer front OR inner back, per uLayer). Draws ONLY this
