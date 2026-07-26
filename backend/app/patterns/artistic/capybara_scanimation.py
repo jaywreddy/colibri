@@ -17,6 +17,17 @@ scanimation (a.k.a. kinegram) realised in the two-layer gold-on-silica stack:
       slot holds ripple phase k. Head-on, the barrier reveals exactly one slot
       (one phase); the rest hide behind the bars.
 
+THE WATER BAND EXCLUDES THE ANIMAL. The band is the water AROUND the capybara:
+``_capybara_and_water`` carves the whole silhouette out of it (``below & ~capy``),
+so neither the ripple interleave nor the slit barrier ever prints over the
+half-submerged body — it keeps whatever plain carrier its layer has there. That is
+the composed preview's convention (``plates._centerpiece_masks`` builds the back
+water zone the same way and ``plates._paste_centerpiece`` pastes exactly that
+square into the full-width band), and it is now the ONE definition every consumer
+reads: this pattern, the fab SVG bake (``plates.ensure_plate_svg``) and the fine
+GDS zones + exact vector builders (``export_fine``). A crest field that ran under
+the animal read as ripples ON the capybara, not around it.
+
 Tilting the plate walks the barrier across the back frames by Snell parallax
 (≈5.9 µm/deg through 500 µm fused silica). Each 1/N period of walk advances the
 visible ripple by ONE phase, so the crests travel horizontally around the
@@ -87,7 +98,19 @@ def _capybara_and_water(
       * ``capy``       — full capybara silhouette (both above & below water).
       * ``capy_above`` — capybara ABOVE the waterline (the dry, shimmering body).
       * ``capy_below`` — capybara BELOW the waterline (submerged; hinted only).
-      * ``water_band`` — the water region (below waterline, spanning ``n_cols``).
+      * ``water_band`` — the water AROUND the animal: below the waterline, spanning
+        ``n_cols``, with the SUBMERGED BODY CARVED OUT (``below & ~capy``).
+
+    The carve is the whole reason this returns a band rather than a half-plane.
+    Everything downstream that means "the animated region" reads ``water_band``:
+    the ripple crest masks (``_ripple_phase_masks``), the front slit-barrier bars
+    (``_build``), the fab SVG bake (``plates.ensure_plate_svg``) and the fine-GDS
+    carrier keep-out (``export_fine._build_zone_masks``). Handing them a plain
+    ``below`` printed ripple crests and barrier bars straight over the capybara —
+    ripples ON the animal instead of around it, and the body lost the plain carrier
+    the composed preview shows there. ``plates._centerpiece_masks`` carves the
+    preview's back water zone with exactly this algebra at exactly this waterline;
+    the two must not diverge again.
     """
     n_cols = n if n_cols is None else n_cols
     capy_sq = capybara.capybara_silhouette((1.0, 1.0), n_grid=n)
@@ -95,7 +118,10 @@ def _capybara_and_water(
     capy[:, col_off : col_off + n] = capy_sq
     rows = (np.arange(n)[:, None] / n)  # y in 0..1, y-down
     below = np.broadcast_to(rows >= waterline_y, (n, n_cols))
-    water_band = below.copy()
+    # Carve the animal out of the band (only the submerged part can overlap it, so
+    # ``~capy`` and ``~capy_below`` are the same mask here — the full silhouette is
+    # the cheaper, more obviously-correct spelling and matches the preview's).
+    water_band = below & ~capy
     capy_above = capy & ~below
     capy_below = capy & below
     return {
@@ -212,6 +238,11 @@ def _ripple_phase_masks(
     The *interleave* is enforced downstream by the slit barrier (front); here we
     render each animation frame at full width inside the water band, and the
     ``generate`` interleaver slices frame k into its 1/N slot column set.
+
+    ``water_band`` is the CARVED band (submerged body removed, see
+    ``_capybara_and_water``), so the crests stop at the animal's outline: the
+    ``crest & water_band`` clip below is the carve, applied BEFORE the litho-floor
+    thickness gate so the carve cannot leave a sub-floor ridge tip behind.
     """
     # x normalized to the BODY square (width n, inset at col_off): wing columns
     # fall outside [0,1] so the periodic streamline current simply continues past
@@ -331,9 +362,20 @@ def _slit_barrier(
 def _interleave_phases(
     phase_masks: list[np.ndarray],
     period_pix: float,
+    keep: np.ndarray | None = None,
 ) -> np.ndarray:
     """Pack N ripple frames into their 1/N slot column-sets → the single baked
     BACK water mask. Phase k occupies columns whose within-period slot is k.
+
+    ``keep`` (the carved ``water_band``) makes the atomic fill BODY-SAFE. The
+    phase masks are already carved, but the ≥floor-coverage rule below fills the
+    WHOLE slot for a row as soon as ONE of the slot's columns carries crest — so a
+    slot straddling the capybara outline would re-print up to a full 15 µm of
+    ripple gold over the animal. With ``keep`` a slot is filled only where the
+    ENTIRE slot lies in the band, i.e. straddling slots are dropped: the animal
+    gets a ≤1-slot ripple-free halo instead of a 15 µm smear of crest, and every
+    emitted column-run is still either a full slot or absent (the atomic-slot
+    floor guarantee is untouched).
 
     F3 (x-axis source clip): a crest is a set of gold rows spanning some columns.
     Selecting only the slot-k columns of phase k would leave sub-floor gold where
@@ -370,6 +412,9 @@ def _interleave_phases(
         block = ph[:, col_sel]                        # (h, slot_w)
         row_cover = block.sum(axis=1)
         rows_on = row_cover >= cover_floor            # atomic-fill these rows
+        if keep is not None:
+            # ...but only where the WHOLE slot is water (never over the animal).
+            rows_on &= keep[:, col_sel].all(axis=1)
         if rows_on.any():
             out[np.ix_(rows_on, col_sel)] = True
     return out
@@ -442,10 +487,17 @@ def _build(
         n_grid, cell_um, frame_pitch_um, n_phases, scene["water_band"], waterline_y,
         n_cols=n_cols, col_off=col_off,
     )
-    back_water = _interleave_phases(phase_masks, frame_pix)
+    # keep=water_band: the atomic slot fill must not bleed ripple gold onto the
+    # submerged body where a slot straddles the silhouette (see _interleave_phases).
+    back_water = _interleave_phases(
+        phase_masks, frame_pix, keep=scene["water_band"]
+    )
 
     # Front capybara body shimmer: carrier stripes clipped to the dry body plus
-    # a faint submerged hint below the waterline (dashed reflection feel).
+    # a faint submerged hint below the waterline (dashed reflection feel). This is
+    # the ANIMAL's own carrier, not the ripple band — the band (and with it the
+    # slit barrier below) is already carved clear of the body, so the submerged
+    # hint is the only thing that prints there.
     carrier = _stripe_carrier(n_grid, carrier_pix, n_cols=n_cols)
     capy_shimmer = (scene["capy_above"] & carrier) | (
         scene["capy_below"] & carrier

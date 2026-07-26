@@ -821,7 +821,12 @@ def _centerpiece_masks(
         # recipe_data the shader reads all resolve it here (_water_waterline_y).
         below = np.broadcast_to(rows >= _water_waterline_y(params), capy.shape)
         # Dry capybara (above waterline) on the FRONT; water band (below the
-        # line, not covered by the submerged body) on the BACK.
+        # line, not covered by the submerged body) on the BACK. This carve is the
+        # convention: the ripple band is the water AROUND the animal, and the
+        # submerged body keeps the plain carrier. Both fab writers now build their
+        # band with the same algebra at the same waterline —
+        # ``capybara_scanimation._capybara_and_water`` returns ``below & ~capy``,
+        # which is what ``ensure_plate_svg`` and ``export_fine`` consume.
         front = capy & ~below
         water_band = below & ~capy
         return (front, water_band)
@@ -1298,7 +1303,15 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 #     would otherwise keep serving the key forever; a consumer added later against
 #     a stale manifest would find it on some faces and not others. Mask PNGs are
 #     unchanged by this bump.
-PLATE_COMPOSE_VERSION = 5
+# v6: the capybara water band drops the submerged body in the PATTERN too
+#     (``_capybara_and_water``), so capybara-scanimation's generated masks — and
+#     with them the ``min_feature_um`` / ``central_extra`` (``min_back_gold_um``,
+#     ``min_front_gold_um``, …) this manifest copies out of ``central_cls.metadata``
+#     — move. The composed PNGs do NOT: ``_paste_centerpiece`` /
+#     ``_centerpiece_masks`` already carved the band and the plate pitch is keyed to
+#     the pattern's unchanged ``pixel_pitch_um``. Without the bump a warm plate slot
+#     keeps advertising the pre-carve measured minimums next to a re-baked SVG.
+PLATE_COMPOSE_VERSION = 6
 
 
 def frame_scene_for_plate(
@@ -1899,6 +1912,9 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             water_extent_um=_aperture_width_um(spec),
         )
         # FRONT: capybara body shimmer + slit-barrier bars over the water band.
+        # ``b["water_band"]`` is the CARVED band (``below & ~capy``, the same
+        # algebra `_centerpiece_masks` uses for the preview), so the bars stop at
+        # the animal's outline instead of striping across the submerged body.
         barrier_bars = (~b["barrier"]) & b["water_band"]
         front_side = b["capy_shimmer"] | barrier_bars
         # BACK: interleaved ripple frames (all N phases packed into 1/N slots).
@@ -1936,8 +1952,10 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         water_front_extra = _place_side(front_side)
         _mask_rim(water_front_extra, spec.weld_margin_um, pitch)
         water_back = _place_side(back_side)
-        # Full-width water BAND (below waterline, edge-to-edge) so the back
-        # carrier can be cleared across the whole band, not just the body square.
+        # Full-width water BAND (below waterline, edge-to-edge, submerged body
+        # carved out) so the back carrier can be cleared across the whole band, not
+        # just the body square — and, because of the carve, NOT under the animal:
+        # the submerged body keeps the plain carrier, exactly as the preview shows.
         water_band_placed = _place_side(b["water_band"])
 
     # --- FRONT: perimeter foliage frame (grating) + centerpiece -------------
@@ -2119,7 +2137,9 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         # Water scanimation: the back-art region is the WATER BAND, filled with
         # the N interleaved ripple frames (a genuine scanimation) rather than the
         # phase-π stripe globe. Clear the plain-carrier fill inside the water band
-        # and OR-in the real ripple geometry (clipped to the back window rim) —
+        # and OR-in the real ripple geometry (clipped to the back window rim). The
+        # band excludes the submerged body, so that clear-out does NOT strip the
+        # carrier from under the animal and the interleave cannot print on it —
         # unless the interleave came back empty at this raster pitch, in which case
         # the band keeps the carrier (clearing it would erase gold for nothing).
         if water_back is not None and not water_scan_empty:
@@ -2197,7 +2217,13 @@ _SVG_BAKE_KEYS = (
 #     (_water_waterline_y) instead of the module constant, so a face that sets
 #     the ``waterline`` param gets a band/wake matching its preview mask. Only
 #     such faces change; default-param geometry is byte-identical.
-PLATE_SVG_VERSION = "plate-svg-v7"
+# v8: the water band EXCLUDES the submerged capybara. The band the bake consumes
+#     (``_capybara_and_water``'s ``water_band``) is now ``below & ~capy`` — the
+#     composed preview's convention — so front.svg no longer lays slit-barrier
+#     bars across the animal, back.svg no longer interleaves ripple crests under
+#     it, and the plain back carrier is kept over the submerged body instead of
+#     being cleared for the band. Only the capybara face changes.
+PLATE_SVG_VERSION = "plate-svg-v8"
 
 
 def _svg_is_current(svg_path: Path) -> bool:

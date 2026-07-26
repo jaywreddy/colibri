@@ -2,9 +2,11 @@
 archive.
 
 Endpoints:
-  GET /export/plate/{plate_id}/fab.zip — single plate bundle
-  GET /export/box/{box_id}/fab.zip     — all 6 plate bundles + box manifest
-                                         + CUTLIST.csv + ASSEMBLY.md
+  GET  /export/plate/{plate_id}/fab.zip   — single plate bundle
+  POST /export/box/{box_id}/fab/start     — 202 {job_id}: build in a SUBPROCESS
+  GET  /export/jobs/{job_id}              — {status, progress, error}
+  GET  /export/jobs/{job_id}/fab.zip      — the finished archive
+  GET  /export/box/{box_id}/fab.zip       — legacy synchronous build (same body)
 
 The box archive is everything the builder needs at the bench: lithography
 masks per face, a glass cut list, and numbered stained-glass (copper foil +
@@ -12,9 +14,21 @@ solder) assembly steps with real dimensions. It does not need a warm cache:
 ``data/`` is disposable, so any face whose plate dir is gone is recomposed
 from the saved box spec (sequentially) before zipping.
 
-Exports are the heaviest thing this app does, so ONE runs at a time
-process-wide (``_export_slot``): a request that arrives while another export is
-building gets 429 instead of silently queueing behind minutes of compute.
+A cold box export is minutes of plate composition and klayout DRC, so the
+preferred path is the JOB path: ``fab/start`` spawns ``python -m
+app.export_job`` and returns immediately, the client polls
+``/export/jobs/{job_id}`` for a named phase + faces_done/faces_total, and
+downloads the archive when the status flips to ``done``. That keeps the heavy
+compute out of the request thread (it used to hold the GIL long enough to
+starve the live preview) and gives the UI something true to show instead of a
+spinner that looks hung. ``build_box_fab_zip`` is the ONE build body — the
+worker and the legacy synchronous endpoint both call it, so they cannot drift.
+
+Exports are the heaviest thing this app does, so exactly ONE runs at a time
+across the host: the in-process slot (``_export_slot``, backed by
+``export_job.claim_slot``) and job subprocess liveness are the same slot, and a
+request that arrives while either is busy gets 429 instead of silently queueing
+behind minutes of compute. Polling a job is not heavy work and takes no slot.
 
 Two geometries ship per face and they are NOT interchangeable: ``fine.gds`` is
 the fab-grade mask, written by ``export_fine`` as exact vector rectangles at the
@@ -32,7 +46,6 @@ import math
 import os
 import re
 import tempfile
-import threading
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -40,10 +53,12 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
+from .. import export_job
 from ..assembly import FoilSpec, HingeSpec, assembly_summary
 from ..boxes import BoxSpec, get_box
+from ..export_job import ExportBusy, Progress
 from ..plates import (
     PLATES_ROOT,
     PlateSpec,
@@ -81,40 +96,36 @@ def _json_finite(obj: Any) -> Any:
 # composition + a merged klayout DRC heal, one wafer-writer face each). FastAPI
 # runs these sync endpoints in a worker thread, so two concurrent fab.zip
 # downloads would put two heavy compute processes on a host that kernel-bugchecks
-# under exactly that (CLAUDE.md). One process-wide slot, taken for the WHOLE
+# under exactly that (CLAUDE.md). One HOST-wide slot, taken for the WHOLE
 # export body — plate rebuilds, the lazy SVG bakes inside _plate_files_to_zip,
 # and the per-face fine loop are all heavy compute, and gating only the fine
 # loop let box A's SVG bake run beside box B's fine build.
 #
-# RLock, not Lock: the inner acquisitions in _write_fine_masks /
-# _rebuild_face_plate now nest inside the endpoint's, and one request runs
-# entirely in one worker thread.
-_FINE_BUILD_LOCK = threading.RLock()
-
-# How long a second export waits for the first before giving up. Long enough to
-# ride out a request that is already finishing its zip, short enough that the
-# caller gets an answer instead of a socket held open for minutes.
-_EXPORT_LOCK_TIMEOUT_S = 2.0
+# The slot itself lives in ``export_job`` because it is no longer only about
+# threads: a live export SUBPROCESS holds it too, so an in-process export cannot
+# start beside a job (and vice versa). It stays reentrant per thread — the inner
+# claims in _FineMaskRun.write_face / _rebuild_face_plate nest inside the build
+# body's, and one export runs entirely in one worker thread.
+_EXPORT_LOCK_TIMEOUT_S = export_job.SLOT_WAIT_S
 
 
 @contextmanager
 def _export_slot() -> Iterator[None]:
-    """Hold the process-wide heavy-compute slot for one export, or 429.
+    """Hold the host-wide heavy-compute slot for one in-process export, or 429.
 
     Reentrant, so a nested claim by the same request is free. A blocked caller
     is told to retry rather than queued: exports run minutes, and a queued
-    HTTP download has no way to say "waiting".
+    HTTP download has no way to say "waiting" — which is what the job routes
+    exist to fix.
     """
-    if not _FINE_BUILD_LOCK.acquire(timeout=_EXPORT_LOCK_TIMEOUT_S):
-        raise HTTPException(
-            429,
-            "an export is already running — retry shortly",
-            headers={"Retry-After": "10"},
-        )
+    try:
+        export_job.claim_slot(_EXPORT_LOCK_TIMEOUT_S)
+    except ExportBusy as exc:
+        raise HTTPException(429, str(exc), headers={"Retry-After": "10"}) from exc
     try:
         yield
     finally:
-        _FINE_BUILD_LOCK.release()
+        export_job.release_slot()
 
 
 # Plate ids are content hashes (12 hex chars from ``plate_hash``), but they
@@ -237,7 +248,11 @@ def _fine_face_summary(fine: Any) -> dict[str, Any]:
 # contract as PLATE_SVG_VERSION / PLATE_COMPOSE_VERSION (see CLAUDE.md).
 #   v2: hierarchical emission (cell-per-unique-shape + SREFs, ≤1 nm placement
 #       rounding) replaced flat per-polygon writes.
-FINE_GDS_VERSION = 2
+#   v3: the capybara water band excludes the SUBMERGED BODY — the exact vector
+#       slit-barrier comb and ripple interleave are carved around the animal (and
+#       the back carrier is kept over it), matching the composed preview. Capybara
+#       faces only; every other face's geometry is byte-identical.
+FINE_GDS_VERSION = 3
 
 
 def _fine_cache_dir(spec: PlateSpec) -> Path:
@@ -278,70 +293,124 @@ def _fine_cache_write(spec: PlateSpec, data: bytes, block: dict[str, Any]) -> No
         _log.exception("fine mask cache write failed dir=%s", d)
 
 
-def _write_fine_masks(
-    zf: zipfile.ZipFile, faces: list[tuple[str, str, PlateSpec]]
-) -> None:
-    """Build every face's TRUE-pitch fab mask into ``zf`` — SEQUENTIALLY.
+@contextmanager
+def _drc_phase_probe(progress: Progress, face_id: str) -> Iterator[None]:
+    """Report the merged-region DRC heal as its own progress phase.
 
-    ``faces`` is ``[(face_id, zip_prefix, plate_spec)]``. A plain loop inside
-    the export slot (normally already held by the endpoint): never parallelize
-    plate composition (machine constraint). Writes ``<prefix>fine.gds`` per face
-    plus one root ``FINE_MASKS.json`` carrying each face's realized periods and
-    DRC report.
+    ``build_plate_fine`` composes vector geometry and then heals it in ONE call
+    and takes no progress hook, yet the heal is the slow half (klayout on the
+    merged region) — a UI that cannot name it shows a frozen "compose" for
+    minutes. The honest transition marker is the build's FIRST call to
+    ``drc_clean_region``, so we wrap that name in ``export_fine``'s namespace
+    for the duration of one face and restore it after. Exports are serialized
+    host-wide, so there is exactly one user of the patched name at a time, and
+    if the name ever moves the probe degrades to "no heal sub-phase" instead of
+    breaking the build.
+    """
+    from .. import export_fine
+
+    original = getattr(export_fine, "drc_clean_region", None)
+    if original is None or not callable(original):
+        yield
+        return
+    fired = False
+
+    def probed(*args: Any, **kwargs: Any) -> Any:
+        nonlocal fired
+        if not fired:
+            fired = True
+            progress.step("fine mask (DRC heal)", face=face_id, detail="merged-region heal")
+        return original(*args, **kwargs)
+
+    export_fine.drc_clean_region = probed
+    try:
+        yield
+    finally:
+        export_fine.drc_clean_region = original
+
+
+class _FineMaskRun:
+    """One export's fab-mask pass: per-face ``fine.gds`` + the root FINE_MASKS.json.
+
+    Faces go in ONE AT A TIME through ``write_face`` — interleaved with each
+    face's plate-file copy so progress is reported per face — and the root
+    summary is published once by ``finish``. Never parallelize: per-plate vector
+    composition plus a merged klayout DRC heal is the heaviest compute in the
+    app and two at once bugchecks this host (CLAUDE.md).
 
     A face whose build fails gets a loud ``FINE_BUILD_FAILED.txt`` marker and a
     ``failed`` status instead of silently shipping a bundle that looks fab-grade
-    with no mask in it — the SVGs alone are not releasable geometry.
+    with no mask in it — the SVGs alone are not releasable geometry. If the
+    klayout/DRC bridge is missing entirely, ``finish`` writes an ``unavailable``
+    summary and the archive carries no mask at all.
     """
-    summary: dict[str, Any] = {"faces": {}}
-    try:
-        from ..export_fine import (
-            LAYER_BACK,
-            LAYER_FRONT,
-            LAYER_OUTLINE,
-            LITHO_FLOOR_UM,
-            build_plate_fine,
-        )
-    except Exception as exc:  # noqa: BLE001 — klayout / DRC bridge unavailable
-        _log.exception("fine mask writer unavailable")
-        zf.writestr(
-            FINE_SUMMARY_NAME,
-            json.dumps(
-                {
-                    "status": "unavailable",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "note": (
-                        "No fab-grade mask in this archive. front.svg/back.svg are "
-                        "coarsened previews — do NOT write gold from them."
-                    ),
-                    "faces": {},
-                },
-                indent=2,
-            ),
-        )
-        return
 
-    summary["litho_floor_um"] = LITHO_FLOOR_UM
-    summary["layers"] = {
-        "front_gold": list(LAYER_FRONT),
-        "back_gold": list(LAYER_BACK),
-        "outline": list(LAYER_OUTLINE),
-    }
-    with _export_slot():
-        for face_id, prefix, spec in faces:
+    def __init__(self) -> None:
+        self.summary: dict[str, Any] = {}
+        self._build: Any = None
+        self._unavailable: str | None = None
+        try:
+            from ..export_fine import (
+                LAYER_BACK,
+                LAYER_FRONT,
+                LAYER_OUTLINE,
+                LITHO_FLOOR_UM,
+                build_plate_fine,
+            )
+        except Exception as exc:  # noqa: BLE001 — klayout / DRC bridge unavailable
+            _log.exception("fine mask writer unavailable")
+            self._unavailable = f"{type(exc).__name__}: {exc}"
+            return
+        self._build = build_plate_fine
+        self.summary["litho_floor_um"] = LITHO_FLOOR_UM
+        self.summary["layers"] = {
+            "front_gold": list(LAYER_FRONT),
+            "back_gold": list(LAYER_BACK),
+            "outline": list(LAYER_OUTLINE),
+        }
+        self.summary["faces"] = {}
+
+    @property
+    def available(self) -> bool:
+        return self._build is not None
+
+    def write_face(
+        self,
+        zf: zipfile.ZipFile,
+        face_id: str,
+        prefix: str,
+        spec: PlateSpec,
+        progress: Progress,
+    ) -> None:
+        """Build (or serve from cache) one face's TRUE-pitch mask into ``zf``.
+
+        Claims the export slot per face: normally reentrant free (the build body
+        already holds it), but it keeps the guarantee local to the one function
+        that starts a heavy compute.
+        """
+        if self._build is None:
+            return
+        with _export_slot():
             cached = _fine_cache_read(spec)
             if cached is not None:
                 data, block = cached
                 zf.writestr(f"{prefix}{FINE_GDS_NAME}", data)
-                summary["faces"][face_id] = block
-                continue
+                self.summary["faces"][face_id] = block
+                progress.step(
+                    "fine mask (cached)", face=face_id, detail=f"{len(data)} bytes"
+                )
+                return
+            progress.step("fine mask (compose)", face=face_id, detail=spec.pattern_slug)
             try:
-                fine = build_plate_fine(spec, face_id)
+                with _drc_phase_probe(progress, face_id):
+                    fine = self._build(spec, face_id)
                 data = _fine_gds_bytes(fine, spec, face_id)
             except Exception as exc:  # noqa: BLE001 — one bad face must not hide the rest
-                _log.exception("fine mask build failed face=%s slug=%s", face_id, spec.pattern_slug)
+                _log.exception(
+                    "fine mask build failed face=%s slug=%s", face_id, spec.pattern_slug
+                )
                 detail = f"{type(exc).__name__}: {exc}"
-                summary["faces"][face_id] = {
+                self.summary["faces"][face_id] = {
                     "status": "failed",
                     "slug": spec.pattern_slug,
                     "error": detail,
@@ -356,17 +425,40 @@ def _write_fine_masks(
                         "coarsened, so they cannot be used to write gold.\n"
                     ),
                 )
-                continue
+                return
             zf.writestr(f"{prefix}{FINE_GDS_NAME}", data)
             block = _fine_face_summary(fine)
-            summary["faces"][face_id] = block
+            self.summary["faces"][face_id] = block
             _fine_cache_write(spec, data, block)
             _log.info(
                 "fine mask face=%s slug=%s front=%d back=%d bytes=%d",
                 face_id, fine.slug, fine.stats.get("front_polys", 0),
                 fine.stats.get("back_polys", 0), len(data),
             )
-    zf.writestr(FINE_SUMMARY_NAME, json.dumps(_json_finite(summary), indent=2, default=float))
+
+    def finish(self, zf: zipfile.ZipFile) -> None:
+        """Publish the root ``FINE_MASKS.json`` for the faces written so far."""
+        if self._build is None:
+            zf.writestr(
+                FINE_SUMMARY_NAME,
+                json.dumps(
+                    {
+                        "status": "unavailable",
+                        "error": self._unavailable,
+                        "note": (
+                            "No fab-grade mask in this archive. front.svg/back.svg are "
+                            "coarsened previews — do NOT write gold from them."
+                        ),
+                        "faces": {},
+                    },
+                    indent=2,
+                ),
+            )
+            return
+        zf.writestr(
+            FINE_SUMMARY_NAME,
+            json.dumps(_json_finite(self.summary), indent=2, default=float),
+        )
 
 
 # Shared README paragraph: which files are masks and which are previews. The
@@ -399,7 +491,11 @@ def plate_fab_zip(plate_id: str) -> StreamingResponse:
     buf = io.BytesIO()
     with _export_slot(), zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         _plate_files_to_zip(zf, plate_id)
-        _write_fine_masks(zf, [("plate", "", PlateSpec.from_dict(manifest["spec"]))])
+        fine = _FineMaskRun()
+        fine.write_face(
+            zf, "plate", "", PlateSpec.from_dict(manifest["spec"]), Progress()
+        )
+        fine.finish(zf)
         # Plain-text README for the engraver
         zf.writestr(
             "README.txt",
@@ -656,7 +752,9 @@ def _face_plate_spec(
     return box_faces.get(face_id)
 
 
-def _rebuild_face_plate(box_id: str, face_id: str, spec: PlateSpec) -> dict[str, Any]:
+def _rebuild_face_plate(
+    box_id: str, face_id: str, spec: PlateSpec, progress: Progress
+) -> dict[str, Any]:
     """Recompose one wiped face plate into the cache, SEQUENTIALLY.
 
     Serialized on the export slot: plate composition is heavy compute and two at
@@ -667,6 +765,11 @@ def _rebuild_face_plate(box_id: str, face_id: str, spec: PlateSpec) -> dict[str,
     _log.info(
         "box %s face %s: plate cache miss — rebuilding slug=%s",
         box_id, face_id, spec.pattern_slug,
+    )
+    progress.step(
+        "rebuild plate",
+        face=face_id,
+        detail=f"plate cache miss — recomposing {spec.pattern_slug}",
     )
     with _export_slot():
         try:
@@ -681,7 +784,9 @@ def _rebuild_face_plate(box_id: str, face_id: str, spec: PlateSpec) -> dict[str,
             ) from exc
 
 
-def _resolve_box_faces(box_id: str, box_manifest: dict[str, Any]) -> list[_ExportFace]:
+def _resolve_box_faces(
+    box_id: str, box_manifest: dict[str, Any], progress: Progress | None = None
+) -> list[_ExportFace]:
     """Locate every face's plate dir, rebuilding any the cache no longer holds.
 
     ``backend/data/`` is a disposable cache and 'everything regenerates lazily'
@@ -694,6 +799,7 @@ def _resolve_box_faces(box_id: str, box_manifest: dict[str, Any]) -> list[_Expor
     Face entries too broken to act on raise 409 with the regenerate instruction
     rather than a bare ``KeyError`` 500.
     """
+    progress = progress if progress is not None else Progress()
     faces = box_manifest.get("faces")
     if not isinstance(faces, dict) or not faces:
         raise HTTPException(
@@ -738,7 +844,7 @@ def _resolve_box_faces(box_id: str, box_manifest: dict[str, Any]) -> list[_Expor
                     "manifest carries no spec to rebuild it. Regenerate the box "
                     "(POST /boxes/generate) and export again.",
                 )
-            rebuilt = _rebuild_face_plate(box_id, face_id, spec)
+            rebuilt = _rebuild_face_plate(box_id, face_id, spec, progress)
             new_id = str(rebuilt.get("id") or "")
             if not _PLATE_ID_RE.fullmatch(new_id):
                 raise HTTPException(
@@ -756,18 +862,24 @@ def _resolve_box_faces(box_id: str, box_manifest: dict[str, Any]) -> list[_Expor
     return resolved
 
 
-@router.get("/box/{box_id}/fab.zip")
-def box_fab_zip(box_id: str) -> StreamingResponse:
-    """The full box bundle: six plate folders + fab masks + cut list + steps.
+class PreparedBox(NamedTuple):
+    """A box that has passed every cheap check and is ready to build.
 
-    Rebuilds any face whose plate cache dir is gone before zipping (see
-    ``_resolve_box_faces``) — ``backend/data/`` is disposable, so ``just clean``
-    must not make a saved box un-exportable.
-
-    The manifest checks run first so a bad box id still answers 404/409 while
-    another export is in flight; everything that computes or bakes then runs
-    inside the export slot, and a second export gets 429 (see ``_export_slot``).
+    Split out of the endpoint so the manifest checks (404/409) happen BEFORE
+    anything heavy: a bad box id must answer 404 while another export is in
+    flight, and ``fab/start`` must not spawn a worker that is doomed to fail.
+    Reading a manifest and recomputing the assembly block is pure math — no
+    plate composition, no bake, no slot.
     """
+
+    box_id: str
+    manifest: dict[str, Any]
+    assembly: dict[str, Any]
+    faces_total: int
+
+
+def prepare_box_export(box_id: str) -> PreparedBox:
+    """Validate a box for export, or raise the HTTP error explaining why not."""
     box_manifest = get_box(box_id)
     if box_manifest is None:
         raise HTTPException(404, f"Unknown box: {box_id}")
@@ -786,18 +898,58 @@ def box_fab_zip(box_id: str) -> StreamingResponse:
             f"Box {box_id} carries assembly geometry the cut list cannot be derived "
             f"from ({type(exc).__name__}: {exc}) — regenerate the box and export again.",
         ) from exc
-    buf = io.BytesIO()
-    with _export_slot(), zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        faces = _resolve_box_faces(box_id, box_manifest)
+    faces = box_manifest.get("faces")
+    faces_total = len(faces) if isinstance(faces, dict) else 0
+    return PreparedBox(box_id, box_manifest, assembly, faces_total)
+
+
+def build_box_fab_zip(
+    prepared: PreparedBox,
+    zf: zipfile.ZipFile,
+    *,
+    progress: Progress | None = None,
+) -> None:
+    """Compose the full box bundle into ``zf``: six plate folders + fab masks +
+    cut list + assembly steps.
+
+    THE build body — the subprocess worker (``app.export_job``) and the legacy
+    synchronous endpoint both call this, so the two paths cannot drift and the
+    archive is byte-identical whichever produced it.
+
+    Rebuilds any face whose plate cache dir is gone before zipping (see
+    ``_resolve_box_faces``) — ``backend/data/`` is disposable, so ``just clean``
+    must not make a saved box un-exportable.
+
+    Everything here is heavy (plate rebuilds, the lazy SVG bakes inside
+    ``_plate_files_to_zip``, the per-face fine masks), so the whole body runs
+    inside the host-wide export slot; a second in-process export gets 429 and a
+    job start gets 429 while this runs. Faces are walked ONE AT A TIME, plate
+    files then fab mask, so ``progress`` reports a real per-face position
+    instead of a spinner.
+    """
+    progress = progress if progress is not None else Progress()
+    box_id = prepared.box_id
+    box_manifest = prepared.manifest
+    assembly = prepared.assembly
+    dims = box_manifest["dimensions_um"]
+    progress.faces_total = prepared.faces_total
+
+    with _export_slot():
+        progress.step("resolve faces", detail=f"{prepared.faces_total} face(s)")
+        faces = _resolve_box_faces(box_id, box_manifest, progress)
+        progress.faces_total = len(faces)
         # Per-face folder per plate so the engraver can register and cut each
         # independently. Box manifest lives at the root.
-        fine_faces: list[tuple[str, str, PlateSpec]] = []
+        fine = _FineMaskRun()
         for f in faces:
+            progress.step("svg bake", face=f.face_id, detail="preview SVG pair")
             _plate_files_to_zip(zf, f.plate_id, prefix=f"{f.face_id}/")
+            # TRUE-pitch fab mask for this face (see _FineMaskRun).
             if f.spec is not None:
-                fine_faces.append((f.face_id, f"{f.face_id}/", f.spec))
-        # TRUE-pitch fab masks, one face at a time (see _write_fine_masks).
-        _write_fine_masks(zf, fine_faces)
+                fine.write_face(zf, f.face_id, f"{f.face_id}/", f.spec, progress)
+            progress.face_finished(f.face_id)
+        fine.finish(zf)
+        progress.step("zip", detail="box.json + cut list + assembly steps")
         # Strip frame_scene from each face manifest in the box snapshot too
         # (v2 manifests are already lean; this also covers older saves).
         bm_lean = json.loads(json.dumps(box_manifest))  # cheap deep copy
@@ -841,9 +993,128 @@ def box_fab_zip(box_id: str) -> StreamingResponse:
                 "  at a 1 nm database unit, same origin.\n"
             ),
         )
+
+
+def build_box_fab_archive(
+    box_id: str, out_path: Path, *, progress: Progress | None = None
+) -> Path:
+    """Build one box's fab archive to a FILE. The subprocess worker's entry.
+
+    Published by rename like every other cache artifact (CLAUDE.md): a poller
+    that sees ``fab.zip`` sees a complete zip, never the tail of one still being
+    deflated.
+    """
+    out_path = Path(out_path)
+    prepared = prepare_box_export(box_id)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+        build_box_fab_zip(prepared, zf, progress=progress)
+    os.replace(tmp, out_path)
+    return out_path
+
+
+@router.get("/box/{box_id}/fab.zip")
+def box_fab_zip(box_id: str) -> StreamingResponse:
+    """The full box bundle, built synchronously in the request thread (LEGACY).
+
+    Kept for existing tools and tests. It is the same ``build_box_fab_zip``
+    body the subprocess worker runs, and it still holds the host-wide export
+    slot for the whole build — which is exactly why it is legacy: a cold
+    six-face export takes minutes, during which this connection is silent and
+    the GIL-heavy stretches (klayout DRC) starve the rest of the app. New
+    clients should POST ``/export/box/{box_id}/fab/start`` and poll.
+    """
+    prepared = prepare_box_export(box_id)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        build_box_fab_zip(prepared, zf)
     buf.seek(0)
     return StreamingResponse(
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="box-{box_id}.zip"'},
+    )
+
+
+# --- the subprocess job path --------------------------------------------------
+
+
+@router.post("/box/{box_id}/fab/start", status_code=202)
+def box_fab_start(box_id: str) -> dict[str, Any]:
+    """Start the box export in a SUBPROCESS; answer 202 with a job id.
+
+    Validates the box first, so an unknown or unexportable box still answers
+    404/409 instead of spawning a worker that would only fail. Refuses with 429
+    while any other export is building — one export at a time across the host
+    (CLAUDE.md), whether the other one is a job or the legacy synchronous route.
+
+    The parent does NOT hold the heavy slot for the job's lifetime: the live
+    subprocess IS the claim, so this process stays free to serve previews and
+    the poll route while minutes of DRC run next door.
+    """
+    prepared = prepare_box_export(box_id)
+    try:
+        job = export_job.start_job(box_id, faces_total=prepared.faces_total)
+    except ExportBusy as exc:
+        raise HTTPException(429, str(exc), headers={"Retry-After": "10"}) from exc
+    except RuntimeError as exc:  # worker could not be spawned at all
+        _log.exception("export job spawn failed box=%s", box_id)
+        raise HTTPException(500, str(exc)) from exc
+    status = export_job.get_status(job.job_id) or {}
+    return {
+        "job_id": job.job_id,
+        "box_id": box_id,
+        "status": status.get("status", "running"),
+        "progress": status.get("progress"),
+        "poll_url": f"/export/jobs/{job.job_id}",
+        "download_url": f"/export/jobs/{job.job_id}/fab.zip",
+    }
+
+
+@router.get("/jobs/{job_id}")
+def export_job_status(job_id: str) -> dict[str, Any]:
+    """Poll one export job: ``{status: running|done|failed, progress, error}``.
+
+    Cheap and side-effect free — poll it once a second while the UI shows the
+    phase. ``status`` merges the worker's progress file with the subprocess exit
+    code, so a worker that died reports ``failed`` here, never ``running``
+    forever (see ``export_job.get_status``).
+    """
+    status = export_job.get_status(job_id)
+    if status is None:
+        raise HTTPException(
+            404,
+            f"Unknown export job: {job_id}. Job ids live in this server process "
+            "only — start a new export (POST /export/box/{box_id}/fab/start).",
+        )
+    return status
+
+
+@router.get("/jobs/{job_id}/fab.zip")
+def export_job_zip(job_id: str) -> FileResponse:
+    """The finished archive for a job. 409 while it is still building."""
+    status = export_job.get_status(job_id)
+    if status is None:
+        raise HTTPException(404, f"Unknown export job: {job_id}")
+    if status["status"] != "done":
+        if status.get("error"):
+            detail = f"Export job {job_id} failed: {status['error']}"
+        else:
+            detail = (
+                f"Export job {job_id} is still {status['status']} — poll "
+                f"GET /export/jobs/{job_id} until its status is 'done'."
+            )
+        raise HTTPException(409, detail)
+    path = export_job.result_path(job_id)
+    if path is None:
+        raise HTTPException(
+            404,
+            f"Export job {job_id} reported done but its archive is gone — "
+            "data/export_jobs is a disposable cache; start the export again.",
+        )
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"box-{status['box_id']}.zip",
     )

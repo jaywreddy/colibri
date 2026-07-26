@@ -260,8 +260,29 @@ class ZoneMasks:
     # only ``capy_body`` (the dry silhouette that carries the shimmer grating) and
     # ``water_band`` (used to exclude the carrier from the animated region) are
     # rastered here, and both are boundary-only zones like the other masks.
+    # ``water_band`` is the CARVED band — below the waterline MINUS the submerged
+    # body (``capybara_scanimation._capybara_and_water``, the same algebra the
+    # composed preview uses) — so the plain back carrier is KEPT over the animal
+    # rather than cleared for a ripple field that must not print there.
     water_band: np.ndarray | None = None
     capy_body: np.ndarray | None = None      # dry capybara silhouette (above water)
+    # FULL capybara silhouette in the SQUARE art-box grid (``side_px``², y-DOWN,
+    # normalized 0..1 coords) — NOT placed on the plate grid like the fields above.
+    # The exact vector builders work in art-box normalized coords, so they carve the
+    # animal out of the barrier comb / ripple slots by sampling THIS mask (see
+    # ``_sample_art_mask``); handing them the plate-grid placement would mean
+    # re-deriving the normalization they already have. Same silhouette raster the
+    # ``water_band`` / ``capy_body`` zones above were cut from, so the rastered
+    # zones and the vector geometry cannot disagree about where the animal is.
+    #
+    # The FULL silhouette, not the submerged part, for the same reason
+    # ``_capybara_and_water`` carves the band with ``~capy``: the builders only ever
+    # emit INSIDE the water band, so above the waterline the mask is never consulted
+    # — while a submerged-only mask would lose the body in the one raster row that
+    # STRADDLES the waterline (the band's analytic edge sits partway into that row,
+    # so ``capy & below`` calls it dry and a bar/crest would print on the animal's
+    # back there).
+    capy_art: np.ndarray | None = None
     # EFFECTIVE waterline (art-box normalized y, 0 = top) this plate's zones were
     # built at — resolved ONCE from the face's ``waterline`` pattern param by
     # ``plates._water_waterline_y``, the same resolver the composed preview mask,
@@ -421,7 +442,10 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         # (`_aperture_width_um`, edge-to-edge of the window — NOT the square
         # `_aperture` that sizes the body); its VERTICAL extent stays the body
         # square's so the waterline lines up with the half-submerged capybara.
-        # The submerged body is carved only from the central square columns.
+        # The submerged body is carved only from the central square columns — the
+        # wings are open water, and ``scene["water_band"]`` is already
+        # ``below & ~capy``, the same carve `plates._paste_centerpiece` pastes into
+        # the preview's full-width band.
         ap_w = max(side_px, int(round(P._aperture_width_um(spec) / pitch_um)))
         rows = np.arange(side_px)[:, None] / side_px  # 0..1 y-down over the square
         below = np.broadcast_to(rows >= waterline_y, (side_px, ap_w))
@@ -431,6 +455,12 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
 
         zm.water_band = _place_side(water_full, w_px=ap_w)
         zm.capy_body = _place_side(scene["capy_above"])
+        # Art-box-grid silhouette for the EXACT vector builders (they carve the
+        # barrier comb + ripple slots against it — see `_sample_art_mask`). Kept in
+        # the square grid, unplaced, because those builders address the art box in
+        # normalized coords; the FULL silhouette rather than ``capy_below`` for the
+        # waterline-row reason in the field's docstring.
+        zm.capy_art = scene["capy"]
         # Publish the resolved value so build_plate_fine's EXACT vector builders
         # bake at the SAME waterline these raster zones were carved at.
         zm.waterline_y = waterline_y
@@ -462,7 +492,8 @@ def _mask_rim(mask: np.ndarray, margin_um: float, pitch_um: float) -> None:
 # emit the scanimation as EXACT vector rectangles in plate coords:
 #
 #   * the slit-barrier BARS are a 60 µm-pitch comb of 45 µm-wide vertical bars,
-#     clipped to the water-band rectangle — pure geometry, no raster;
+#     clipped to the water-band rectangle and CARVED around the submerged animal
+#     — pure geometry, no raster;
 #   * the N interleaved back frames put ripple phase k into slot k (a 15 µm-wide
 #     vertical column) of every 60 µm period; each slot's crest y-runs come from
 #     the SAME analytic flow field the shader/pattern use (``capyscan._flow_*``),
@@ -470,11 +501,21 @@ def _mask_rim(mask: np.ndarray, margin_um: float, pitch_um: float) -> None:
 #     litho minimum — so the slot WIDTH is exactly 15 µm and the crest THICKNESS
 #     is ≥ 2 µm, nothing between.
 #
-# The water band is the lower ``(1 - waterline_y)`` of the art-box square (the
-# pattern's ``water_band`` is exactly ``row/n >= waterline_y``, full width), so
-# its plate-coord rectangle is analytic — the capybara body only affects crest
-# AMPLITUDE (calm patch), never the band outline, so no silhouette raster is
-# needed here.
+# The water band's OUTLINE is analytic in plate coords — the lower
+# ``(1 - waterline_y)`` of the art-box square, full width — but it is NOT a plain
+# half-plane: the SUBMERGED CAPYBARA IS CARVED OUT of it (the pattern's
+# ``water_band`` is ``below & ~capy``, matching the composed preview). The ripple
+# band covers the water AROUND the animal, so both builders take the capybara
+# silhouette (``ZoneMasks.capy_art``, the same raster the zone masks were cut
+# from) and drop every bar segment / crest run that lands on it. Two consequences
+# worth keeping in mind:
+#   * the body affects crest AMPLITUDE (the calm patch, analytic) AND the emitted
+#     extent (the carve, silhouette-driven) — the old "no silhouette raster is
+#     needed here" note was what let the fine GDS print ripples over the animal
+#     while the preview showed clean carrier there;
+#   * the carve is applied to the y-SAMPLE, before the run close/open, so every
+#     surviving segment and every carved gap is still a whole number of ≥2 µm
+#     samples — the carve cannot mint a sub-floor sliver.
 
 
 def _art_box_um(spec: Any) -> tuple[float, float, float, float]:
@@ -526,8 +567,104 @@ def _artbox_norm_to_plate(
     return px, py
 
 
+def _sample_art_mask(
+    mask: np.ndarray, xn: np.ndarray, yn: np.ndarray
+) -> np.ndarray:
+    """Nearest-neighbour sample of a SQUARE art-box mask at normalized coords.
+
+    ``mask`` is the ``(n, n)`` art-box raster (y DOWN, the Pillow order every motif
+    silhouette uses); ``xn`` / ``yn`` are normalized art-box coordinates that
+    BROADCAST against each other (the builders pass an ``(S,1)`` column of x's and
+    a ``(1,n_y)`` row of y's). Samples outside the unit box read False — the
+    full-width water band's wings lie outside the body square, so "off the box" and
+    "not the animal" are the same answer there.
+
+    Nearest sampling (not interpolation) is deliberate: the mask IS the silhouette
+    the rastered zones and the composed preview were cut from, so sampling it this
+    way keeps the vector geometry and the zone masks agreeing cell-for-cell about
+    where the animal is.
+    """
+    n_r, n_c = mask.shape
+    ci = np.floor(np.asarray(xn, dtype=np.float64) * n_c).astype(np.int64)
+    ri = np.floor(np.asarray(yn, dtype=np.float64) * n_r).astype(np.int64)
+    inside = (ci >= 0) & (ci < n_c) & (ri >= 0) & (ri < n_r)
+    vals = mask[np.clip(ri, 0, n_r - 1), np.clip(ci, 0, n_c - 1)]
+    return vals & inside
+
+
+def _carve_submerged_from_bars(
+    bars: np.ndarray,
+    art_bbox: tuple[float, float, float, float],
+    body_art: np.ndarray,
+    y_samp_um: float,
+) -> np.ndarray:
+    """Split full-band vertical rects around the SUBMERGED capybara silhouette.
+
+    The ripple band covers the water AROUND the animal, so the slit-barrier comb
+    must stop at the body: a bar striping across the submerged capybara is gold
+    printed ON the animal (and it is not even a barrier there — there is no back
+    ripple lane left to gate). Each bar is sampled down its span on a ``y_samp_um``
+    grid, samples that land on the silhouette are dropped, and every surviving
+    contiguous run becomes one rect. Sampling at the 2 µm litho floor makes each
+    emitted segment and each carved gap a whole number of ≥2 µm samples, so the
+    carve cannot mint a sub-floor sliver.
+
+    The probe is CONSERVATIVE: the body is sampled at the bar's left edge, center
+    and right edge, and any hit clears the sample. A bar that straddles the
+    silhouette outline is therefore cut back by up to its own 45 µm width rather
+    than left half-printed over the animal — a hair more open water at the outline,
+    never gold on the capybara.
+
+    Bars outside the body square in x are returned untouched (they cannot overlap
+    it), which is most of a full-width band.
+
+    ``body_art`` is the FULL silhouette (see ``ZoneMasks.capy_art``); the bars only
+    exist inside the water band, so everything it flags here is submerged.
+    """
+    x0b, _y0b, x1b, y1b = art_bbox
+    side = x1b - x0b
+    touch = (bars[:, 1] > x0b) & (bars[:, 0] < x1b)
+    if not touch.any():
+        return bars
+    hit = bars[touch]
+    # Every bar spans the same water band in y (see the builder), so one sample
+    # ladder serves them all.
+    band_y1 = float(hit[0, 3])
+    band_y0 = float(hit[0, 2])
+    band_h = band_y1 - band_y0
+    if band_h <= 0.0:
+        return bars
+    n_y = max(2, int(round(band_h / y_samp_um)))
+    dy = band_h / n_y
+    ys = band_y1 - (np.arange(n_y) + 0.5) * dy      # plate y, top→bottom
+    yn = ((y1b - ys) / side)[None, :]               # art-box normalized, y-down
+    eps = 1e-6
+    on_body = np.zeros((hit.shape[0], n_y), dtype=bool)
+    for xs in (hit[:, 0] + eps, 0.5 * (hit[:, 0] + hit[:, 1]), hit[:, 1] - eps):
+        on_body |= _sample_art_mask(body_art, ((xs - x0b) / side)[:, None], yn)
+    keep = ~on_body
+    # Same floor discipline as the back-frame builder: CLOSE bridges a carved gap
+    # thinner than the floor (a printer would bridge it anyway), OPEN drops a
+    # surviving segment thinner than the floor. A no-op at the 2 µm default sample,
+    # and the guarantee if a caller samples finer.
+    keep = _close_and_open_rows(keep, max(1, int(round(LITHO_FLOOR_UM / dy))))
+    rows, r_start, r_end = _row_runs(keep)
+    parts = [bars[~touch]]
+    if rows.size:
+        ry1 = ys[r_start] + dy / 2.0
+        ry0 = ys[r_end - 1] - dy / 2.0
+        parts.append(np.stack([hit[rows, 0], hit[rows, 1], ry0, ry1], axis=1))
+    return _concat_rects(parts)
+
+
 def _scanimation_barrier_bar_rects(
-    spec: Any, waterline_y: float, frame_pitch_um: float, n_phases: int
+    spec: Any,
+    waterline_y: float,
+    frame_pitch_um: float,
+    n_phases: int,
+    body_art: np.ndarray | None = None,
+    *,
+    y_samp_um: float = 2.0,
 ) -> np.ndarray:
     """FRONT slit-barrier BARS as exact vector rects (60 µm pitch, 45 µm bar).
 
@@ -537,6 +674,11 @@ def _scanimation_barrier_bar_rects(
     — one rect per period. Slot boundaries snap to the SAME period lattice the
     back interleave uses (both anchored at art-box x0), so a slot's open column
     lines up over its back ripple lane.
+
+    ``body_art`` (``ZoneMasks.capy_art``) is the capybara silhouette in art-box
+    coords; when given, the comb is CARVED around the animal so no bar prints over
+    it (see :func:`_carve_submerged_from_bars`). A carved bar becomes several
+    shorter rects; the period lattice is untouched.
     """
     # WATER FULL WIDTH: bars span the full aperture-width water box; the band's
     # vertical extent + waterline come from the body square (y matches the animal).
@@ -560,7 +702,10 @@ def _scanimation_barrier_bar_rects(
         rects.append((cx0, cx1, band_y0, band_y1))
     if not rects:
         return np.empty((0, 4), dtype=float)
-    return np.asarray(rects, dtype=float)
+    bars = np.asarray(rects, dtype=float)
+    if body_art is None or not body_art.any():
+        return bars
+    return _carve_submerged_from_bars(bars, art_bbox, body_art, y_samp_um)
 
 
 # Slots evaluated per vectorised chunk in _scanimation_back_frame_rects. The flow
@@ -577,6 +722,7 @@ def _scanimation_back_frame_rects(
     waterline_y: float,
     frame_pitch_um: float,
     n_phases: int,
+    body_art: np.ndarray | None = None,
     *,
     y_samp_um: float = 2.0,
 ) -> np.ndarray:
@@ -593,6 +739,17 @@ def _scanimation_back_frame_rects(
     column is then run-closed/opened so each crest and each gap within a slot is
     also ≥ 2 µm. Each surviving y-run becomes ONE rect spanning the slot's exact
     15 µm width; nothing sub-floor survives (F3).
+
+    ``body_art`` (``ZoneMasks.capy_art``) is the capybara silhouette in art-box
+    coords. When given, the crest samples that land on the
+    animal are CARVED before the run close/open, so the interleave stops at the
+    body outline — the ripple band is the water AROUND the capybara, and the
+    submerged body keeps the plain back carrier (which `_build_zone_masks`' carved
+    ``water_band`` leaves in place there). Carving on the sample ladder, ahead of
+    the floor pass, is what keeps a carved crest tip from becoming a sub-floor
+    sliver. The probe is conservative in x (slot edges AND center, any hit clears),
+    so a slot straddling the outline loses that sample rather than half-printing
+    over the animal.
 
     Memory: one CHUNK of ``_SCAN_SLOT_CHUNK`` slot-columns of ``band_h/y_samp``
     samples at a time, streamed chunk-by-chunk — never the whole band raster (the
@@ -656,6 +813,18 @@ def _scanimation_back_frame_rects(
         amp = capyscan._flow_amplitude(xn, yn_row, waterline_y)
         half = 0.16 * amp
         gold = (np.abs(f) < half) & (amp > 0.05)
+        if body_art is not None:
+            # Carve the animal out of the band (the pattern does the same with
+            # ``crest & water_band``; these samples are all inside the band, so a
+            # silhouette hit here IS the submerged body). Probe both slot edges and
+            # the center so a slot straddling the outline is cleared, not
+            # half-printed.
+            on_body = np.zeros_like(gold)
+            for xs in (sx0[sel], xc, sx1[sel]):
+                on_body |= _sample_art_mask(
+                    body_art, ((xs - body_x0) / body_side)[:, None], yn_row
+                )
+            gold &= ~on_body
         if not gold.any():
             continue
         # Floor BOTH the crest thickness and the gap between crests in each slot
@@ -1081,19 +1250,29 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
                     body_zone, pitch, extent, carrier_um, duty, 0.0,
                     0.0, front_rects_parts, front_angled,
                 )
+        # SUBMERGED-BODY CARVE. Both vector builders take the capybara silhouette so
+        # the comb and the interleave stop at the animal: the ripple band is the
+        # water AROUND the capybara and the submerged body keeps the plain carrier
+        # (which the carved ``zm.water_band`` above already leaves in place). Same
+        # silhouette raster + same effective waterline as the zone masks, which is
+        # the same algebra the composed preview carves its band with.
+        body_art = zm.capy_art
         # Front slit-barrier bars (exact 60/45 vector comb over the water band).
         front_rects_parts.append(
-            _scanimation_barrier_bar_rects(spec, wl, fp, nph)
+            _scanimation_barrier_bar_rects(spec, wl, fp, nph, body_art)
         )
         # Back interleaved ripple frames (exact 15 µm slots, analytic crests).
         back_rects_parts.append(
-            _scanimation_back_frame_rects(spec, wl, fp, nph)
+            _scanimation_back_frame_rects(spec, wl, fp, nph, body_art)
         )
         stats["scanimation"] = {
             "frame_pitch_um": fp,
             "slot_um": fp / nph,
             "barrier_bar_um": fp * (1.0 - 1.0 / nph),
             "n_phases": nph,
+            # Was the animal carved out of the band? False would mean the comb and
+            # the ripple slots printed over the submerged body (the pre-carve bug).
+            "submerged_body_carved": bool(body_art is not None and body_art.any()),
             # Recorded so a wafer run's stats show WHICH waterline was baked (it
             # is now a per-face param, not a module constant).
             "waterline_y": float(wl),

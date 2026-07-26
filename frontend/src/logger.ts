@@ -66,6 +66,12 @@ export const EVENT_TYPES = [
 
   // --- fab bundle export (the deliverable; staleness-gated in App.tsx) -----
   'export_started',
+  /**
+   * One PHASE CHANGE of the export job (phase/face/faces_done), never one per
+   * poll — a cold export is minutes of 1 Hz polling and this buffer holds 500
+   * events. Payload mirrors the worker's progress snapshot.
+   */
+  'export_progress',
   /** Carries the manifest `content_hash` the bytes were built from. */
   'export_done',
   'export_failed',

@@ -3,7 +3,10 @@
  *
  * This is the app's actual deliverable (six plate folders with fine.gds +
  * previews, CUTLIST.csv, ASSEMBLY.md), and until this spec existed nothing
- * clicked the button. Two contracts are pinned here, in one flow:
+ * clicked the button. Three contracts are pinned here — staleness, progress and
+ * content in one real flow, plus a fully mocked spec for the two job-path
+ * failures (busy slot, dead worker) that must never run a second real export on
+ * this host:
  *
  *  1. STALENESS. Export is a fetch-driven button that refuses while the held
  *     manifest could disagree with the screen (App.tsx::exportBlockedReason).
@@ -15,6 +18,17 @@
  *     list. With hinge out of the key no POST fires and the button never goes
  *     disabled, so both assertions below fail.
  *
+ *  1b. PROGRESS. Export is a polled JOB now (POST /export/box/{id}/fab/start,
+ *     GET /export/jobs/{id}, GET /export/jobs/{id}/fab.zip), and the user's
+ *     "not hung" contract is that the progress strip's TEXT MOVES while a real
+ *     build runs — a static "the first export is slow" is exactly what this
+ *     replaces. The spec samples `export-progress` throughout the export and
+ *     requires at least two distinct readings whenever the export took long
+ *     enough to have had a second poll (PROGRESS_CHANGE_FLOOR_MS); on a warm
+ *     cache a job can legitimately finish inside one poll, and demanding a
+ *     change there would be a flake, not a pass. The `export_progress` events
+ *     are checked to be one-per-phase-change, never one-per-poll.
+ *
  *  2. CONTENT. The zip we actually receive is unpacked in-process and its
  *     CUTLIST.csv rows are compared cell-for-cell against the on-screen
  *     cut-list testids, its ASSEMBLY.md against the edited rod OD, and its
@@ -25,9 +39,9 @@
  * No zip library is in devDependencies (and adding one for a test isn't worth
  * a supply-chain entry), so `readZipDirectory`/`readZipEntry` below are a ~40
  * line central-directory reader over node:zlib's raw inflate. The backend
- * writes the archive with python zipfile ZIP_DEFLATED into a seekable BytesIO
- * (api/export.py::box_fab_zip), i.e. stored/deflated entries with real sizes
- * in the headers and no zip64 — exactly the subset handled here.
+ * writes the archive with python zipfile ZIP_DEFLATED (api/export.py::
+ * build_box_fab_zip, via the job worker), i.e. stored/deflated entries with
+ * real sizes in the headers and no zip64 — exactly the subset handled here.
  *
  * Budget: a cold export composes any missing plate and then builds six
  * DRC-healed fine.gds masks SEQUENTIALLY server-side (machine constraint), so
@@ -38,8 +52,9 @@
  */
 import { readFile } from 'node:fs/promises';
 import { inflateRawSync } from 'node:zlib';
+import type { APIRequestContext, Page } from '@playwright/test';
 import { test, expect } from './fixtures';
-import { clearLog, expectLogEvent, waitForStudio } from './helpers';
+import { clearLog, expectLogEvent, readLog, waitForStudio } from './helpers';
 
 /** Faces in the order BuildPanel renders the cut-list rows. */
 const FACES = ['bottom', 'top', 'front', 'back', 'left', 'right'] as const;
@@ -52,6 +67,16 @@ const REGEN_WAIT_MS = 120_000;
 const DOWNLOAD_WAIT_MS = 300_000;
 /** One-time cold fine-mask build (six faces through klayout DRC). */
 const FINE_WARM_MS = 600_000;
+/**
+ * Above this, the export ran long enough that the 1 Hz poll MUST have produced
+ * a second, different phase — so a frozen strip is a real bug. Below it (warm
+ * caches: every plate hits, every fine.gds slot hits, the worker can finish
+ * inside one poll interval) a single reading is legitimate and asserting on a
+ * change would only buy flakes. 2.5 s = two poll intervals plus slack.
+ */
+const PROGRESS_CHANGE_FLOOR_MS = 2_500;
+/** How often the spec samples the progress strip while an export runs. */
+const PROGRESS_SAMPLE_MS = 200;
 /**
  * Test budget = the sum of the inner waits plus slack, so a slow step always
  * fails with its own diagnostic (expectLogEvent dumps the log buffer) instead
@@ -169,6 +194,67 @@ function parseCutlist(csv: string): Map<string, CutRow> {
   return rows;
 }
 
+/**
+ * Pre-warm the per-plate fine.gds cache (api/export.py FINE_GDS_VERSION slots)
+ * through the JOB api, best-effort.
+ *
+ * The FIRST export after a `just clean` builds six true-pitch masks through
+ * klayout DRC — minutes on this host — and that one-time cold build is not the
+ * UX contract these specs pin. Driving it here (and polling the job to
+ * completion, so no worker is still holding the host-wide export slot when the
+ * UI export starts) leaves the warmed slots valid for the assertions below: the
+ * hinge edit does not change any plate hash.
+ *
+ * Every failure is swallowed: a warm run may answer 429/404 and the specs must
+ * still be meaningful without the warm-up (just slower).
+ */
+async function prewarmFabMasks(request: APIRequestContext, boxId: string): Promise<void> {
+  try {
+    const start = await request.post(`/export/box/${boxId}/fab/start`, { timeout: 30_000 });
+    if (!start.ok()) return;
+    const { job_id: jobId } = (await start.json()) as { job_id: string };
+    const deadline = Date.now() + FINE_WARM_MS;
+    while (Date.now() < deadline) {
+      const r = await request.get(`/export/jobs/${jobId}`, { timeout: 30_000 });
+      if (!r.ok()) return;
+      const s = (await r.json()) as { status: string };
+      if (s.status !== 'running') return;
+      await new Promise<void>((resolve) => {
+        setTimeout(() => resolve(), 2000);
+      });
+    }
+  } catch {
+    /* best-effort warm-up — the specs below do not depend on it */
+  }
+}
+
+/**
+ * Sample the `export-progress` strip until `stop()` is called, collecting every
+ * DISTINCT reading. This is the "not hung" measurement: what the user sees
+ * change, read the way they read it (rendered text), not from the log buffer.
+ */
+function watchProgressText(page: Page): { readings: Set<string>; stop: () => Promise<void> } {
+  const readings = new Set<string>();
+  let running = true;
+  const loop = (async () => {
+    while (running) {
+      const txt = await page
+        .getByTestId('export-progress')
+        .textContent({ timeout: 5_000 })
+        .catch(() => null);
+      if (txt && txt.trim()) readings.add(txt.trim());
+      await page.waitForTimeout(PROGRESS_SAMPLE_MS).catch(() => undefined);
+    }
+  })();
+  return {
+    readings,
+    stop: async () => {
+      running = false;
+      await loop.catch(() => undefined);
+    },
+  };
+}
+
 test.describe('@export fab bundle', () => {
   test('@export hinge edit blocks export until regen, then the zip matches the screen', async ({
     page,
@@ -182,15 +268,9 @@ test.describe('@export fab bundle', () => {
       timeout: BOOT_REGEN_WAIT_MS,
     });
 
-    // Pre-warm the per-plate fine.gds cache (api/export.py FINE_GDS_VERSION
-    // slots). The FIRST fab.zip after a `just clean` builds six true-pitch
-    // masks through klayout DRC — minutes on this host — and that one-time
-    // cold build is not the UX contract this spec pins. The hinge edit below
-    // does not change plate hashes, so the warmed slots stay valid for the
-    // UI-driven export we actually assert.
-    await request
-      .get('/export/box/__scratch/fab.zip', { timeout: FINE_WARM_MS })
-      .catch(() => undefined);
+    // Warm the fine-mask cache out of band (see prewarmFabMasks). '__scratch'
+    // is the id the live app's own generate lands on (boxes.py::SCRATCH_BOX_ID).
+    await prewarmFabMasks(request, '__scratch');
     await expect(page.getByTestId('export-fab')).toBeEnabled();
     await expect(page.getByTestId('export-blocked-reason')).toHaveCount(0);
 
@@ -268,13 +348,59 @@ test.describe('@export fab bundle', () => {
 
     // Blob-anchor downloads raise the same 'download' event as a server one.
     const downloadPromise = page.waitForEvent('download', { timeout: DOWNLOAD_WAIT_MS });
+    const watcher = watchProgressText(page);
+    const clickedAt = Date.now();
     await page.getByTestId('export-fab').click();
     // Race-free busy proof: the log entry persists, the spinner text does not.
     await expectLogEvent(page, 'export_started', (e) => e.id === live.id);
     const download = await downloadPromise;
+    const exportMs = Date.now() - clickedAt;
+    await watcher.stop();
     // Asserted first: the confirmation chip self-clears 6 s after the blob is
     // handed to the shelf (App.tsx), so it is the one perishable signal here.
     await expect(page.getByTestId('export-done')).toBeVisible();
+
+    // ---- the "not hung" contract ------------------------------------------
+    // What the strip actually SAID, sampled at 200 ms. Whatever it said had to
+    // come from the job payload — a concrete position, never a please-wait.
+    const readings = [...watcher.readings];
+    for (const t of readings) {
+      expect(
+        /Masks: (\d+\/\d+|preparing)/.test(t) || /Starting export/.test(t),
+        `export strip should report the worker's real position, saw: ${JSON.stringify(t)}`
+      ).toBe(true);
+    }
+    if (exportMs > PROGRESS_CHANGE_FLOOR_MS) {
+      // Long enough for a second poll: a strip that never moved is a build the
+      // user cannot distinguish from a wedged one. (Below the floor a warm job
+      // can finish inside one poll, so a single reading is honest.)
+      expect(
+        readings.length,
+        `export took ${exportMs}ms but the progress text never changed: ` +
+          `${JSON.stringify(readings)}`
+      ).toBeGreaterThan(1);
+    }
+    // The same contract in the log, where sampling cannot miss anything:
+    // export_progress fires once per PHASE CHANGE, never once per poll, so no
+    // two events may carry the same job|phase|face|faces_done key.
+    const progressEvents = (await readLog(page)).filter((e) => e.type === 'export_progress');
+    expect(progressEvents.length, 'the export should have logged its phases').toBeGreaterThan(0);
+    if (exportMs > PROGRESS_CHANGE_FLOOR_MS) {
+      expect(
+        progressEvents.length,
+        `export took ${exportMs}ms with only one phase logged: ${JSON.stringify(progressEvents)}`
+      ).toBeGreaterThan(1);
+    }
+    // `queued_behind` is in the key because a run that had to wait out another
+    // export reports that job's phases too — the same triple from a different
+    // job is not a duplicate (App.tsx::waitOutRunningExport).
+    const keys = progressEvents.map((e) =>
+      JSON.stringify([e.queued_behind ?? '', e.phase, e.face ?? '', e.faces_done, e.faces_total])
+    );
+    expect(
+      new Set(keys).size,
+      `export_progress must fire once per phase change, not per poll: ${JSON.stringify(keys)}`
+    ).toBe(keys.length);
     await expect(page.getByTestId('regen-error')).toHaveCount(0);
     expect(await download.failure()).toBeNull();
     // App.tsx names the blob after the server's Content-Disposition.
@@ -376,9 +502,10 @@ test.describe('@export fab bundle', () => {
     });
     await expect(page.getByTestId('export-fab')).toBeEnabled();
 
-    // A wiped cache, a dead worker or a dropped stream all land here. The old
-    // bare <a download> reported this only in the browser's download shelf.
-    await page.route('**/export/box/*/fab.zip', (route) =>
+    // A refused job start — no worker can be spawned, the box is gone, the
+    // backend died. The old bare <a download> reported this only in the
+    // browser's download shelf.
+    await page.route('**/export/box/*/fab/start', (route) =>
       route.fulfill({ status: 500, body: 'forced export failure' })
     );
     let downloads = 0;
@@ -399,6 +526,111 @@ test.describe('@export fab bundle', () => {
     // Not wedged: the busy flag cleared and the button is clickable again.
     await expect(page.getByTestId('export-fab')).toBeEnabled();
     await expect(page.getByTestId('export-progress')).toHaveCount(0);
-    await page.unroute('**/export/box/*/fab.zip');
+    await page.unroute('**/export/box/*/fab/start');
+  });
+
+  test('@export a busy slot and a dead worker both explain themselves', async ({ page }) => {
+    // Fully mocked: no real export runs here (one heavy compute at a time is a
+    // HOST constraint — CLAUDE.md), so this can pin the two job-path failures
+    // the content test above can never reach.
+    test.setTimeout(BOOT_REGEN_WAIT_MS + 90_000);
+    await page.goto('/');
+    await waitForStudio(page);
+    await expectLogEvent(page, 'box_regen_done', undefined, {
+      timeout: BOOT_REGEN_WAIT_MS,
+    });
+    await expect(page.getByTestId('export-fab')).toBeEnabled();
+    let downloads = 0;
+    page.on('download', () => {
+      downloads += 1;
+    });
+
+    // 1. 429 — the host-wide export slot is held by another job. App.tsx tries
+    //    to wait it out (polling the id named in the detail, which this backend
+    //    has never heard of -> 404 -> nothing to wait on) and then retries the
+    //    start exactly once; a second 429 is reported with the retry sentence.
+    //    It must NEVER download that job's archive: it can predate the screen.
+    await page.route('**/export/box/*/fab/start', (route) =>
+      route.fulfill({
+        status: 429,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          detail:
+            'export job deadbeef1234 (box other-box) is still running — ' +
+            'one export at a time; retry when it finishes',
+        }),
+      })
+    );
+    await clearLog(page);
+    await page.getByTestId('export-fab').click();
+    const busy = await expectLogEvent(page, 'export_failed', undefined, { timeout: 30_000 });
+    expect(String(busy.error)).toContain('is still running');
+    // The user must be told what to DO, once (App.tsx adds guidance only when
+    // the backend's own sentence carries none).
+    expect(String(busy.error)).toMatch(/retry|try again/i);
+    await expect(page.getByTestId('regen-error')).toBeVisible();
+    await expect(page.getByTestId('regen-error')).toContainText('still running');
+    await expect(page.getByTestId('export-fab')).toBeEnabled();
+    await page.unroute('**/export/box/*/fab/start');
+
+    // 2. A job that starts and then dies (worker killed / klayout crash). The
+    //    poller must surface the worker's diagnosis, not hang on 'running'.
+    await page.route('**/export/box/*/fab/start', (route) =>
+      route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          job_id: 'mockjob',
+          box_id: '__scratch',
+          status: 'running',
+          progress: {
+            phase: 'starting',
+            face: null,
+            faces_done: 0,
+            faces_total: 6,
+            detail: 'worker starting',
+            updated_at: 0,
+          },
+          poll_url: '/export/jobs/mockjob',
+          download_url: '/export/jobs/mockjob/fab.zip',
+        }),
+      })
+    );
+    await page.route('**/export/jobs/mockjob', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          job_id: 'mockjob',
+          box_id: '__scratch',
+          status: 'failed',
+          progress: {
+            phase: 'failed',
+            face: 'right',
+            faces_done: 2,
+            faces_total: 6,
+            detail: 'klayout heal died',
+            updated_at: 7,
+          },
+          error: 'export worker exited with code 1 and produced no archive',
+          returncode: 1,
+          download_url: null,
+        }),
+      })
+    );
+    await clearLog(page);
+    await page.getByTestId('export-fab').click();
+    const dead = await expectLogEvent(page, 'export_failed', undefined, { timeout: 30_000 });
+    expect(String(dead.error)).toContain('export worker exited with code 1');
+    expect(dead.job_id).toBe('mockjob');
+    await expect(page.getByTestId('regen-error')).toContainText('export worker exited');
+    // Whatever failed, nothing half-built reached the download shelf and the
+    // button is usable again with no orphaned progress strip.
+    expect(downloads, 'a failed export must not hand a partial file to the shelf').toBe(0);
+    await expect(page.getByTestId('export-done')).toHaveCount(0);
+    await expect(page.getByTestId('export-fab')).toBeEnabled();
+    await expect(page.getByTestId('export-progress')).toHaveCount(0);
+    await page.unroute('**/export/jobs/mockjob');
+    await page.unroute('**/export/box/*/fab/start');
   });
 });

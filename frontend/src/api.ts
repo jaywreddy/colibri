@@ -465,18 +465,161 @@ export async function getBox(boxId: string): Promise<BoxManifest> {
   return r.json();
 }
 
+// -----------------------------------------------------------------------------
+// Fab export — the JOB api (api/export.py). A cold box export is six plate
+// composes, six SVG bakes and six merged-region klayout DRC heals, minutes end
+// to end, so the build runs in a SUBPROCESS the client polls:
+//
+//   POST /export/box/{box_id}/fab/start  -> 202 {job_id, poll_url, download_url}
+//   GET  /export/jobs/{job_id}           -> {status, progress, error, ...}
+//   GET  /export/jobs/{job_id}/fab.zip   -> the finished archive
+//
+// The legacy synchronous `GET /export/box/{box_id}/fab.zip` is deliberately NOT
+// wrapped here: it holds the connection silently for the whole build, which is
+// exactly the "looks hung" UX the job routes exist to replace. It stays on the
+// backend for bench tools only.
+// -----------------------------------------------------------------------------
+
 /**
- * The fab bundle for one box (masks + fine.gds + CUTLIST + ASSEMBLY.md) as a
- * Blob, so the caller can show progress and report failures instead of
- * handing the URL to the browser's download shelf.
+ * One progress snapshot published by the export worker (export_job.py::Progress).
  *
- * A cold export composes every missing face plate and builds six fab-grade
- * GDS masks server-side — strictly sequentially, by machine constraint —
- * before the first byte arrives, so this can run for tens of seconds. Callers
- * MUST stay visibly busy for the whole await.
+ * `phase` is one of export_job.PHASES ('resolve faces', 'rebuild plate',
+ * 'svg bake', 'fine mask (cached)', 'fine mask (compose)', 'fine mask (DRC
+ * heal)', 'zip', plus the 'starting'/'done'/'failed' bookends) — treat it as an
+ * open string, the worker owns the list. `updated_at` is a monotonic counter,
+ * NOT a clock: its only job is "is this newer than what I last saw".
  */
-export async function exportBoxZip(boxId: string): Promise<Blob> {
-  const r = await tracedFetch(`/export/box/${encodeURIComponent(boxId)}/fab.zip`);
+export type ExportJobProgress = {
+  phase: string;
+  /** Face the phase is scoped to, or null for a whole-archive phase. */
+  face: string | null;
+  faces_done: number;
+  faces_total: number;
+  detail: string;
+  updated_at: number;
+  elapsed_s?: number;
+  error?: string;
+};
+
+export type ExportJobState = 'running' | 'done' | 'failed';
+
+/** GET /export/jobs/{job_id} — merges worker progress with process liveness. */
+export type ExportJobStatus = {
+  job_id: string;
+  box_id: string;
+  status: ExportJobState;
+  progress: ExportJobProgress | null;
+  /** Set only on `failed`; carries the worker's own diagnosis when it has one. */
+  error: string | null;
+  returncode: number | null;
+  /** Present only once `status === 'done'`. */
+  download_url: string | null;
+};
+
+/** POST /export/box/{box_id}/fab/start — 202. */
+export type ExportJobStart = {
+  job_id: string;
+  box_id: string;
+  status: string;
+  progress: ExportJobProgress | null;
+  poll_url: string;
+  download_url: string;
+};
+
+/**
+ * Exactly one export may build at a time across the host (CLAUDE.md), so a
+ * start that collides answers 429 instead of queueing behind minutes of
+ * compute. The backend's `detail` names the job that holds the slot, which is
+ * the only handle the API gives us on it — there is no "list jobs" route — so
+ * `runningJobId`/`runningBoxId` are parsed out of that sentence and are null
+ * when the wording doesn't carry them (the in-process-slot variant doesn't).
+ *
+ * They are a handle for WAITING OUT that job (poll it, show its phase, then
+ * start your own build — App.tsx::waitOutRunningExport), never for downloading
+ * its archive: a job that started before the last regen can carry a design the
+ * screen no longer shows, even for the same box id, and that is the
+ * unrecoverable fab error the staleness gate exists to prevent.
+ */
+export class ExportBusyError extends Error {
+  readonly status = 429;
+  readonly runningJobId: string | null;
+  readonly runningBoxId: string | null;
+
+  constructor(message: string, jobId: string | null, boxId: string | null) {
+    super(message);
+    this.name = 'ExportBusyError';
+    this.runningJobId = jobId;
+    this.runningBoxId = boxId;
+  }
+}
+
+/**
+ * Both 429 wordings that name a job (export_job.py::start_job and
+ * ::claim_slot): "export job <id> (box <box>) is still running|building — …".
+ * A miss is not an error, just an unresumable busy state.
+ */
+const BUSY_JOB_RE = /export job ([A-Za-z0-9_-]{1,64}) \(box ([^)]+)\) is still (?:running|building)/i;
+
+/**
+ * Start the out-of-process fab build for one box. Resolves as soon as the
+ * worker is spawned — poll `getExportJob(job_id)` for the phase and download
+ * the archive when the status flips to `done`.
+ *
+ * Throws `ExportBusyError` on 429 (an export is already building).
+ */
+export async function startBoxExport(
+  boxId: string,
+  opts: { signal?: AbortSignal } = {}
+): Promise<ExportJobStart> {
+  const r = await tracedFetch(`/export/box/${encodeURIComponent(boxId)}/fab/start`, {
+    method: 'POST',
+    signal: opts.signal,
+  });
+  if (!r.ok) {
+    // One body read for both the message and the job handle inside it.
+    const message = await errorDetail(r, 'Fab export');
+    if (r.status === 429) {
+      const m = BUSY_JOB_RE.exec(message);
+      throw new ExportBusyError(message, m?.[1] ?? null, m?.[2] ?? null);
+    }
+    throw new Error(message);
+  }
+  return r.json();
+}
+
+/**
+ * Poll one export job. Cheap and side-effect free on the server (it reads a
+ * progress file and one `proc.poll()`), so a ~1 s interval is fine and takes no
+ * heavy-compute slot.
+ */
+export async function getExportJob(
+  jobId: string,
+  opts: { signal?: AbortSignal } = {}
+): Promise<ExportJobStatus> {
+  const r = await tracedFetch(`/export/jobs/${encodeURIComponent(jobId)}`, {
+    signal: opts.signal,
+  });
+  // Job ids live in the server process only, so a 404 here means the backend
+  // restarted mid-export — the detail says to start a new one.
+  if (!r.ok) throw new Error(await errorDetail(r, 'Fab export'));
+  return r.json();
+}
+
+/** URL of a finished job's archive. 409s until its status is `done`. */
+export function exportJobZipUrl(jobId: string): string {
+  return `/export/jobs/${encodeURIComponent(jobId)}/fab.zip`;
+}
+
+/**
+ * The finished archive as a Blob, so the caller can name the download and
+ * report a failure in the UI instead of handing the URL to the browser's
+ * download shelf (where a 409/404 becomes an unexplained failed download).
+ */
+export async function exportJobZip(
+  jobId: string,
+  opts: { signal?: AbortSignal } = {}
+): Promise<Blob> {
+  const r = await tracedFetch(exportJobZipUrl(jobId), { signal: opts.signal });
   if (!r.ok) throw new Error(await errorDetail(r, 'Fab export'));
   return r.blob();
 }

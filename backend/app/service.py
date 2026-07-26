@@ -134,7 +134,10 @@ heavy_compute_gate = threading.BoundedSemaphore(1)
 # ``plates.PLATE_COMPOSE_VERSION`` and ``plates.PLATE_SVG_VERSION``; see CLAUDE.md.
 # v2: first versioned generation — the litho-floor raise and the slit-lattice
 #     barrier registration changed geometry with no key to invalidate it.
-PATTERN_GEN_VERSION = 2
+# v3: capybara water band carved to `below & ~capy` (the submerged body keeps
+#     its carrier; ripples never print on the animal) — polygons, measured
+#     min_feature_um and the min_*_gold_um extras all move.
+PATTERN_GEN_VERSION = 3
 
 
 def _params_hash(params: dict[str, Any]) -> str:
