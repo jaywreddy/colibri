@@ -13,28 +13,114 @@ export type LogEvent = {
 };
 
 /**
+ * How long the WebGL context must stay continuously healthy before
+ * waitForStudio hands the page to a spec, how many consecutive healthy polls
+ * that stretch must contain, and the outer bound on waiting for it.
+ *
+ * The streak used to be the historical 2500 ms, paid on every one of the ~33
+ * `goto` calls in the suite (~82 s serialized) purely to out-wait a context
+ * drop the poll might not sample. What actually made that number necessary was
+ * the sampling gap: a drop that starts and ends between two 100 ms polls is
+ * invisible, so the old code bought coverage with wall clock. waitForStudio now
+ * arms the canvas's own `webglcontextlost`/`webglcontextrestored` listeners, so
+ * a drop ANYWHERE inside the window resets the streak even if no poll saw it —
+ * strictly stronger loss detection than 2500 ms of blind polling, at a fraction
+ * of the wait.
+ */
+const GL_GOOD_STREAK_MS = 400;
+const GL_GOOD_CHECKS = 3;
+/**
+ * Floor on how long the context must have EXISTED, measured from the first
+ * poll that saw the renderer. Headless Chromium's startup drop happens shortly
+ * after creation, so a streak that begins immediately could complete before
+ * the drop and hand a spec a canvas that dies one frame later — the risk the
+ * 2500 ms flat wait was really covering. This keeps that guard explicit and
+ * cheap instead of paying for it six times over.
+ */
+const GL_MIN_AGE_MS = 600;
+const GL_STABLE_TIMEOUT_MS = 20_000;
+
+/**
  * Wait for the Ring Box Studio debug hook (window.__studio, installed by
  * BoxScene) AND for the WebGL context to be live. In headless Chromium the
  * context briefly drops shortly after creation — sampling pixels during that
- * window returns zeros. We arm a one-shot webglcontextrestored listener and
- * wait for a stretch of uninterrupted good state before returning.
+ * window returns zeros.
+ *
+ * The original implementation resolved on a bare 2500 ms timer (or the first
+ * webglcontextrestored event) and never re-checked afterwards: a context that
+ * dropped at 2400 ms, or one that never came back after a drop, either handed
+ * the spec a dead canvas or hung the evaluate forever. This polls instead and
+ * requires GL_GOOD_CHECKS consecutive healthy polls spanning at least
+ * GL_GOOD_STREAK_MS with NO loss recorded in between — losses come from the
+ * canvas's own event listeners as well as from the poll, so a drop between two
+ * samples still restarts the streak. The returned page is live by measurement
+ * rather than by assumption. Bounded by GL_STABLE_TIMEOUT_MS, and it is
+ * Playwright's own waitForFunction so a failure reports as a timeout with the
+ * predicate source instead of dangling.
  */
 export async function waitForStudio(page: Page): Promise<void> {
   await page.waitForFunction(() => !!(window as any).__studio?.renderer, null, {
     timeout: 20_000,
   });
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        const s = (window as any).__studio;
-        const canvas = s.renderer.domElement as HTMLCanvasElement;
-        const gl = s.renderer.getContext() as WebGLRenderingContext;
-        const onRestored = () => resolve();
-        canvas.addEventListener('webglcontextrestored', onRestored, { once: true });
-        setTimeout(() => {
-          if (!gl.isContextLost()) resolve();
-        }, 2500);
-      })
+  // Arm the event-accurate loss marker once per page. `__glLostAt` is the
+  // timestamp of the last lost/restored transition; the streak below is only
+  // valid if that timestamp predates it.
+  await page.evaluate(() => {
+    const w = window as any;
+    if (w.__glLossArmed) return;
+    const canvas = w.__studio?.renderer?.domElement as HTMLCanvasElement | undefined;
+    if (!canvas) return;
+    w.__glLossArmed = true;
+    w.__glSeenAt = performance.now();
+    if (typeof w.__glLostAt !== 'number') w.__glLostAt = 0;
+    const mark = () => {
+      w.__glLostAt = performance.now();
+    };
+    canvas.addEventListener('webglcontextlost', mark);
+    // A restore is also a discontinuity: textures/buffers are re-uploaded, so
+    // the streak must restart from the restore, not from before the drop.
+    canvas.addEventListener('webglcontextrestored', mark);
+  });
+  await page.waitForFunction(
+    (cfg) => {
+      const { streakMs, checks, minAgeMs } = cfg as {
+        streakMs: number;
+        checks: number;
+        minAgeMs: number;
+      };
+      const w = window as any;
+      const restart = () => {
+        w.__glGoodSince = 0;
+        w.__glGoodChecks = 0;
+        return false;
+      };
+      const s = w.__studio;
+      if (!s?.renderer) return restart();
+      const gl = s.renderer.getContext() as WebGLRenderingContext;
+      // getParameter returns null on a context that is lost but has not yet
+      // fired its event — cheap liveness proof that does not depend on the
+      // render loop still drawing frames.
+      if (!gl || gl.isContextLost() || gl.getParameter(gl.VERSION) == null) {
+        return restart();
+      }
+      const now = performance.now();
+      // 0 / undefined both mean "streak not started" — start it now.
+      if (!w.__glGoodSince) {
+        w.__glGoodSince = now;
+        w.__glGoodChecks = 1;
+        return false;
+      }
+      // A loss recorded (by event) after the streak began invalidates it even
+      // though every poll happened to sample a healthy context.
+      if (w.__glLostAt >= w.__glGoodSince) return restart();
+      w.__glGoodChecks = (w.__glGoodChecks ?? 0) + 1;
+      const ageOk = !w.__glSeenAt || now - w.__glSeenAt >= minAgeMs;
+      return (
+        ageOk && w.__glGoodChecks >= checks && now - w.__glGoodSince >= streakMs
+      );
+    },
+    { streakMs: GL_GOOD_STREAK_MS, checks: GL_GOOD_CHECKS, minAgeMs: GL_MIN_AGE_MS },
+    { timeout: GL_STABLE_TIMEOUT_MS, polling: 100 }
   );
 }
 

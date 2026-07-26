@@ -95,6 +95,60 @@ async function tracedFetch(url: string, init?: RequestInit): Promise<Response> {
   return r;
 }
 
+/**
+ * Human-readable text for a non-2xx response, safe to show in the header
+ * error banner, the Pattern Lab error strip, or a picker retry tile.
+ *
+ * FastAPI reports every failure as `{"detail": "..."}` and our handlers put
+ * the actionable sentence there ("regenerate the box and export again"), so
+ * that field is what the user needs — not the raw body, which for a proxy
+ * error or a truncated stream is an HTML page. Truncated: the banner is one
+ * line, and the full text still reaches the `title` tooltip.
+ *
+ * Every thrower whose message can reach a HUMAN routes through here: box
+ * load/generate, fab export, and (as of this change) the two pattern endpoints
+ * behind the Pattern Lab and the picker thumbnails. Those two used to build
+ * their own strings — `getDefault(slug): 404` and `generatePattern: 400
+ * {"detail":"…"}`, i.e. a status code plus the RAW body — which is the whole
+ * reason PatternLab carries a `readableError` brace-scanner: the carefully
+ * worded backend refusals (the 400k lattice budget, the ParamSpec range check,
+ * the litho floor) surfaced as JSON repr noise. With the detail extracted here
+ * `readableError` finds no brace and degrades to a passthrough; keep it that
+ * way when adding an endpoint.
+ *
+ * `listPatterns` / `listBoxes` deliberately still throw a bare status line:
+ * neither message is ever shown (the catalog fetch retries forever and only
+ * logs; the box listing is a debug affordance), and the non-ok unit test pins
+ * `listPatterns` to a message containing the status code.
+ */
+async function errorDetail(r: Response, what: string): Promise<string> {
+  let body = '';
+  try {
+    body = await r.text();
+  } catch {
+    /* connection dropped mid-body — fall back to the status line */
+  }
+  let detail = body.trim();
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    if (typeof parsed?.detail === 'string') {
+      detail = parsed.detail;
+    } else if (Array.isArray(parsed?.detail)) {
+      // pydantic 422: [{loc, msg, ...}] — the `msg` fields are the readable part.
+      const msgs = parsed.detail
+        .map((d) => (d as { msg?: unknown } | null)?.msg)
+        .filter((m): m is string => typeof m === 'string');
+      if (msgs.length > 0) detail = msgs.join('; ');
+    }
+  } catch {
+    /* not JSON — keep the raw text */
+  }
+  if (detail.length > 300) detail = `${detail.slice(0, 300)}…`;
+  return detail
+    ? `${what}: ${detail}`
+    : `${what}: HTTP ${r.status}${r.statusText ? ` ${r.statusText}` : ''}`;
+}
+
 export async function listPatterns(): Promise<PatternDescriptor[]> {
   const r = await tracedFetch('/patterns');
   if (!r.ok) throw new Error(`listPatterns: ${r.status}`);
@@ -106,7 +160,9 @@ export async function getDefault(
   opts: { signal?: AbortSignal } = {}
 ): Promise<PatternManifest> {
   const r = await tracedFetch(`/patterns/${slug}/default`, { signal: opts.signal });
-  if (!r.ok) throw new Error(`getDefault(${slug}): ${r.status}`);
+  // The slug is in the prefix because this is also the pattern-picker
+  // thumbnail fetch: a failed tile's tooltip has to name which pattern failed.
+  if (!r.ok) throw new Error(await errorDetail(r, `Load pattern ${slug}`));
   return r.json();
 }
 
@@ -119,7 +175,10 @@ export async function generatePattern(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ slug, params }),
   });
-  if (!r.ok) throw new Error(`generatePattern: ${r.status} ${await r.text()}`);
+  // 400s here are the ones the user most needs to READ verbatim: the lattice
+  // budget refusal, the ParamSpec out-of-range rejection and the litho-floor
+  // refusal all put an actionable sentence in `detail`.
+  if (!r.ok) throw new Error(await errorDetail(r, `Regenerate ${slug}`));
   return r.json();
 }
 
@@ -402,8 +461,24 @@ export async function listBoxes(): Promise<BoxManifest[]> {
 
 export async function getBox(boxId: string): Promise<BoxManifest> {
   const r = await tracedFetch(`/boxes/${boxId}`);
-  if (!r.ok) throw new Error(`getBox: ${r.status}`);
+  if (!r.ok) throw new Error(await errorDetail(r, 'Load box'));
   return r.json();
+}
+
+/**
+ * The fab bundle for one box (masks + fine.gds + CUTLIST + ASSEMBLY.md) as a
+ * Blob, so the caller can show progress and report failures instead of
+ * handing the URL to the browser's download shelf.
+ *
+ * A cold export composes every missing face plate and builds six fab-grade
+ * GDS masks server-side — strictly sequentially, by machine constraint —
+ * before the first byte arrives, so this can run for tens of seconds. Callers
+ * MUST stay visibly busy for the whole await.
+ */
+export async function exportBoxZip(boxId: string): Promise<Blob> {
+  const r = await tracedFetch(`/export/box/${encodeURIComponent(boxId)}/fab.zip`);
+  if (!r.ok) throw new Error(await errorDetail(r, 'Fab export'));
+  return r.blob();
 }
 
 export async function generateBox(
@@ -416,6 +491,6 @@ export async function generateBox(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`generateBox: ${r.status} ${await r.text()}`);
+  if (!r.ok) throw new Error(await errorDetail(r, 'Generate box'));
   return r.json();
 }

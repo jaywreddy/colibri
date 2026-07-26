@@ -5,10 +5,19 @@
  *   1. Apply the scene setup (lid angle, layout, illumination, camera) via
  *      window.__studio + the store.
  *   2. Run the cheap native checks declared on the scene (canvas not blank,
- *      lid pivot rotation bounds, layout state).
+ *      lid pivot rotation bounds, layout state) PLUS the scene-graph metalwork
+ *      census, which runs for every scene that declares a layout.
  *   3. Capture the canvas + a metadata sidecar via `captureScene(...)`.
  *   4. Enrich the sidecar with the native-check results so the downstream
  *      vision verifier can skip failing scenes without paying tokens.
+ *
+ * The census is what makes the catalog's metalwork CLAIM ('copper-foil strips
+ * along every plate border, solder beads on the bottom and corner seams, and a
+ * brass tube-and-rod hinge') a native, deterministic assertion instead of a
+ * vision-only one: `tools/visual_verifier.py` needs ANTHROPIC_API_KEY and is NOT
+ * part of `just test-e2e`, so before this the whole default gate stayed green
+ * with a box that had no metalwork at all. Every count below is DERIVED from
+ * src/assembly.ts against the live spec — no magic numbers to drift.
  *
  * Capture is always attempted, even when native checks fail — the PNGs are
  * needed to diagnose what went wrong. A scene flagged `required: true`
@@ -31,6 +40,14 @@ import {
   type SceneCapture,
 } from './helpers';
 import { BOX_SCENES, type BoxVisualScene } from './visualCatalog';
+import {
+  cutList,
+  hingeLayout,
+  overlapUm,
+  platePlacements,
+  seamSegments,
+} from '../../src/assembly';
+import type { BoxSpec } from '../../src/api';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +61,116 @@ type NativeCheckResult = {
   failures: string[];
   measurements: Record<string, unknown>;
 };
+
+/**
+ * Every `userData.kind` BoxScene stamps (see BoxScene.tsx::SceneMeshKind). The
+ * list is duplicated here on purpose: it is the TEST side of that contract, so a
+ * rename in the scene must fail here loudly rather than silently stop counting.
+ */
+const CENSUS_KINDS = [
+  'plate-outer',
+  'plate-inner',
+  'foil-strip',
+  'seam-bead',
+  'seam-corner',
+  'tin-rim',
+  'hinge-tube',
+  'hinge-rod',
+] as const;
+type CensusKind = (typeof CENSUS_KINDS)[number];
+type Census = Record<CensusKind, number>;
+
+type SceneCensus = {
+  counts: Census;
+  /** hinge-tube meshes that hang off lidPivot (they must swing with the lid). */
+  lidPivotTubes: number;
+  hasLidPivot: boolean;
+};
+
+/** Count tagged meshes in the live scene graph (one round-trip). */
+async function readSceneCensus(page: import('@playwright/test').Page): Promise<SceneCensus> {
+  return (await page.evaluate((kinds) => {
+    const s = (window as any).__studio;
+    const counts: Record<string, number> = {};
+    for (const k of kinds) counts[k] = 0;
+    s.scene.traverse((o: any) => {
+      const k = o?.userData?.kind;
+      if (typeof k === 'string' && k in counts) counts[k] += 1;
+    });
+    let lidPivotTubes = 0;
+    const pivot = s.lidPivot;
+    if (pivot) {
+      pivot.traverse((o: any) => {
+        if (o?.userData?.kind === 'hinge-tube') lidPivotTubes += 1;
+      });
+    }
+    return { counts, lidPivotTubes, hasLidPivot: !!pivot };
+  }, CENSUS_KINDS as unknown as string[])) as unknown as SceneCensus;
+}
+
+/**
+ * What the scene graph MUST contain for a given spec + layout, derived from
+ * src/assembly.ts (the same module BoxScene builds from) rather than pinned
+ * numbers:
+ *
+ *   - plate-outer / plate-inner: one of each per plate — 6 (platePlacements in
+ *     the assembled layout, cutList in the 2x3 fab grid).
+ *   - foil-strip: BoxScene frames each plate on BOTH borders (outer + inner) via
+ *     addFoilFrame / addFoilFrameRealistic, whose four strips are skipped when
+ *     degenerate; mirrored exactly below (mm units, `ov > 1e-4`, left/right
+ *     strips need `h - 2*ov > 0`). Default ring box: 2 frames x 4 strips x 6
+ *     plates = 48.
+ *   - seam-bead: one per seamSegments() entry (4 bottom + 4 vertical corners).
+ *   - seam-corner: one blob per DISTINCT seam endpoint, deduped on the same
+ *     mm/2-decimal key BoxScene uses — 8 for a box (4 bottom + 4 top corners).
+ *   - tin-rim: the two fixed literal arrays in BoxScene (4 wall top rims + 4 lid
+ *     edge faces) = 8; they carry no skip guard.
+ *   - hinge-tube: spec.hinge.segments (default 5); hinge-rod: exactly 1.
+ *
+ * Flat layout is the fab-inspection grid: plates + foil only, and the catalog
+ * lists 'Seam beads or hinge visible in flat mode' as a FAIL mode — so every
+ * seam/hinge/tin count must be 0 and there must be no lid pivot at all.
+ */
+function expectedCensus(spec: BoxSpec, layout: 'assembled' | 'flat'): Census {
+  const plates = layout === 'assembled' ? platePlacements(spec).length : cutList(spec).length;
+  const overlapMm = overlapUm(spec) / 1000;
+  let foil = 0;
+  for (const c of cutList(spec)) {
+    const w = c.width_um / 1000;
+    const h = c.height_um / 1000;
+    const ov = Math.min(overlapMm, Math.min(w, h) / 2);
+    if (ov <= 1e-4) continue;
+    const perFrame = (w > 0 ? 2 : 0) + (h - 2 * ov > 0 ? 2 : 0);
+    foil += 2 * perFrame; // outer border frame + inner border frame
+  }
+  const base: Census = {
+    'plate-outer': plates,
+    'plate-inner': plates,
+    'foil-strip': foil,
+    'seam-bead': 0,
+    'seam-corner': 0,
+    'tin-rim': 0,
+    'hinge-tube': 0,
+    'hinge-rod': 0,
+  };
+  if (layout === 'flat') return base;
+
+  const seams = seamSegments(spec);
+  const corners = new Set<string>();
+  for (const s of seams) {
+    for (const p of [s.start_um, s.end_um]) {
+      corners.add(p.map((v) => (v / 1000).toFixed(2)).join(','));
+    }
+  }
+  return {
+    ...base,
+    'seam-bead': seams.length,
+    'seam-corner': corners.size,
+    'tin-rim': 8,
+    'hinge-tube': hingeLayout(spec).segments.length,
+    'hinge-rod': 1,
+  };
+}
 
 async function applyScene(page: import('@playwright/test').Page, scene: BoxVisualScene) {
   const s = scene.setup;
@@ -109,6 +236,43 @@ async function runNativeChecks(
     measurements.layout = layout;
     if (layout !== n.layoutEquals) {
       failures.push(`layout '${layout}' !== '${n.layoutEquals}'`);
+    }
+  }
+
+  // --- metalwork census -----------------------------------------------------
+  // Runs for every scene that declares a layout (all of them). Guards the
+  // catalog's own metalwork claim + fail modes natively: 'flat planes with no
+  // metalwork' in the assembled scenes, 'seam beads or hinge visible in flat
+  // mode' in the fab grid.
+  const censusLayout = n.layoutEquals ?? scene.setup.layout ?? null;
+  if (censusLayout) {
+    const spec = (await page.evaluate(
+      () => (window as any).__studio.store.getState().boxSpec
+    )) as BoxSpec;
+    const want = expectedCensus(spec, censusLayout);
+    const got = await readSceneCensus(page);
+    measurements.census = got.counts;
+    measurements.censusExpected = want;
+    measurements.lidPivotTubes = got.lidPivotTubes;
+    for (const kind of CENSUS_KINDS) {
+      if (got.counts[kind] !== want[kind]) {
+        failures.push(`census '${kind}': ${got.counts[kind]} !== ${want[kind]} expected`);
+      }
+    }
+    if (censusLayout === 'assembled') {
+      // The hinge is only real if the lid-owned knuckles actually swing with the
+      // lid — a tube parented to the body group would look right in a still and
+      // shear through the lid the moment it opens.
+      const wantLidTubes = hingeLayout(spec).segments.filter((s) => s.owner === 'lid').length;
+      if (!got.hasLidPivot) {
+        failures.push('lidPivot missing in assembled layout (hinge cannot open)');
+      } else if (got.lidPivotTubes !== wantLidTubes) {
+        failures.push(
+          `hinge tubes under lidPivot: ${got.lidPivotTubes} !== ${wantLidTubes} expected`
+        );
+      }
+    } else if (got.hasLidPivot) {
+      failures.push('lidPivot present in flat layout (hinge must be hidden in the fab grid)');
     }
   }
 

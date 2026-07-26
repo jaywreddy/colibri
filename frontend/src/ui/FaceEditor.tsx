@@ -4,7 +4,7 @@ import { log } from '../logger';
 import FrameControls from './FrameControls';
 import ParameterPanel from './ParameterPanel';
 import { FACE_LABELS } from './FacesPanel';
-import { Button, KIT, Section, Shimmer } from './kit';
+import { Button, FailedTile, KIT, Section, Shimmer } from './kit';
 
 /**
  * Editor for the selected face: visual pattern picker (thumbnail cards) +
@@ -15,14 +15,17 @@ import { Button, KIT, Section, Shimmer } from './kit';
  * Pattern thumbnails are fetched lazily whenever the picker opens (GET
  * /patterns/{slug}/default materializes server-side in ~2 s, then caches).
  * The store skips slugs that already loaded or are in flight, so repeat
- * calls are free — calling on EVERY open (plus when the catalog arrives
- * while the picker is open) is what retries slugs that failed earlier.
+ * calls are free — Section's onOpen fires on EVERY open (and the catalog
+ * effect covers the boot race), which is what retries slugs that failed
+ * earlier. Slugs still in the failed set render as retry tiles, never as an
+ * endless shimmer, and there is an explicit retry button as well.
  */
 export default function FaceEditor() {
   const selectedFaceId = useStore((s) => s.selectedFaceId);
   const face = useStore((s) => s.boxSpec.faces[selectedFaceId]);
   const catalog = useStore((s) => s.catalog);
   const thumbnails = useStore((s) => s.thumbnails);
+  const thumbnailErrors = useStore((s) => s.thumbnailErrors);
   const loadThumbnails = useStore((s) => s.loadThumbnails);
   const patchFace = useStore((s) => s.patchFace);
   const applyFaceToAll = useStore((s) => s.applyFaceToAll);
@@ -41,6 +44,11 @@ export default function FaceEditor() {
   }
 
   const descriptor = catalog.find((c) => c.slug === face.pattern_slug);
+  // Boot on a cold backend/data cache materializes all 16 previews at ~2 s
+  // each, so the grid is shimmer for a long while — count it out loud.
+  const ready = catalog.filter((c) => typeof thumbnails[c.slug] === 'string').length;
+  const pending = catalog.filter((c) => thumbnails[c.slug] === null).length;
+  const failed = catalog.filter((c) => thumbnailErrors[c.slug] !== undefined);
 
   return (
     <div data-testid="face-editor">
@@ -55,16 +63,31 @@ export default function FaceEditor() {
         EDITING: {FACE_LABELS[selectedFaceId].toUpperCase()}
       </div>
 
+      {/* "Face pattern", not "Pattern": this picker assigns the CENTERPIECE of
+          the one face named in the EDITING banner above, which the bare word
+          left ambiguous against the box-wide "4 · Grating pitch" section in the
+          Build rail (whose own testId is still `section-pattern`) and against
+          the Pattern Lab. testId and persistId are UNCHANGED — `pattern-picker`
+          is what the e2e specs target, and `persistId` keys the remembered
+          open/closed state, so retitling must not touch either. */}
       <Section
-        title="Pattern"
+        title="Face pattern"
         testId="pattern-picker"
         persistId="pattern"
         defaultOpen
-        onFirstOpen={() => {
+        onOpen={() => {
           setPickerOpened(true);
           void loadThumbnails();
         }}
       >
+        {pending > 0 && (
+          <div
+            data-testid="thumbnail-progress"
+            style={{ fontSize: 11, opacity: 0.6, marginBottom: 8 }}
+          >
+            Rendering previews… {ready}/{catalog.length}
+          </div>
+        )}
         <div
           data-testid="pattern-grid"
           style={{
@@ -115,6 +138,11 @@ export default function FaceEditor() {
                       background: '#0b0d10',
                     }}
                   />
+                ) : thumbnailErrors[c.slug] !== undefined ? (
+                  <FailedTile
+                    style={{ width: '100%', aspectRatio: '1 / 1' }}
+                    title={`Preview failed: ${thumbnailErrors[c.slug]} — reopen this section or press Retry previews`}
+                  />
                 ) : (
                   <Shimmer style={{ width: '100%', aspectRatio: '1 / 1' }} />
                 )}
@@ -129,6 +157,22 @@ export default function FaceEditor() {
         {descriptor && (
           <div style={{ fontSize: 11, opacity: 0.6, lineHeight: 1.4, marginTop: 10 }}>
             {descriptor.description}
+          </div>
+        )}
+
+        {failed.length > 0 && pending === 0 && (
+          <div style={{ display: 'flex', marginTop: 10 }}>
+            <Button
+              testId="retry-thumbnails"
+              title={`Refetch the ${failed.length} preview(s) whose generation failed`}
+              onClick={() => {
+                log('thumbnail_retry_clicked', { count: failed.length });
+                void loadThumbnails();
+              }}
+              style={{ flex: 1, borderColor: KIT.error }}
+            >
+              ↻ Retry {failed.length} failed preview{failed.length === 1 ? '' : 's'}
+            </Button>
           </div>
         )}
 

@@ -109,6 +109,19 @@ def _min_gold_band_duty(mask: np.ndarray, cell_um: float, line_period_um: float)
 _BITMAP_CHOICES = available_bitmaps()
 
 
+def _resolve_grid(line_period_um: float, extent_um: float) -> tuple[int, float]:
+    """``(n_grid, cell_um)`` for the halftone working grid.
+
+    CELLS_PER_LINE cells per halftone line (duty resolves in 1/8 steps), capped at
+    MAX_GRID for coarse-but-huge requests. Module-level because both ``generate``
+    and ``pixel_pitch_um`` need it and the plate compositor reads the pitch WITHOUT
+    generating — one expression, so they cannot disagree.
+    """
+    n_grid = int(round(extent_um / (line_period_um / CELLS_PER_LINE)))
+    n_grid = max(64, min(MAX_GRID, n_grid))
+    return n_grid, extent_um / n_grid
+
+
 @register
 class BitmapHalftone(Pattern):
     slug = "bitmap-halftone"
@@ -151,6 +164,24 @@ class BitmapHalftone(Pattern):
         ParamSpec("invert", "Invert tones", "bool", False),
     ]
 
+    # --- metadata (no geometry) — see Pattern.metadata ----------------------
+    # Only the pitch is pure arithmetic here. ``min_feature_um`` and ``extra`` are
+    # MEASURED off the emitted masks (``_min_gold_band_duty``, the coverage means,
+    # the loaded image's realized duty), so they deliberately keep the base
+    # ``generate()`` fallback rather than duplicating a formula that would lie.
+
+    @classmethod
+    def pixel_pitch_um(
+        cls,
+        image: str = _BITMAP_CHOICES[0] if _BITMAP_CHOICES else "",
+        line_period_um: float = 20.0,
+        angle_deg: str = "0",
+        extent_um: float = 2000.0,
+        back_mode: str = "carrier",
+        invert: bool = False,
+    ) -> float:
+        return _resolve_grid(line_period_um, extent_um)[1]
+
     @classmethod
     def generate(
         cls,
@@ -163,11 +194,7 @@ class BitmapHalftone(Pattern):
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        # Working grid: CELLS_PER_LINE cells per halftone line (duty resolves
-        # in 1/8 steps), capped at MAX_GRID for coarse-but-huge requests.
-        n_grid = int(round(extent_um / (line_period_um / CELLS_PER_LINE)))
-        n_grid = max(64, min(MAX_GRID, n_grid))
-        cell_um = extent_um / n_grid
+        n_grid, cell_um = _resolve_grid(line_period_um, extent_um)
         n_lines = int(math.ceil(extent_um / line_period_um))
         n_halftone_layers = 2 if back_mode in ("complement", "phase_reveal") else 1
 
@@ -261,7 +288,14 @@ class BitmapHalftone(Pattern):
             front=front,
             back=back,
             extent_um=extent,
-            pixel_pitch_um=cell_um,
+            pixel_pitch_um=cls.pixel_pitch_um(
+                image=image,
+                line_period_um=line_period_um,
+                angle_deg=angle_deg,
+                extent_um=extent_um,
+                back_mode=back_mode,
+                invert=invert,
+            ),
             min_feature_um=max(2.0, line_period_um * min_duty),
             extra=extra,
         )

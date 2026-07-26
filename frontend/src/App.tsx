@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  exportBoxZip,
   generateBox,
   getBox,
   listBoxes,
   listPatterns,
   type BoxManifest,
+  type BoxSpec,
 } from './api';
 import { validateBox } from './assembly';
 import { log } from './logger';
@@ -30,6 +32,70 @@ function useDebounce<T extends (...args: never[]) => void>(fn: T, ms: number): T
 }
 
 /**
+ * Order-independent serialization of any JSON-ish value.
+ *
+ * The live spec is built by object literals while a manifest's spec came back
+ * through the backend's own `to_dict` key order, so plain JSON.stringify would
+ * report two identical designs as different. Sorting keys at every level makes
+ * the two comparable.
+ */
+function canonicalJson(v: unknown): string {
+  if (v === undefined) return 'null'; // an absent knob and an unset one are one design
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  const obj = v as Record<string, unknown>;
+  return `{${Object.keys(obj)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`)
+    .join(',')}}`;
+}
+
+/**
+ * The regenerate identity of a box spec: every persisted field that changes
+ * what the backend would produce. Hinge, bead and finish don't change masks,
+ * but they DO change the saved manifest — ASSEMBLY.md's hinge cut list and
+ * finish come from it — so excluding them would let "Export fab bundle" ship
+ * a bundle that disagrees with the UI. Hinge/foil-only regens are cheap: the
+ * backend per-face plate caches hit and only the manifest assembly block is
+ * recomputed.
+ *
+ * `label` is deliberately OUT (naming a preset must not invalidate the
+ * bundle), as are lid angle and layout, which are view-only state.
+ *
+ * Applied to BOTH the live spec and the held manifest's spec, this is what
+ * decides whether the export button is serving the design on screen.
+ */
+function specRegenKey(spec: BoxSpec): string {
+  return canonicalJson({
+    w: spec.width_um,
+    d: spec.depth_um,
+    h: spec.height_um,
+    glass: spec.glass,
+    foil: spec.foil,
+    hinge: spec.hinge,
+    carrier_pitch_um: spec.carrier_pitch_um,
+    faces: spec.faces,
+  });
+}
+
+/**
+ * Banner text for a thrown request error. api.ts already turns HTTP failures
+ * into the endpoint's own `detail` sentence; what's left to translate is
+ * fetch's opaque network TypeError, which a user reads as gibberish even
+ * though it's the one case the app recovers from by itself.
+ */
+function friendlyError(e: unknown): string {
+  const err = e as Error;
+  if (
+    err.name === 'TypeError' ||
+    /failed to fetch|networkerror|load failed/i.test(err.message)
+  ) {
+    return 'Backend not responding on :8765 — retrying automatically';
+  }
+  return err.message;
+}
+
+/**
  * Ring Box Studio — single-purpose, box-first studio screen.
  *
  * Any persisted spec change (dims, glass, foil, hinge, faces) triggers a
@@ -39,6 +105,13 @@ function useDebounce<T extends (...args: never[]) => void>(fn: T, ms: number): T
  * instantly via src/assembly.ts; their regen only refreshes the manifest
  * (per-face plate caches hit, no mask recompute). Lid angle and layout are
  * view-only and never hit the backend.
+ *
+ * That sync is enforced, not assumed: export is a fetch-driven button that
+ * refuses to run while the spec is invalid, while a regen is in flight, or
+ * while the live spec's `specRegenKey` differs from the held manifest's — the
+ * three windows in which the zip would carry a different mask set than the
+ * screen shows. On a 2 µm gold-on-quartz run that mismatch is an unrecoverable
+ * fab error, so it fails loudly instead of downloading quietly.
  */
 export default function App() {
   const boxSpec = useStore((s) => s.boxSpec);
@@ -58,11 +131,24 @@ export default function App() {
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Mirrors regenFailsRef > 0 for the banner: the app self-heals on a 5 s
+  // heartbeat, and a user who can't see that reloads or restarts servers.
+  const [retrying, setRetrying] = useState(false);
   const [savedBoxes, setSavedBoxes] = useState<BoxManifest[]>([]);
   const [presetName, setPresetName] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const [exportedId, setExportedId] = useState<string | null>(null);
   const lastReqIdRef = useRef(0);
   // Consecutive regen failures — drives the backend-warmup retry backoff.
   const regenFailsRef = useRef(0);
+  // regenKey of the spec we POSTed for the manifest currently held. The
+  // manifest's OWN spec is the primary staleness signal (see exportStale), but
+  // it round-trips through the backend's normalize_face_dims: were that ever to
+  // drift from assembly.ts::stampFaces by a digit, comparing against it alone
+  // would wedge export as permanently "out of date" with no regen left to fire.
+  // This ref records what actually produced the manifest, so the regen path can
+  // never deadlock on that.
+  const builtFromKeyRef = useRef<string | null>(null);
 
   // Pattern catalog — fetched at boot for the face editors. Retries with
   // backoff: under the combined `app` launcher Vite is ready in ~0.5 s while
@@ -101,36 +187,22 @@ export default function App() {
 
   const validationErrors = useMemo(() => validateBox(boxSpec), [boxSpec]);
 
-  // Every persisted spec field participates in the regen key. Hinge, bead
-  // and finish don't change masks, but they DO change the saved manifest —
-  // ASSEMBLY.md's hinge cut list and finish come from it — so excluding them
-  // would let "Export fab bundle" ship a bundle that disagrees with the UI.
-  // Hinge/foil-only regens are cheap: the backend per-face plate caches hit
-  // and only the manifest assembly block is recomputed. Lid angle and layout
-  // are view-only state and stay out.
-  const regenKey = useMemo(
-    () =>
-      JSON.stringify({
-        w: boxSpec.width_um,
-        d: boxSpec.depth_um,
-        h: boxSpec.height_um,
-        glass: boxSpec.glass,
-        foil: boxSpec.foil,
-        hinge: boxSpec.hinge,
-        carrier_pitch_um: boxSpec.carrier_pitch_um,
-        faces: boxSpec.faces,
-      }),
-    [boxSpec]
+  // See specRegenKey for what participates and why.
+  const regenKey = useMemo(() => specRegenKey(boxSpec), [boxSpec]);
+  const manifestKey = useMemo(
+    () => (boxManifest ? specRegenKey(boxManifest.spec) : null),
+    [boxManifest]
   );
 
   const regen = useDebounce(async () => {
     const spec = useStore.getState().boxSpec;
     const errors = validateBox(spec);
     if (errors.length > 0) {
-      setError(errors[0]);
+      setError(`${errors.length} spec error${errors.length === 1 ? '' : 's'} — ${errors[0]}`);
       log('box_regen_skipped_invalid', { errors });
       return;
     }
+    const key = specRegenKey(spec);
     const reqId = ++lastReqIdRef.current;
     setBusy(true);
     setError(null);
@@ -143,8 +215,10 @@ export default function App() {
         log('box_regen_stale', { reqId });
         return;
       }
+      builtFromKeyRef.current = key;
       setBoxManifest(m);
       regenFailsRef.current = 0;
+      setRetrying(false);
       log('box_regen_done', {
         id: m.id,
         duration_ms: Math.round(performance.now() - t0),
@@ -152,7 +226,8 @@ export default function App() {
     } catch (e) {
       const err = e as Error;
       if (lastReqIdRef.current === reqId) {
-        setError(err.message);
+        setError(friendlyError(err));
+        setRetrying(true);
         // Backend-warmup retry: under the combined `app` launcher the first
         // generate can race uvicorn's startup (proxy 500/ECONNREFUSED), and a
         // dev-server restart can take the backend down for minutes. Never give
@@ -201,15 +276,16 @@ export default function App() {
       return;
     }
     try {
-      const m = await generateBox(
-        { ...useStore.getState().boxSpec, label: name },
-        { boxId: slug }
-      );
+      const spec = { ...useStore.getState().boxSpec, label: name };
+      const m = await generateBox(spec, { boxId: slug });
+      // Naming a preset doesn't change the design, so this manifest is just as
+      // exportable as the scratch one it replaces (`label` is out of the key).
+      builtFromKeyRef.current = specRegenKey(spec);
       setBoxManifest(m);
       setSavedBoxes(await listBoxes());
       log('box_saved', { id: m.id, name: m.name });
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     }
   };
 
@@ -217,14 +293,79 @@ export default function App() {
     if (!id) return;
     try {
       const m = await getBox(id);
+      // No POST produced this one — staleness falls back to the manifest's own
+      // spec, which setBoxSpec is about to mirror into the live spec.
+      builtFromKeyRef.current = null;
       setBoxSpec(m.spec);
       setBoxManifest(m);
       setPresetName(m.name);
       log('box_loaded', { id: m.id });
     } catch (e) {
-      setError((e as Error).message);
+      setError(friendlyError(e));
     }
   };
+
+  // Why export is refusing right now, or null when the bundle would match the
+  // screen. Ordered by what the user has to do about it.
+  const exportBlockedReason: string | null = (() => {
+    if (validationErrors.length > 0) {
+      return `Fix ${validationErrors.length} spec error${
+        validationErrors.length === 1 ? '' : 's'
+      } first`;
+    }
+    if (!boxManifest) return 'Waiting for the first generate';
+    if (regenKey !== manifestKey && regenKey !== builtFromKeyRef.current) {
+      return busy ? 'Design changed — regenerating…' : 'Design changed — waiting for regenerate';
+    }
+    // Keys agree, so the held manifest matches the screen — but a POST is in
+    // flight (initial generate or a warmup retry) and its result could still
+    // move the manifest under us. Refuse until it settles.
+    if (busy) return 'Regenerating — try again in a moment';
+    return null;
+  })();
+
+  const exportFab = async () => {
+    const m = useStore.getState().boxManifest;
+    if (!m || exportBlockedReason || exporting) return;
+    setExporting(true);
+    setExportedId(null);
+    setError(null);
+    const t0 = performance.now();
+    log('export_started', { id: m.id, content_hash: m.content_hash });
+    try {
+      const blob = await exportBoxZip(m.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // Matches the server's Content-Disposition name (export.py::box_fab_zip).
+      a.download = `box-${m.id}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Chrome needs the blob URL alive until the download has actually
+      // started; revoking synchronously can truncate it.
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      setExportedId(m.id);
+      log('export_done', {
+        id: m.id,
+        content_hash: m.content_hash,
+        bytes: blob.size,
+        duration_ms: Math.round(performance.now() - t0),
+      });
+    } catch (e) {
+      setError(friendlyError(e));
+      log('export_failed', { id: m.id, error: (e as Error).message });
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // Clear the "Bundle downloaded" confirmation a few seconds after it lands.
+  useEffect(() => {
+    if (!exportedId) return;
+    const t = window.setTimeout(() => setExportedId(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [exportedId]);
 
   return (
     <div
@@ -272,15 +413,20 @@ export default function App() {
             data-testid="regen-error"
             title={error}
             style={{
-              color: '#ff8888',
+              color: KIT.error,
               fontSize: 12,
-              maxWidth: 320,
+              maxWidth: 340,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
             }}
           >
             {error}
+            {retrying && (
+              <span data-testid="regen-retrying" style={{ opacity: 0.75 }}>
+                {' · retrying…'}
+              </span>
+            )}
           </span>
         )}
         <input
@@ -306,15 +452,63 @@ export default function App() {
             </option>
           ))}
         </select>
-        {boxManifest && (
-          <a
-            href={`/export/box/${boxManifest.id}/fab.zip`}
-            download
-            data-testid="export-fab"
-            style={{ ...BUTTON_STYLE, textDecoration: 'none' }}
+        {/* Never a bare <a download>: the zip must be refused while it would
+            disagree with the screen, and a cold build (six sequential fab
+            masks) needs a visible busy state and a real failure path. */}
+        <button
+          data-testid="export-fab"
+          onClick={exportFab}
+          aria-busy={exporting}
+          disabled={exporting || exportBlockedReason !== null}
+          title={
+            exportBlockedReason ??
+            'Download masks (fine.gds), plate SVG/PNG previews, CUTLIST.csv and ASSEMBLY.md for this design'
+          }
+          style={{
+            ...BUTTON_STYLE,
+            opacity: exporting || exportBlockedReason ? 0.5 : 1,
+            cursor: exporting || exportBlockedReason ? 'default' : 'pointer',
+          }}
+        >
+          {exporting ? 'Exporting…' : 'Export fab bundle'}
+        </button>
+        {exporting && (
+          <span
+            data-testid="export-progress"
+            style={{
+              fontSize: 11,
+              opacity: 0.7,
+              maxWidth: 230,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
           >
-            Export fab bundle
-          </a>
+            Building fab masks — the first export is slow
+          </span>
+        )}
+        {exportBlockedReason && !exporting && (
+          <span
+            data-testid="export-blocked-reason"
+            style={{
+              fontSize: 11,
+              opacity: 0.7,
+              maxWidth: 210,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {exportBlockedReason}
+          </span>
+        )}
+        {exportedId && !exporting && (
+          <span
+            data-testid="export-done"
+            style={{ fontSize: 11, color: KIT.accent }}
+          >
+            Bundle downloaded
+          </span>
         )}
       </header>
 

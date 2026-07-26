@@ -8,6 +8,33 @@ from ..effects.gratings import clip_mask, linear_grating_mask
 from ..motifs.lab.jamon import jamon_silhouette
 
 
+def _resolve_grid(period_um: float, extent_um: float) -> tuple[int, float]:
+    """``(n_grid, cell_um)`` for the carrier raster.
+
+    ≥8 samples/period so the carrier's half-period phase offset is clean —
+    identical grid rule to monogram-jp / food-pair-chirp.
+    """
+    n_grid = max(384, int(extent_um / max(1.0, period_um / 10)))
+    return n_grid, extent_um / n_grid
+
+
+def _carrier_grating(period_um: float, extent_um: float):
+    """The uniform front carrier for these params.
+
+    Cheap — one ≤400k-cell numpy mask, budget-guarded by ``linear_grating_mask``
+    — and the ONLY place the EFFECTIVE (possibly coarsened) period comes from, so
+    ``generate`` and the metadata accessors cannot report different periods.
+    """
+    _n_grid, cell_um = _resolve_grid(period_um, extent_um)
+    return linear_grating_mask(
+        period_um,
+        (extent_um, extent_um),
+        angle_deg=0.0,
+        pitch_um=cell_um,
+        coarsen=True,
+    )
+
+
 @register
 class JamonTray(Pattern):
     """Jamón ibérico on a jamonero — front-only gold-stripe glimmer.
@@ -54,6 +81,45 @@ class JamonTray(Pattern):
         ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
     ]
 
+    # --- metadata (no geometry) — see Pattern.metadata ----------------------
+
+    @classmethod
+    def pixel_pitch_um(
+        cls,
+        period_um: float = 20.0,
+        extent_um: float = 2000.0,
+    ) -> float:
+        return _resolve_grid(period_um, extent_um)[1]
+
+    @classmethod
+    def min_feature_um(
+        cls,
+        period_um: float = 20.0,
+        extent_um: float = 2000.0,
+    ) -> float:
+        return _carrier_grating(period_um, extent_um).period_um * 0.5
+
+    @classmethod
+    def extra_metadata(
+        cls,
+        period_um: float = 20.0,
+        extent_um: float = 2000.0,
+    ) -> tuple[dict, dict, tuple[str, ...]]:
+        carrier_g = _carrier_grating(period_um, extent_um)
+        # Informational only — kept out of recipe_data on purpose: the
+        # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
+        # carries a period key, and with an empty back layer there is no
+        # mask-level tilt effect to quick-set to.
+        return (
+            {
+                "carrier_period_um": carrier_g.period_um,
+                "switch_axis_deg": 0.0,
+                "coarsened": bool(carrier_g.coarsened),
+            },
+            {},
+            (),
+        )
+
     @classmethod
     def generate(
         cls,
@@ -62,16 +128,12 @@ class JamonTray(Pattern):
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        # ≥8 samples/period so the carrier's half-period phase offset is clean —
-        # identical grid rule to monogram-jp / food-pair-chirp. The linear
-        # grating picks the pitch (budget-aware) and we build the silhouette at
-        # the SAME pitch so the masks compose 1:1 with no resampling.
-        n_grid = max(384, int(extent_um / max(1.0, period_um / 10)))
-        cell_um = extent_um / n_grid
+        # The linear grating picks the pitch (budget-aware) and we build the
+        # silhouette at the SAME pitch so the masks compose 1:1 with no
+        # resampling.
+        n_grid, cell_um = _resolve_grid(period_um, extent_um)
 
-        carrier_g = linear_grating_mask(
-            period_um, extent, angle_deg=0.0, pitch_um=cell_um, coarsen=True
-        )
+        carrier_g = _carrier_grating(period_um, extent_um)
         carrier = carrier_g.mask
         h_px, w_px = carrier.shape
         n_grid = w_px  # square extent → square grid
@@ -85,19 +147,16 @@ class JamonTray(Pattern):
         front_poly = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back_poly = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
 
+        # Metadata comes from the accessors above so the numbers a plate reads
+        # without generating are the ones a full generate publishes.
+        kw = dict(period_um=period_um, extent_um=extent_um)
+        extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(
             front=front_poly,
             back=back_poly,
             extent_um=extent,
             pixel_pitch_um=cell_um,
-            min_feature_um=carrier_g.period_um * 0.5,
-            # Informational only — kept out of recipe_data on purpose: the
-            # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
-            # carries a period key, and with an empty back layer there is no
-            # mask-level tilt effect to quick-set to.
-            extra={
-                "carrier_period_um": carrier_g.period_um,
-                "switch_axis_deg": 0.0,
-                "coarsened": bool(carrier_g.coarsened),
-            },
+            min_feature_um=cls.min_feature_um(**kw),
+            extra=extra,
+            recipe_data=recipe_data,
         )

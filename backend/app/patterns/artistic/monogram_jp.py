@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from .._helpers import raster_to_polygons
+from .._helpers import check_lattice_budget, raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, register
 from ..motifs import monogram
+
+
+def _resolve_grid(period_um: float, extent_um: float) -> tuple[int, float]:
+    """``(n_grid, cell_um)`` for the carrier raster.
+
+    ≥8 samples/period so the carrier's half-period phase offset is clean.
+    Module-level because both ``generate`` and ``pixel_pitch_um`` need it and the
+    plate compositor reads the pitch WITHOUT generating — one expression, so they
+    cannot disagree.
+    """
+    n_grid = max(384, int(extent_um / max(1.0, period_um / 10)))
+    return n_grid, extent_um / n_grid
 
 
 @register
@@ -47,6 +61,39 @@ class MonogramJP(Pattern):
         ParamSpec("overlap", "Glyph interlock", "float", 0.68, 0.4, 0.85, 0.01),
     ]
 
+    # --- metadata (no geometry) — see Pattern.metadata ----------------------
+
+    @classmethod
+    def pixel_pitch_um(
+        cls,
+        period_um: float = 20.0,
+        extent_um: float = 2000.0,
+        overlap: float = 0.68,
+    ) -> float:
+        return _resolve_grid(period_um, extent_um)[1]
+
+    @classmethod
+    def min_feature_um(
+        cls,
+        period_um: float = 20.0,
+        extent_um: float = 2000.0,
+        overlap: float = 0.68,
+    ) -> float:
+        return period_um * 0.5
+
+    @classmethod
+    def extra_metadata(
+        cls,
+        period_um: float = 20.0,
+        extent_um: float = 2000.0,
+        overlap: float = 0.68,
+    ) -> tuple[dict, dict, tuple[str, ...]]:
+        # Informational only — kept out of recipe_data on purpose: the
+        # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
+        # carries a period key, and with an empty back layer there is no
+        # mask-level tilt effect to quick-set to.
+        return ({"carrier_period_um": period_um, "switch_axis_deg": 0.0}, {}, ())
+
     @classmethod
     def generate(
         cls,
@@ -56,9 +103,19 @@ class MonogramJP(Pattern):
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        # >=8 samples/period so the carrier's half-period phase offset is clean.
-        n_grid = max(384, int(extent_um / max(1.0, period_um / 10)))
-        cell_um = extent_um / n_grid
+        n_grid, cell_um = _resolve_grid(period_um, extent_um)
+
+        # Rect-count estimate: raster_to_polygons emits one rect per horizontal
+        # run, and the carrier chops every glyph row into ~extent/period runs.
+        # Worst case (silhouette covering the full grid) is n_grid rows ×
+        # stripes-per-extent — gate before the silhouette raster.
+        n_stripes = int(math.ceil(extent_um / period_um))
+        check_lattice_budget(
+            n_grid * n_stripes,
+            "monogram-jp front carrier",
+            period_um=period_um,
+            extent_um=extent_um,
+        )
 
         mono = monogram.monogram_silhouette(extent, n_grid=n_grid, overlap=overlap)
 
@@ -74,15 +131,16 @@ class MonogramJP(Pattern):
         front_poly = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back_poly = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
 
+        # Metadata comes from the accessors above so the numbers a plate reads
+        # without generating are the ones a full generate publishes.
+        kw = dict(period_um=period_um, extent_um=extent_um, overlap=overlap)
+        extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(
             front=front_poly,
             back=back_poly,
             extent_um=extent,
             pixel_pitch_um=cell_um,
-            min_feature_um=period_um * 0.5,
-            # Informational only — kept out of recipe_data on purpose: the
-            # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
-            # carries a period key, and with an empty back layer there is no
-            # mask-level tilt effect to quick-set to.
-            extra={"carrier_period_um": period_um, "switch_axis_deg": 0.0},
+            min_feature_um=cls.min_feature_um(**kw),
+            extra=extra,
+            recipe_data=recipe_data,
         )

@@ -165,6 +165,38 @@ describe('compositeParallax', () => {
     expect(g).toBeGreaterThan(b);
   });
 
+  it('ambient: f=1 pixels still track the back layer (overlap darkening)', () => {
+    // Paired pin with backend tests/test_sim2d.py
+    // ::test_ambient_overlap_darkening_is_the_back_layer_dependence.
+    // Hand-computed from plate.frag's ambient formula at front = 1:
+    //   reflected = 1, transmission = 0, overlap = back
+    //   rgb = GOLD * 0.85 * (1 - 0.35 * back)
+    //   back=0 -> (195.5, 159.7, 68.1)   back=1 -> (127.1, 103.8, 44.2)
+    // Drop the overlap term and both states collapse to the same constant:
+    // the lab's ambient tilt preview goes flat over the gold figure, which is
+    // precisely where the fringe modulation is supposed to be read.
+    const w = 2;
+    const clear = compositeParallax(grid(w, w, 255), grid(w, w, 0), 0, 0, 'ambient');
+    const covered = compositeParallax(grid(w, w, 255), grid(w, w, 255), 0, 0, 'ambient');
+    for (let c = 0; c < 3; c++) {
+      expect(Math.abs(px(clear, w, 0, 0)[c] - GOLD[c] * 0.85 * 255)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(px(covered, w, 0, 0)[c] - GOLD[c] * 0.85 * 0.65 * 255)
+      ).toBeLessThanOrEqual(1);
+    }
+    // The 35% swing itself, not just the endpoints.
+    expect(px(covered, w, 0, 0)[0] / px(clear, w, 0, 0)[0]).toBeCloseTo(0.65, 2);
+  });
+
+  it('ambient: the clear-pair floor is the shader 0.04 transmission term', () => {
+    // Blank pair: reflected = 0, transmission = 1, overlap = 0 ->
+    // 0.04 * 255 = 10.2 on every channel (the shader constant; both 2D paths
+    // used to carry 0.06 = 15.3). Pinned identically in test_sim2d.py.
+    const w = 2;
+    const out = compositeParallax(grid(w, w, 0), grid(w, w, 0), 0, 0, 'ambient');
+    for (const v of px(out, w, 0, 0).slice(0, 3)) expect(v).toBe(10);
+  });
+
   it('out-of-bounds back samples read as no gold', () => {
     const w = 4;
     // All-gold back shifted fully off-grid: backlight goes fully white.

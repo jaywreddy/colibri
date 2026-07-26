@@ -51,28 +51,44 @@ def test_list_patterns_returns_all_registered_slugs(client: TestClient) -> None:
     assert got == EXPECTED_SLUGS
 
 
-def test_get_manifest_roundtrips_after_generate(client: TestClient) -> None:
-    r = client.post("/patterns/generate", json={"slug": "wayuu-kanasu-moire", "params": {}})
-    assert r.status_code == 200
+# The generate-shape tests below assert MANIFEST STRUCTURE, never wayuu's
+# default geometry, so they run on the `cheap_pattern` fixture (coarsest weave,
+# smallest legal extent -> 20x20 px raster). On the default variant each of
+# them paid its own ~90 s cold generate, because `client` isolates DATA_ROOT
+# per test and nothing is shared between them.
+def test_get_manifest_roundtrips_after_generate(
+    client: TestClient, cheap_pattern: tuple[str, dict[str, float]]
+) -> None:
+    slug, params = cheap_pattern
+    r = client.post("/patterns/generate", json={"slug": slug, "params": params})
+    assert r.status_code == 200, r.text
     m = r.json()
-    assert m["slug"] == "wayuu-kanasu-moire"
+    assert m["slug"] == slug
     assert m["pixel_pitch_um"] > 0
     assert len(m["extent_um"]) == 2
     assert "params" in m and isinstance(m["params"], dict)
     assert "substrate" in m and m["substrate"]["thickness_um"] > 0
 
 
-def test_generate_is_idempotent_on_same_params(client: TestClient) -> None:
-    r1 = client.post("/patterns/generate", json={"slug": "wayuu-kanasu-moire", "params": {}})
-    r2 = client.post("/patterns/generate", json={"slug": "wayuu-kanasu-moire", "params": {}})
+def test_generate_is_idempotent_on_same_params(
+    client: TestClient, cheap_pattern: tuple[str, dict[str, float]]
+) -> None:
+    slug, params = cheap_pattern
+    body = {"slug": slug, "params": params}
+    r1 = client.post("/patterns/generate", json=body)
+    r2 = client.post("/patterns/generate", json=body)
     assert r1.status_code == 200 and r2.status_code == 200
     assert r1.json()["variant"] == r2.json()["variant"]
 
 
 def test_generate_writes_pngs_and_thumbnail_with_lazy_svg(
-    client: TestClient, isolated_data_root: Path
+    client: TestClient,
+    isolated_data_root: Path,
+    cheap_pattern: tuple[str, dict[str, float]],
 ) -> None:
-    r = client.post("/patterns/generate", json={"slug": "wayuu-kanasu-moire", "params": {}})
+    slug, params = cheap_pattern
+    r = client.post("/patterns/generate", json={"slug": slug, "params": params})
+    assert r.status_code == 200, r.text
     m = r.json()
     variant_dir = isolated_data_root / m["slug"] / m["variant"]
     for name in ("front.png", "back.png", "thumbnail.png", "manifest.json"):
@@ -103,6 +119,51 @@ def test_unknown_slug_returns_404(client: TestClient) -> None:
     assert r.status_code == 404
 
 
+def test_thumbnail_endpoint_is_cache_only_and_keyed_on_the_default_variant(
+    client: TestClient,
+    isolated_data_root: Path,
+    cheap_pattern: tuple[str, dict[str, float]],
+) -> None:
+    """The picker sweep's route: serve the DEFAULT variant's cached PNG or 404.
+
+    Two contracts, both load-bearing for the picker (store.ts::loadThumbnails
+    probes this once per catalog slug on every open):
+      1. it never generates — a cold slug 404s and leaves no cache dir, which
+         is what keeps opening the picker off the heavy-compute path;
+      2. it is keyed on the DEFAULT variant — a materialized NON-default
+         variant must not satisfy it, or the tile would show a preview of
+         parameters nobody picked.
+    """
+    from app.patterns.base import registry
+    from app.service import pattern_dir, variant_key
+
+    slug, params = cheap_pattern
+    r = client.get(f"/patterns/{slug}/thumbnail")
+    assert r.status_code == 404, r.text
+    assert not (isolated_data_root / slug).exists(), "cache-only route generated"
+
+    # A non-default variant on disk must not be served as the default preview.
+    m = client.post("/patterns/generate", json={"slug": slug, "params": params}).json()
+    default_variant = variant_key(registry[slug].defaults())
+    assert m["variant"] != default_variant, "cheap params collided with the defaults"
+    assert client.get(f"/patterns/{slug}/thumbnail").status_code == 404
+
+    # With the default slot warm, the PNG bytes come back verbatim.
+    payload = b"\x89PNG\r\n\x1a\nstub"
+    d = pattern_dir(slug, default_variant)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "thumbnail.png").write_bytes(payload)
+    r2 = client.get(f"/patterns/{slug}/thumbnail")
+    assert r2.status_code == 200, r2.text
+    assert r2.headers["content-type"] == "image/png"
+    assert r2.content == payload
+
+
+def test_thumbnail_endpoint_404s_for_unknown_slug(client: TestClient) -> None:
+    r = client.get("/patterns/does-not-exist/thumbnail")
+    assert r.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # Render-recipe manifest round-trip — every manifest must stamp its class
 # render_recipe and the recipe must be one of the names the shader actively
@@ -124,9 +185,12 @@ _VALID_RECIPES = {
 }
 
 
-def test_manifest_carries_render_recipe_field(client: TestClient) -> None:
-    r = client.post("/patterns/generate", json={"slug": "wayuu-kanasu-moire", "params": {}})
-    assert r.status_code == 200
+def test_manifest_carries_render_recipe_field(
+    client: TestClient, cheap_pattern: tuple[str, dict[str, float]]
+) -> None:
+    slug, params = cheap_pattern
+    r = client.post("/patterns/generate", json={"slug": slug, "params": params})
+    assert r.status_code == 200, r.text
     m = r.json()
     assert "render_recipe" in m, "manifest missing render_recipe"
     assert m["render_recipe"] in _VALID_RECIPES

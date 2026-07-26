@@ -108,9 +108,17 @@ export function sampleBilinear(img: ImageDataLike, x: number, y: number): number
  * and shifted-back gold coverage in 0..1:
  *   transmission = (1 - f) · (1 - b)
  *   reflected    = max(f, 0.55 · b)
- *   ambient  : GOLD · reflected · 0.85 + 0.06 · transmission
+ *   ambient  : (GOLD · reflected · 0.85 + 0.04 · transmission) · (1 - 0.35 · f · b)
  *   laser    : laserColor · transmission + GOLD · 0.12 · reflected
  *   backlight: (1,1,1) · transmission + GOLD_BACK · reflected · 0.25
+ *
+ * The ambient overlap darkening is plate.frag's ONLY back-layer dependence
+ * wherever the front mask is gold — there `reflected` saturates at 1 and
+ * transmission is 0, so without it every f=1 pixel is a constant and the
+ * lab's ambient tilt preview shows no fringe modulation over the gold figure
+ * (exactly where the designer looks). Laser and backlight carry no overlap
+ * factor in the shader; do not add one here. The 0.85 / 0.12 / 0.25 factors
+ * stand in for the shader's head-on Lambert terms.
  */
 export function compositeParallax(
   front: ImageDataLike,
@@ -127,29 +135,76 @@ export function compositeParallax(
     );
   }
   const { width, height, data: fdata } = front;
+  const bdata = back.data;
   const out = new Uint8ClampedArray(width * height * 4);
+  // Whole-pixel shifts (the head-on 0/0 case and every integer slide) make the
+  // bilinear weights exactly 1 and 0, so the nearest read is not an
+  // approximation — it is the same arithmetic with the three zero-weighted
+  // terms elided.
+  const nearest = Number.isInteger(dxPx) && Number.isInteger(dyPx);
+  // Loop-invariant tint constants. Each keeps the SAME multiplication grouping
+  // as the documented formulas above: this function's output is pinned to the
+  // byte in tests/unit/composite2d.test.ts and paired with the backend's
+  // test_sim2d.py, so re-associating float products is not a free rewrite.
+  const [gr, gg, gb] = GOLD;
+  const [br, bg, bb] = GOLD_BACK;
+  const [lr, lg, lb] = laserColor;
+  const grLaser = gr * 0.12;
+  const ggLaser = gg * 0.12;
+  const gbLaser = gb * 0.12;
   for (let y = 0; y < height; y++) {
+    // The back-mask row and its bilinear y weight are the same for the whole
+    // scanline; only the x term moves.
+    const sy = y - dyPx;
+    const y0 = Math.floor(sy);
+    const fy = sy - y0;
+    const omfy = 1 - fy;
+    const y0ok = y0 >= 0 && y0 < height;
+    const y1ok = y0 + 1 >= 0 && y0 + 1 < height;
+    const row0 = y0 * width;
+    const row1 = row0 + width;
     for (let x = 0; x < width; x++) {
       const i = y * width + x;
       const f = fdata[i] / 255;
-      const b = sampleBilinear(back, x - dxPx, y - dyPx);
+      // Inlined sampleBilinear (same term order, same grouping, same
+      // out-of-bounds-reads-0 rule) — the closure it allocates per pixel is
+      // the single hottest cost of a lab recomposite.
+      const sx = x - dxPx;
+      const x0 = Math.floor(sx);
+      let b: number;
+      if (nearest) {
+        b = y0ok && x0 >= 0 && x0 < width ? bdata[row0 + x0] / 255 : 0;
+      } else {
+        const fx = sx - x0;
+        const omfx = 1 - fx;
+        const x0ok = x0 >= 0 && x0 < width;
+        const x1ok = x0 + 1 >= 0 && x0 + 1 < width;
+        const s00 = y0ok && x0ok ? bdata[row0 + x0] / 255 : 0;
+        const s10 = y0ok && x1ok ? bdata[row0 + x0 + 1] / 255 : 0;
+        const s01 = y1ok && x0ok ? bdata[row1 + x0] / 255 : 0;
+        const s11 = y1ok && x1ok ? bdata[row1 + x0 + 1] / 255 : 0;
+        b = s00 * omfx * omfy + s10 * fx * omfy + s01 * omfx * fy + s11 * fx * fy;
+      }
       const transmission = (1 - f) * (1 - b);
       const reflected = Math.max(f, 0.55 * b);
       let r: number;
       let g: number;
       let bl: number;
       if (illum === 'laser') {
-        r = laserColor[0] * transmission + GOLD[0] * 0.12 * reflected;
-        g = laserColor[1] * transmission + GOLD[1] * 0.12 * reflected;
-        bl = laserColor[2] * transmission + GOLD[2] * 0.12 * reflected;
+        r = lr * transmission + grLaser * reflected;
+        g = lg * transmission + ggLaser * reflected;
+        bl = lb * transmission + gbLaser * reflected;
       } else if (illum === 'backlight') {
-        r = transmission + GOLD_BACK[0] * reflected * 0.25;
-        g = transmission + GOLD_BACK[1] * reflected * 0.25;
-        bl = transmission + GOLD_BACK[2] * reflected * 0.25;
+        r = transmission + br * reflected * 0.25;
+        g = transmission + bg * reflected * 0.25;
+        bl = transmission + bb * reflected * 0.25;
       } else {
-        r = GOLD[0] * reflected * 0.85 + 0.06 * transmission;
-        g = GOLD[1] * reflected * 0.85 + 0.06 * transmission;
-        bl = GOLD[2] * reflected * 0.85 + 0.06 * transmission;
+        // plate.frag darkens the whole ambient color (gold shade AND the
+        // transmission floor) where both layers are gold.
+        const overlapDark = 1 - 0.35 * f * b;
+        r = (gr * reflected * 0.85 + 0.04 * transmission) * overlapDark;
+        g = (gg * reflected * 0.85 + 0.04 * transmission) * overlapDark;
+        bl = (gb * reflected * 0.85 + 0.04 * transmission) * overlapDark;
       }
       const o = i * 4;
       out[o] = r * 255; // Uint8ClampedArray assignment clamps + rounds

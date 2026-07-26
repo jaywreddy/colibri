@@ -31,6 +31,18 @@ from ..base import GeneratedPattern, ParamSpec, Pattern, register
 from ..motifs import monogram
 
 
+def _resolve_grid(period_um: float, extent_um: float) -> tuple[int, float]:
+    """``(n_grid, cell_um)`` for the carrier raster.
+
+    Resolves the carrier with ≥8 samples per period, capped at 1200 so the raster
+    grid itself stays cheap (1.4M bool cells max). Module-level because both
+    ``generate`` and ``pixel_pitch_um`` need it and the plate compositor reads the
+    pitch WITHOUT generating — one expression, so they cannot disagree.
+    """
+    n_grid = min(1200, max(384, int(extent_um / max(1.0, period_um / 10))))
+    return n_grid, extent_um / n_grid
+
+
 @register
 class MonogramCarrierReveal(Pattern):
     slug = "monogram-carrier-reveal"
@@ -50,11 +62,63 @@ class MonogramCarrierReveal(Pattern):
     tier = 1
     theme = "Global Travel"
     render_recipe = "moire_interactive"
+    # The front stripe is period × duty and its anti-phase back complement is
+    # period × (1 − duty), so the narrower of the two is the reported
+    # min_feature_um that GeneratedPattern checks against the 2 µm litho floor.
+    # The worst legal combination below is 8 × 0.3 = 2.4 µm; the old 6 µm × 0.2
+    # corner advertised 1.2 µm stripes on a 2 µm process. (The reveal contrast is
+    # maximal at duty 0.5 anyway — the extremes traded contrast for nothing.)
     params = [
-        ParamSpec("period_um", "Carrier period", "float", 40.0, 6.0, 80.0, 0.5, "μm"),
-        ParamSpec("duty", "Carrier duty", "float", 0.5, 0.2, 0.8, 0.05),
+        ParamSpec("period_um", "Carrier period", "float", 40.0, 8.0, 80.0, 0.5, "μm"),
+        ParamSpec("duty", "Carrier duty", "float", 0.5, 0.3, 0.7, 0.05),
         ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
     ]
+
+    # --- metadata (no geometry) — see Pattern.metadata ----------------------
+
+    @classmethod
+    def pixel_pitch_um(
+        cls,
+        period_um: float = 40.0,
+        duty: float = 0.5,
+        extent_um: float = 2000.0,
+    ) -> float:
+        return _resolve_grid(period_um, extent_um)[1]
+
+    @classmethod
+    def min_feature_um(
+        cls,
+        period_um: float = 40.0,
+        duty: float = 0.5,
+        extent_um: float = 2000.0,
+    ) -> float:
+        # Front stripe is period × duty, its anti-phase back complement is
+        # period × (1 − duty); the narrower one is what the process has to print.
+        return period_um * min(duty, 1 - duty)
+
+    @classmethod
+    def extra_metadata(
+        cls,
+        period_um: float = 40.0,
+        duty: float = 0.5,
+        extent_um: float = 2000.0,
+    ) -> tuple[dict, dict, tuple[str, ...]]:
+        return (
+            {
+                "carrier_period_um": period_um,
+                # Monogram fully dissolved into the ground at θ(p/2); dark
+                # again (re-interlocked) at θ(p). Sign-symmetric.
+                "vanish_angle_deg": exterior_tilt_deg(period_um / 2),
+                "cycle_angle_deg": exterior_tilt_deg(period_um),
+            },
+            # The period rides in recipe_data (not just extra): the Pattern
+            # Lab's zone quick-sets and the catalog contract read it there.
+            {
+                "carrier_period_um": period_um,
+                "switch_axis_deg": 0.0,
+            },
+            (),
+        )
 
     @classmethod
     def generate(
@@ -65,9 +129,7 @@ class MonogramCarrierReveal(Pattern):
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        # Resolve the carrier with ≥8 samples per period, capped at 1200 so
-        # the raster grid itself stays cheap (1.4M bool cells max).
-        n_grid = min(1200, max(384, int(extent_um / max(1.0, period_um / 10))))
+        n_grid, cell_um = _resolve_grid(period_um, extent_um)
 
         # Rect-count estimate: the full-field back carrier emits one rectangle
         # per row per stripe (n_grid × extent/period), which dominates the
@@ -80,7 +142,6 @@ class MonogramCarrierReveal(Pattern):
             extent_um=extent_um,
         )
 
-        cell_um = extent_um / n_grid
         mono = monogram.jp_monogram_silhouette(extent, n_grid=n_grid)
 
         # Front and back carriers are built on the SAME column grid, and the
@@ -103,23 +164,19 @@ class MonogramCarrierReveal(Pattern):
         front = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
 
+        # Metadata comes from the accessors above so the manifest a plate reads
+        # without generating is byte-for-byte the one a full generate publishes.
+        extra, recipe_data, _ = cls.extra_metadata(
+            period_um=period_um, duty=duty, extent_um=extent_um
+        )
         return GeneratedPattern(
             front=front,
             back=back,
             extent_um=extent,
             pixel_pitch_um=cell_um,
-            min_feature_um=period_um * min(duty, 1 - duty),
-            extra={
-                "carrier_period_um": period_um,
-                # Monogram fully dissolved into the ground at θ(p/2); dark
-                # again (re-interlocked) at θ(p). Sign-symmetric.
-                "vanish_angle_deg": exterior_tilt_deg(period_um / 2),
-                "cycle_angle_deg": exterior_tilt_deg(period_um),
-            },
-            # The period rides in recipe_data (not just extra): the Pattern
-            # Lab's zone quick-sets and the catalog contract read it there.
-            recipe_data={
-                "carrier_period_um": period_um,
-                "switch_axis_deg": 0.0,
-            },
+            min_feature_um=cls.min_feature_um(
+                period_um=period_um, duty=duty, extent_um=extent_um
+            ),
+            extra=extra,
+            recipe_data=recipe_data,
         )

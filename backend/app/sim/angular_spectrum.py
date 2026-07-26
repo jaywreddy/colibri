@@ -30,6 +30,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from . import MAX_ATLAS_CELLS, check_fft_budget
+
 
 @dataclass(frozen=True)
 class PropagateParams:
@@ -96,7 +98,21 @@ def propagate(
 
     The atlas is arranged as (len(view_angles) rows) x (len(wavelengths) cols),
     each tile being a center crop of the observer-plane irradiance.
+
+    ``downsample`` area-averages both masks before the FFTs and sets the grid
+    pitch Δx = pitch·downsample; it is what keeps the per-tile FFTs inside the
+    memory budget. downsample < 1 is refused rather than clamped — Δx = 0 would
+    silently poison ``fftfreq`` with infinities instead of failing.
     """
+    if downsample < 1:
+        raise ValueError(f"downsample must be >= 1 (got {downsample})")
+    if pixel_pitch_um <= 0:
+        raise ValueError(f"pixel_pitch_um must be > 0 (got {pixel_pitch_um})")
+    if not wavelengths_um or min(wavelengths_um) <= 0:
+        raise ValueError(f"wavelengths_um must be non-empty and all > 0 (got {wavelengths_um})")
+    if not view_angles_deg:
+        raise ValueError("view_angles_deg must not be empty")
+
     params = PropagateParams(
         wavelengths_um=tuple(wavelengths_um),
         view_angles_deg=tuple(view_angles_deg),
@@ -109,6 +125,37 @@ def propagate(
     out_path = variant_dir / out_name
     if out_path.exists():
         return {"atlas_name": out_name, "cached": True}
+
+    # Budget from the PNG headers before decoding anything: every (angle, λ)
+    # tile runs four FFTs over the full grid, and all tiles are held as float32
+    # patches until the atlas is composed.
+    with Image.open(variant_dir / "front.png") as img:
+        fw, fh = img.size
+    with Image.open(variant_dir / "back.png") as img:
+        bw, bh = img.size
+    grid_h = min(fh, bh) // downsample
+    grid_w = min(fw, bw) // downsample
+    # < 2 px per side leaves nothing for the center crop the tiles are cut from.
+    if grid_h < 2 or grid_w < 2:
+        raise ValueError(
+            f"downsample={downsample} collapses the {min(fw, bw)}x{min(fh, bh)} "
+            f"raster to a {grid_w}x{grid_h} grid"
+        )
+    check_fft_budget(
+        grid_h * grid_w,
+        "Angular-spectrum grid",
+        raster=max(grid_h, grid_w),
+        downsample=downsample,
+    )
+    tile = min(grid_h, grid_w) // 2
+    check_fft_budget(
+        len(view_angles_deg) * len(wavelengths_um) * tile * tile,
+        "Angular-spectrum atlas",
+        cap=MAX_ATLAS_CELLS,
+        view_angles=len(view_angles_deg),
+        wavelengths=len(wavelengths_um),
+        tile=tile,
+    )
 
     front = _load_mask(variant_dir / "front.png", downsample)
     back = _load_mask(variant_dir / "back.png", downsample)

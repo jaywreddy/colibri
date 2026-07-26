@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildStudioEnvScene } from './studioEnv';
@@ -8,7 +8,8 @@ import vert from '../shaders/plate.vert';
 import frag from '../shaders/plate.frag';
 import { log } from '../logger';
 import { useStore } from '../store';
-import { FACE_IDS, RECIPE_IDS, type FaceId, type RenderRecipe } from '../api';
+import { KIT, Button } from '../ui/kit';
+import { FACE_IDS, RECIPE_IDS, type FaceId } from '../api';
 import {
   FOIL_COLORS,
   cutList,
@@ -29,6 +30,38 @@ const EPS_FOIL_MM = 0.09;
 /** Visual thickness of tinned (no-bead) metallic edges (mm). */
 const TIN_MM = 0.3;
 const BRASS_COLOR = 0xb08d57;
+/**
+ * How long a lost GPU context gets to fire `webglcontextrestored` before we
+ * stop waiting and offer a manual renderer reinit. Browsers normally restore
+ * within a few hundred ms; a driver reset under memory pressure may never.
+ */
+const RESTORE_GRACE_MS = 5000;
+/** Face mask loads: total attempts (1 initial + retries) and the retry delay. */
+const FACE_TEXTURE_ATTEMPTS = 2;
+const FACE_TEXTURE_RETRY_MS = 1200;
+/**
+ * Dirty-flag render loop.
+ *
+ * The scene is time-INVARIANT by contract (see CLAUDE.md renderer honesty), so
+ * an idle frame is bit-identical to the one before it — and it is not cheap:
+ * the glass slabs are MeshPhysicalMaterial with transmission > 0, which makes
+ * three render the whole scene TWICE per frame into a transmission render
+ * target. So the loop keeps running (damping, lid tween and camera tween all
+ * need their per-frame integration) but only draws when something changed.
+ *
+ * DIRTY_FRAMES is the debt any change books: > 1 because a change can land
+ * mid-frame and because a freshly bound texture / recompiled program may not be
+ * resident on the first draw after it.
+ *
+ * IDLE_RENDER_MS is the safety valve. Test harnesses and the debug console
+ * mutate the scene graph and uniforms directly through window.__studio, outside
+ * any React effect that could mark the scene dirty (effectsHelpers'
+ * scaleBackPlaneGap / setFaceScalarUniform do exactly this). Those callers all
+ * render explicitly before reading pixels, but a slow heartbeat means anything
+ * that does NOT still shows up promptly, for ~2 fps instead of 60.
+ */
+const DIRTY_FRAMES = 3;
+const IDLE_RENDER_MS = 500;
 
 /**
  * Per-finish physically-based surface params. Foil tape, solder beads, and
@@ -155,12 +188,41 @@ type FaceRT = {
   glassMat: THREE.MeshPhysicalMaterial;
   /** Front/back PNG textures currently bound (tracked for disposal). */
   textures: THREE.Texture[];
+  /**
+   * Manifest URLs of the masks currently bound, or null when this face has
+   * nothing real on it yet (fresh renderer, refused recipe, failed load). The
+   * bind pass compares against these and skips the fetch+decode+upload when a
+   * new manifest resolves to the same two PNGs — a one-face edit used to reload
+   * all twelve.
+   */
+  boundFront: string | null;
+  boundBack: string | null;
 };
 
 type RebuildDisposables = {
   geoms: THREE.BufferGeometry[];
   mats: THREE.Material[];
   texs: THREE.Texture[];
+};
+
+/**
+ * The metalwork materials whose look is a pure function of `spec.foil.finish`.
+ *
+ * Held on the ctx so a finish change can RESTYLE them in place instead of
+ * rebuilding ~90 BufferGeometries that the finish cannot possibly affect (see
+ * the geomKey / finishKey split). `strips` records the two flags and the seed
+ * each per-strip material needs to re-derive its own maps.
+ */
+type FinishMats = {
+  foil: THREE.MeshStandardMaterial;
+  solder: THREE.MeshPhysicalMaterial;
+  tin: THREE.MeshStandardMaterial;
+  strips: {
+    mat: THREE.MeshStandardMaterial;
+    heat: boolean;
+    isVertical: boolean;
+    seed: number;
+  }[];
 };
 
 type CamTween = {
@@ -181,6 +243,8 @@ type Ctx = {
   faces: Record<FaceId, FaceRT>;
   raycastTargets: THREE.Mesh[];
   rebuildDisposables: RebuildDisposables;
+  /** Finish-driven materials of the CURRENT build (null before the first). */
+  finishMats: FinishMats | null;
   keyLight: THREE.DirectionalLight;
   pmrem: THREE.PMREMGenerator;
   envTex: THREE.Texture;
@@ -194,6 +258,8 @@ type Ctx = {
   camTween: CamTween | null;
   /** True while the user is orbit-dragging — tweens must not fight it. */
   userDragging: boolean;
+  /** Frames the render loop still owes (dirty-flag loop; see DIRTY_FRAMES). */
+  renderDebt: number;
 };
 
 export type StudioHandle = {
@@ -209,7 +275,48 @@ export type StudioHandle = {
   getLidDeg: () => number;
   /** Mirrors the store's autoRotate flag (and OrbitControls.autoRotate). */
   autoRotate: boolean;
+  /**
+   * Book `frames` more draws with the dirty-flag render loop. Anything that
+   * mutates the scene through this handle rather than through the store should
+   * call it (or render explicitly, as the pixel harnesses do).
+   */
+  requestRender: (frames?: number) => void;
 };
+
+/**
+ * Render the studio lightbox to a PMREM environment map.
+ *
+ * Metals (foil, solder, brass) need an env map to read as metal at all —
+ * RoomEnvironment is too dim and crushes them to black, so we render our own
+ * bright lightbox (see studioEnv) and throw the source scene away; the visible
+ * background stays the dark gradient and the env only feeds reflections.
+ *
+ * Callable more than once ON PURPOSE. The env map is a render TARGET with no
+ * CPU-side source, so unlike every image/canvas/data texture in the scene
+ * three.js cannot re-upload it after a GPU context loss — it comes back dead and
+ * every metal (metalness ~0.8-1.0, see FINISH_PBR) crushes to black for the rest
+ * of the session. The context-restore handler calls this to build a fresh one.
+ */
+function makeStudioEnv(renderer: THREE.WebGLRenderer): {
+  pmrem: THREE.PMREMGenerator;
+  envTex: THREE.Texture;
+} {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const envScene = buildStudioEnvScene();
+  const envTex = pmrem.fromScene(envScene, 0.02).texture;
+  envScene.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.geometry) m.geometry.dispose();
+    const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+    const kill = (x: THREE.Material) => {
+      (x as THREE.MeshBasicMaterial).map?.dispose();
+      x.dispose();
+    };
+    if (Array.isArray(mat)) mat.forEach(kill);
+    else if (mat) kill(mat);
+  });
+  return { pmrem, envTex };
+}
 
 function makeBlankTexture(): THREE.DataTexture {
   const blank = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
@@ -292,7 +399,11 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       uBacklightColor: { value: new THREE.Color(0xffffff) },
       uAmbientColor: { value: new THREE.Color(0xffffff) },
       uLightWorld: { value: new THREE.Vector3(2, 3, 3) },
-      uRecipe: { value: RECIPE_IDS.moire_interactive },
+      // Composed plates only ever run foliage_moire (the bind path refuses anything
+      // else), so that is also the pre-bind default: with the blank mask it yields
+      // zero gold coverage → invisible planes until a manifest binds, instead of the
+      // banned single-plane model rendering opaque dark plates for a few frames.
+      uRecipe: { value: RECIPE_IDS.foliage_moire },
       uViewA: { value: blank },
       uViewB: { value: blank },
       uSlitOrientation: { value: 0.0 },
@@ -307,17 +418,17 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       // travelling-ripple branch so every other face keeps its 2-phase switch.
       uWaterScanN: { value: 0.0 },
       uWaterRippleWavelengthUm: { value: 900.0 },
-      // Coarse PREVIEW phase-advance pitch (µm). Decouples the water phase walk
-      // from the mm-scale crest spacing so a few degrees of tilt advances a full
-      // ripple phase (the fab 60 µm pitch is invisible at preview parallax scale).
-      // <= 0 → shader falls back to the wavelength (legacy frozen behaviour).
-      uWaterPhasePitchPreviewUm: { value: 0.0 },
-      // Art-box uv rect so the flow wake registers to the capybara (the
-      // centerpiece is a 0.86·aperture square centered on the plate → different
-      // uv half-extents per axis on a non-square plate). (0,0) → shader falls
-      // back to treating the whole face as the art box.
-      uWaterArtScale: { value: new THREE.Vector2(0.0, 0.0) },
-      uWaterArtCenter: { value: new THREE.Vector2(0.5, 0.5) },
+      // Dry-body shimmer period (µm, preview-magnified). <= 0 → the shader falls
+      // back to the frame carrier, which is what it wrongly reused before the
+      // backend published the body's own 24 µm fab period.
+      uWaterBodyPeriodUm: { value: 0.0 },
+      // Effective waterline in art-box v. Default = capybara_scanimation.WATERLINE_Y.
+      uWaterWaterlineY: { value: 0.66 },
+      // Centerpiece art-box uv rect: registers the capybara flow wake AND gates the
+      // barrier-interlace comb (the comb spans the whole box). (0,0) → shader falls
+      // back to treating the whole face as the art box; the bind path logs it.
+      uArtBoxHalfUv: { value: new THREE.Vector2(0.0, 0.0) },
+      uArtBoxCenterUv: { value: new THREE.Vector2(0.5, 0.5) },
       // Per-motif frame-band angle bucket encoding (foliage_moire).
       uFrameBucket0: { value: 96.0 / 255.0 },
       uFrameBucketStep: { value: 14.0 / 255.0 },
@@ -329,11 +440,15 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       uRainbowLevel: { value: -1.0 },
       // 0 = OUTER plane (front layer), 1 = INNER plane (back layer).
       uLayer: { value: layer },
-      // Pattern Scale (Task 1b): multiplies every procedural preview period on
-      // both planes. 1 = exact fab dimensions (sub-pixel at default zoom).
+      // Pattern Scale (Task 1b): multiplies the preview-MAGNIFIED period family
+      // (frame carrier + louvre, capybara body shimmer) on both planes. The
+      // centerpiece barrier/comb pitch is excluded — scaling it would scale the
+      // switch tilt angle, since the T/n plane gap does not scale with it.
       uPatternScale: { value: 1.0 },
-      // Barrier-interlace tilt switch (Task 3): 1 on globe-duo / gear-quill.
+      // Barrier-interlace tilt switch (Task 3): 1 on globe-duo / gear-quill /
+      // colibri-flap, plus the SOLVED lattice phase the backend publishes.
       uSwitchInterlace: { value: 0.0 },
+      uSwitchBarrierPhaseUm: { value: 0.0 },
     },
   });
   m.alphaToCoverage = true;
@@ -347,10 +462,42 @@ function makeGlassMaterial(): THREE.MeshPhysicalMaterial {
     ior: 1.46,
     roughness: 0.06,
     metalness: 0.0,
-    thickness: 0.02,
+    // No volume: the T/n inner-plane placement is the only refractive
+    // displacement in the scene (see the rebuild loop's g.thickness note).
+    thickness: 0,
     side: THREE.DoubleSide,
     envMapIntensity: 1.0,
   });
+}
+
+/**
+ * Scene-graph census tags. Every plate surface and every piece of metalwork
+ * carries `userData.kind` so a test can COUNT the real hardware in the scene
+ * graph instead of trusting a screenshot: the visual gate asserts 48 foil
+ * strips, 8 seam beads, 8 corner blobs, 8 tinned rims, `spec.hinge.segments`
+ * tubes and 1 rod in the assembled layout — and their absence in flat layout
+ * (`frontend/tests/e2e/visualSignatures.spec.ts`, expectations derived from
+ * assembly.ts, not magic numbers).
+ *
+ * These strings are a TEST CONTRACT: renaming one, or adding a mesh in one of
+ * these families without tagging it, silently shrinks what the gate covers.
+ * `userData.faceId` (set on the raycast targets) is a separate, older contract
+ * used by click-to-select — do not fold the two together.
+ */
+export type SceneMeshKind =
+  | 'plate-outer'
+  | 'plate-inner'
+  | 'foil-strip'
+  | 'seam-bead'
+  | 'seam-corner'
+  | 'tin-rim'
+  | 'hinge-tube'
+  | 'hinge-rod';
+
+/** Stamp a census tag on a mesh and return it (so it can wrap an expression). */
+function tag<T extends THREE.Object3D>(o: T, kind: SceneMeshKind): T {
+  o.userData.kind = kind;
+  return o;
 }
 
 /** Four flat foil strips framing a w x h plate at offset z (plate-local). */
@@ -372,7 +519,7 @@ function addFoilFrame(
   ];
   for (const [cx, cy, sw, sh] of strips) {
     if (sw <= 0 || sh <= 0) continue;
-    const m = new THREE.Mesh(geo(new THREE.PlaneGeometry(sw, sh)), foilMat);
+    const m = tag(new THREE.Mesh(geo(new THREE.PlaneGeometry(sw, sh)), foilMat), 'foil-strip');
     m.position.set(cx, cy, z);
     parent.add(m);
   }
@@ -410,7 +557,7 @@ function addFoilFrameRealistic(
     if (sw <= 0 || sh <= 0) return;
     const seed = hashStr(`strip:${outward ? 'o' : 'i'}:${idx}:${w.toFixed(1)}:${h.toFixed(1)}`);
     const stripMat = mat(build(vert, seed));
-    const m = new THREE.Mesh(geo(new THREE.PlaneGeometry(sw, sh)), stripMat);
+    const m = tag(new THREE.Mesh(geo(new THREE.PlaneGeometry(sw, sh)), stripMat), 'foil-strip');
     m.position.set(cx, cy, z);
     parent.add(m);
   });
@@ -439,6 +586,78 @@ function makeLabelSprite(text: string, D: RebuildDisposables): THREE.Sprite {
 }
 
 /**
+ * Write every finish-derived property onto the metalwork materials.
+ *
+ * The ONLY place the foil finish reaches the scene. Called once at the end of
+ * each geometry rebuild (materials fresh, nothing compiled yet) and again on a
+ * finish-only change, where it is the whole update — no geometry is touched.
+ * Both paths run identical code so the two look the same by construction.
+ *
+ * Every map comes from the memoized builders in metalTextures, so a finish the
+ * user has already visited costs three Map lookups instead of ~720k noise
+ * samples. Those textures are module-owned: they must never land in the
+ * per-rebuild disposal list.
+ */
+function applyFinishMats(mats: FinishMats, finishKey: FinishKey): void {
+  const pbr = FINISH_PBR[finishKey];
+  const tint = FOIL_COLORS[finishKey];
+  const finish = new THREE.Color(tint);
+  const foilMaps = makeFoilMaps(finishKey, { oxidation: pbr.oxidation, tint });
+  const solderMaps = makeSolderMaps(finishKey, { oxidation: pbr.oxidation, tint });
+
+  // Rolled copper tape: metal with brushed roughness streaks + colour mottle.
+  // roughness stays 1.0 — the roughnessMap scales it.
+  mats.foil.map = foilMaps.color;
+  mats.foil.roughnessMap = foilMaps.rough;
+  mats.foil.metalness = pbr.metalness;
+  mats.foil.envMapIntensity = pbr.env;
+
+  // Solder bead: flowed metal with a satin clearcoat sheen + blotchy roughness
+  // and a micro-relief bump — the clearcoat + blotch is what separates a real
+  // solder joint from a chrome rod.
+  mats.solder.map = solderMaps.color;
+  mats.solder.roughnessMap = solderMaps.rough;
+  mats.solder.bumpMap = solderMaps.bump;
+  mats.solder.bumpScale = pbr.bumpScale;
+  mats.solder.metalness = pbr.metalness;
+  mats.solder.clearcoat = pbr.clearcoat;
+  mats.solder.clearcoatRoughness = pbr.clearcoatRough;
+  mats.solder.envMapIntensity = pbr.env;
+
+  mats.tin.color.copy(finish);
+  mats.tin.metalness = pbr.metalness;
+  mats.tin.roughness = pbr.tinRough;
+  mats.tin.envMapIntensity = pbr.env;
+
+  // Base tint as 0..255 RGB for the heat-patina colour maps.
+  const tintRgb: [number, number, number] = [
+    Math.round(finish.r * 255),
+    Math.round(finish.g * 255),
+    Math.round(finish.b * 255),
+  ];
+  for (const s of mats.strips) {
+    // Vertical strips get the pre-rotated rough map so the brush streaks run
+    // along the strip's long axis (rotating the shared Texture in place would
+    // affect every user of it).
+    s.mat.roughnessMap = s.isVertical ? foilMaps.roughRotated : foilMaps.rough;
+    if (s.heat) {
+      // Outer long edge nearest the plate join gets patina. Horizontal strips:
+      // the outer edge is the top/bottom (v-edges); vertical strips (rotated):
+      // the outer edge is the far U end. We tint both long edges lightly so any
+      // seam-adjacent border reads warm-oxidised, fading in.
+      const seamEdges = s.isVertical
+        ? { v0: false, v1: false, u0: true, u1: true }
+        : { v0: true, v1: true, u0: false, u1: false };
+      s.mat.map = makeStripHeatColor(tintRgb, seamEdges, s.seed);
+    } else {
+      s.mat.map = foilMaps.color;
+    }
+    s.mat.metalness = pbr.metalness;
+    s.mat.envMapIntensity = pbr.env;
+  }
+}
+
+/**
  * Ring Box Studio 3D preview — the real object:
  *   - 6 fused-silica plates (MeshPhysicalMaterial slabs) each carrying its
  *     gold-on-quartz pattern surface (the existing plate.vert/plate.frag
@@ -452,10 +671,16 @@ function makeLabelSprite(text: string, D: RebuildDisposables): THREE.Sprite {
  *
  * All static geometry derives from src/assembly.ts so it updates instantly
  * on spec changes; manifest textures rebind only when the manifest changes.
+ *
+ * GPU health is user-visible: a lost WebGL context raises an overlay over the
+ * mount and (if the browser never restores it) offers a renderer reinit, and a
+ * face whose masks fail to load retries once before saying so on screen.
  */
 export default function BoxScene() {
   const mountRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<Ctx | null>(null);
+  /** Suppresses the select-face camera tween on mount and on a renderer reinit. */
+  const firstSelectRef = useRef(true);
 
   const boxSpec = useStore((s) => s.boxSpec);
   const boxManifest = useStore((s) => s.boxManifest);
@@ -468,6 +693,48 @@ export default function BoxScene() {
   const laserColor = useStore((s) => s.laserColor);
   const lightAz = useStore((s) => s.lightAzimuthDeg);
   const lightEl = useStore((s) => s.lightElevationDeg);
+
+  // GPU / texture health, surfaced over the canvas. 'lost' = context died and
+  // the browser owes us a restore; 'stalled' = the restore never came, so the
+  // user gets a manual reinit. A frozen canvas with no message reads as a hung
+  // app, and on this host a driver reset mid-session is plausible.
+  const [gpuStatus, setGpuStatus] = useState<'ok' | 'lost' | 'stalled'>('ok');
+  /** Bumped to tear down and rebuild the whole renderer ('Reload view'). */
+  const [reinitTick, setReinitTick] = useState(0);
+  /** Bumped to re-run the manifest -> texture bind pass ('Retry' on failures). */
+  const [rebindTick, setRebindTick] = useState(0);
+  /** Faces whose masks failed every load attempt (see bind effect). */
+  const [failedFaces, setFailedFaces] = useState<FaceId[]>([]);
+
+  const markFaceFailed = (fid: FaceId): void =>
+    setFailedFaces((prev) => (prev.includes(fid) ? prev : [...prev, fid]));
+  const clearFaceFailed = (fid: FaceId): void =>
+    setFailedFaces((prev) => (prev.includes(fid) ? prev.filter((f) => f !== fid) : prev));
+
+  /** Tear the renderer down and build it again (offered when a restore stalls). */
+  const reloadView = (): void => {
+    log('webgl_view_reloaded');
+    setGpuStatus('ok');
+    firstSelectRef.current = true;
+    setReinitTick((n) => n + 1);
+  };
+
+  /** Re-run the whole manifest bind pass after mask loads failed. */
+  const retryMasks = (): void => {
+    log('face_texture_retry', { face: 'all', manual: true });
+    // Forget what is bound first. The bind pass skips a face whose mask URLs it
+    // has already loaded, and 'Retry' must not be a no-op for a face that looks
+    // bound but is showing an evicted or stale image.
+    const ctx = ctxRef.current;
+    if (ctx) {
+      for (const fid of FACE_IDS) {
+        ctx.faces[fid].boundFront = null;
+        ctx.faces[fid].boundBack = null;
+      }
+    }
+    setFailedFaces([]);
+    setRebindTick((n) => n + 1);
+  };
 
   // -- full static-geometry rebuild (cheap; pure assembly.ts math) -----------
   function rebuild(): void {
@@ -513,105 +780,59 @@ export default function BoxScene() {
     for (const fid of FACE_IDS) {
       const g = ctx.faces[fid].glassMat;
       g.ior = spec.glass.n;
-      g.thickness = T * scale;
+      // Refractive displacement of the back layer is carried GEOMETRICALLY by the
+      // inner pattern plane sitting at the paraxial T/n gap (see buildPlate). The
+      // slab's volume must therefore add NO second displacement of its own: three's
+      // screen-space transmission ray offsets the backdrop by `thickness` (in world
+      // units — it multiplies by the model-matrix scale), and the inner plane is
+      // inside that backdrop. `T * scale` used to be assigned here, which the root
+      // scale then squared to ~0.0006 mm — accidentally harmless, and the reason
+      // nobody noticed. Zero states the intent: no volumetric refraction, no
+      // attenuation, one displacement only. Do NOT "fix" this to T.
+      g.thickness = 0;
     }
 
-    const finishKey = spec.foil.finish;
-    const finish = new THREE.Color(FOIL_COLORS[finishKey]);
-    const pbr = FINISH_PBR[finishKey];
-    const tint = FOIL_COLORS[finishKey];
-
-    // --- procedural microsurface maps (generated once per rebuild) ----------
-    const foilMaps = makeFoilMaps(finishKey, { oxidation: pbr.oxidation, tint });
-    const solderMaps = makeSolderMaps(finishKey, { oxidation: pbr.oxidation, tint });
-    D.texs.push(foilMaps.color, foilMaps.rough);
-    D.texs.push(solderMaps.color, solderMaps.rough, solderMaps.bump);
-
-    // Rolled copper tape: metal with brushed roughness streaks + colour mottle,
-    // double-sided so the inner-border strips read from inside the open box too.
+    // --- metalwork materials -------------------------------------------------
+    // Structural properties only; every finish-derived property (maps, tint,
+    // metalness, clearcoat, env) is written by applyFinishMats at the bottom of
+    // this function, which is also the whole of the finish-only restyle path.
+    // The maps come from the memoized builders and are module-owned, so nothing
+    // here goes into D.texs.
+    //
     // The base foilMat is used for the flat layout; the assembled layout builds
-    // per-strip clones so the brush direction and heat-patina align to each
-    // strip's long axis (see addFoilFrame).
-    const foilMat = mat(
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff, // tint carried by the colour map
-        map: foilMaps.color,
-        roughnessMap: foilMaps.rough,
-        metalness: pbr.metalness,
-        roughness: 1.0, // scaled by the roughnessMap
-        envMapIntensity: pbr.env,
-        side: THREE.DoubleSide,
-      })
-    );
-    // Solder bead: flowed metal with a satin clearcoat sheen + blotchy
-    // roughness and a micro-relief bump — the clearcoat + blotch is what
-    // separates a real solder joint from a chrome rod.
-    const solderMat = mat(
-      new THREE.MeshPhysicalMaterial({
-        color: 0xffffff,
-        map: solderMaps.color,
-        roughnessMap: solderMaps.rough,
-        bumpMap: solderMaps.bump,
-        bumpScale: pbr.bumpScale,
-        metalness: pbr.metalness,
-        roughness: 1.0,
-        clearcoat: pbr.clearcoat,
-        clearcoatRoughness: pbr.clearcoatRough,
-        envMapIntensity: pbr.env,
-      })
-    );
-    const tinMat = mat(
-      new THREE.MeshStandardMaterial({
-        color: finish,
-        metalness: pbr.metalness,
-        roughness: pbr.tinRough,
-        envMapIntensity: pbr.env,
-      })
-    );
-
-    // Base tint as 0..255 RGB for the heat-patina colour maps.
-    const tintRgb: [number, number, number] = [
-      Math.round(finish.r * 255),
-      Math.round(finish.g * 255),
-      Math.round(finish.b * 255),
-    ];
-    // Per-strip foil material: rotates the shared brushed-roughness map so its
-    // streaks run along the strip's long axis, and (for outer strips) bakes a
-    // heat-patina colour map that darkens the outer welded edge. Rotating a
-    // Texture in-place would affect all users, so vertical strips get a cheap
-    // clone of the rough map with a 90deg rotation.
-    const rotatedRough = () => {
-      const r = foilMaps.rough.clone();
-      r.center.set(0.5, 0.5);
-      r.rotation = Math.PI / 2;
-      r.needsUpdate = true;
-      D.texs.push(r);
-      return r;
+    // per-strip materials so the brush direction and heat-patina align to each
+    // strip's long axis (see addFoilFrameRealistic). Double-sided so the
+    // inner-border strips read from inside the open box too.
+    const finishMats: FinishMats = {
+      foil: mat(
+        new THREE.MeshStandardMaterial({
+          color: 0xffffff, // tint carried by the colour map
+          roughness: 1.0, // scaled by the roughnessMap
+          side: THREE.DoubleSide,
+        })
+      ),
+      solder: mat(
+        new THREE.MeshPhysicalMaterial({
+          color: 0xffffff,
+          roughness: 1.0,
+        })
+      ),
+      tin: mat(new THREE.MeshStandardMaterial({})),
+      strips: [],
     };
+    ctx.finishMats = finishMats;
+    const foilMat = finishMats.foil;
+    const solderMat = finishMats.solder;
+    const tinMat = finishMats.tin;
+
     const buildFoilStripMat = (heat: boolean) => (isVertical: boolean, seed: number) => {
-      const roughMap = isVertical ? rotatedRough() : foilMaps.rough;
-      let colorMap: THREE.Texture = foilMaps.color;
-      if (heat) {
-        // Outer long edge nearest the plate join gets patina. Horizontal
-        // strips: the outer edge is the top/bottom (v-edges); vertical strips
-        // (rotated): the outer edge is the far U end. We tint both long edges
-        // lightly so any seam-adjacent border reads warm-oxidised, fading in.
-        const seamEdges = isVertical
-          ? { v0: false, v1: false, u0: true, u1: true }
-          : { v0: true, v1: true, u0: false, u1: false };
-        const heatTex = makeStripHeatColor(tintRgb, seamEdges, seed);
-        D.texs.push(heatTex);
-        colorMap = heatTex;
-      }
-      return new THREE.MeshStandardMaterial({
+      const m = new THREE.MeshStandardMaterial({
         color: 0xffffff,
-        map: colorMap,
-        roughnessMap: roughMap,
-        metalness: pbr.metalness,
         roughness: 1.0,
-        envMapIntensity: pbr.env,
         side: THREE.DoubleSide,
       });
+      finishMats.strips.push({ mat: m, heat, isVertical, seed });
+      return m;
     };
 
     // Brass hinge hardware: warm metal, lightly lacquered (thin clearcoat).
@@ -654,13 +875,19 @@ export default function BoxScene() {
       // mask is authored in the same uv frame as the front (registers when viewed
       // from OUTSIDE — the primary switch view); from inside it reads as genuine
       // second-surface art (laterally reversed, as any inner-face deposition is).
-      const outer = new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shader);
+      const outer = tag(
+        new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shader),
+        'plate-outer'
+      );
       outer.position.z = T / 2 + EPS_PATTERN_MM;
       outer.userData.faceId = fid;
       outer.renderOrder = 2;
       pg.add(outer);
       ctx.raycastTargets.push(outer);
-      const inner = new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shaderBack);
+      const inner = tag(
+        new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shaderBack),
+        'plate-inner'
+      );
       // TASK 2 — apparent-depth gap. The back gold layer physically sits on the
       // far (−T/2) surface, but refraction lifts its APPARENT position toward the
       // viewer: a paraxial ray exits the slab as if the back surface were only
@@ -779,7 +1006,8 @@ export default function BoxScene() {
         const beadGeo = geo(
           makeBeadGeometry({ radius: beadR, length: len, seed, undulation: 0.09 })
         );
-        const bead = new THREE.Mesh(beadGeo, solderMat);
+        const bead = tag(new THREE.Mesh(beadGeo, solderMat), 'seam-bead');
+        bead.userData.seamId = seam.id;
         bead.position.copy(a).add(b).multiplyScalar(0.5);
         // bead runs along local +Y; orient to the seam axis
         if (seam.axis === 'x') bead.rotation.z = Math.PI / 2;
@@ -792,7 +1020,10 @@ export default function BoxScene() {
       // Corner blobs: a touch larger than the bead so the joint looks pooled.
       for (const c of cornerAt) {
         const blobSeed = hashStr(`corner:${c.x.toFixed(2)},${c.y.toFixed(2)},${c.z.toFixed(2)}`);
-        const blob = new THREE.Mesh(geo(makeCornerBlob(beadR * 1.35, blobSeed)), solderMat);
+        const blob = tag(
+          new THREE.Mesh(geo(makeCornerBlob(beadR * 1.35, blobSeed)), solderMat),
+          'seam-corner'
+        );
         blob.position.copy(c);
         group.add(blob);
       }
@@ -809,7 +1040,7 @@ export default function BoxScene() {
         [hw - T / 2, rimY, 0, T, TIN_MM, Dep - 2 * T],
       ];
       for (const [cx, cy, cz, sx, sy, sz] of wallRims) {
-        const rim = new THREE.Mesh(geo(new THREE.BoxGeometry(sx, sy, sz)), tinMat);
+        const rim = tag(new THREE.Mesh(geo(new THREE.BoxGeometry(sx, sy, sz)), tinMat), 'tin-rim');
         rim.position.set(cx, cy, cz);
         group.add(rim);
       }
@@ -821,7 +1052,7 @@ export default function BoxScene() {
         [hw, lidY, 0, TIN_MM, T, Dep],
       ];
       for (const [cx, cy, cz, sx, sy, sz] of lidEdges) {
-        const edge = new THREE.Mesh(geo(new THREE.BoxGeometry(sx, sy, sz)), tinMat);
+        const edge = tag(new THREE.Mesh(geo(new THREE.BoxGeometry(sx, sy, sz)), tinMat), 'tin-rim');
         edge.position.set(cx - pivotPos.x, cy - pivotPos.y, cz - pivotPos.z);
         lidPivot.add(edge);
       }
@@ -830,10 +1061,16 @@ export default function BoxScene() {
       const tubeR = mm(hinge.tube_r_um);
       const rodR = mm(hinge.rod_r_um);
       for (const seg of hinge.segments) {
-        const tube = new THREE.Mesh(
-          geo(new THREE.CylinderGeometry(tubeR, tubeR, mm(seg.length_um), 20)),
-          brassMat
+        const tube = tag(
+          new THREE.Mesh(
+            geo(new THREE.CylinderGeometry(tubeR, tubeR, mm(seg.length_um), 20)),
+            brassMat
+          ),
+          'hinge-tube'
         );
+        // Which half of the hinge this knuckle belongs to. The census asserts the
+        // lid-owned tubes really hang off lidPivot (they must swing with the lid).
+        tube.userData.owner = seg.owner;
         tube.rotation.z = Math.PI / 2;
         if (seg.owner === 'lid') {
           tube.position.set(mm(seg.center_x_um), 0, 0);
@@ -843,21 +1080,54 @@ export default function BoxScene() {
           group.add(tube);
         }
       }
-      const rod = new THREE.Mesh(
-        geo(new THREE.CylinderGeometry(rodR, rodR, mm(hinge.rod_length_um), 16)),
-        brassMat
+      const rod = tag(
+        new THREE.Mesh(
+          geo(new THREE.CylinderGeometry(rodR, rodR, mm(hinge.rod_length_um), 16)),
+          brassMat
+        ),
+        'hinge-rod'
       );
       rod.rotation.z = Math.PI / 2;
       rod.position.set(0, pivotPos.y, pivotPos.z);
       group.add(rod);
     }
 
+    // Finish pass — the ONLY writer of finish-derived material state, shared
+    // with the restyle path. Runs before the first draw of these materials, so
+    // populating the map slots here costs no extra program compile.
+    applyFinishMats(finishMats, spec.foil.finish);
+
     const w = window as unknown as { __studio?: StudioHandle };
     if (w.__studio) w.__studio.lidPivot = ctx.lidPivot;
+    requestRender();
     log('box_scene_rebuilt', { layout: sceneLayout });
   }
 
-  // --- one-time setup --------------------------------------------------------
+  /**
+   * Coalesce geometry rebuilds to at most one per animation frame.
+   *
+   * A dimension slider fires 30-60 store updates a second and each one used to
+   * run the whole of rebuild() — ~90 BufferGeometries and ~28 materials — on the
+   * event, so the work piled up ahead of the frame it was for. The effect below
+   * cancels a pending rebuild before scheduling the next, which is what makes
+   * this latest-wins rather than a queue.
+   */
+  const rebuildRafRef = useRef(0);
+  const scheduleRebuild = (): void => {
+    if (rebuildRafRef.current) return;
+    rebuildRafRef.current = requestAnimationFrame(() => {
+      rebuildRafRef.current = 0;
+      rebuild();
+    });
+  };
+
+  /** Book `frames` more draws with the dirty-flag render loop (see DIRTY_FRAMES). */
+  const requestRender = (frames: number = DIRTY_FRAMES): void => {
+    const ctx = ctxRef.current;
+    if (ctx && ctx.renderDebt < frames) ctx.renderDebt = frames;
+  };
+
+  // --- renderer setup (once per mount, again on 'Reload view') ---------------
   useEffect(() => {
     const mount = mountRef.current!;
     const scene = new THREE.Scene();
@@ -869,33 +1139,34 @@ export default function BoxScene() {
     const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 100);
     camera.position.set(1.8, 1.3, 1.9);
 
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      preserveDrawingBuffer: true,
-      powerPreference: 'high-performance',
-    });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        preserveDrawingBuffer: true,
+        powerPreference: 'high-performance',
+      });
+    } catch (e) {
+      // A GPU that is gone for good throws here instead of firing contextlost —
+      // most likely on the 'Reload view' retry path. Surface it in the overlay
+      // (which keeps offering the retry) instead of letting the throw escape a
+      // React effect and take the whole app down.
+      log('webgl_init_failed', { error: (e as Error).message });
+      setGpuStatus('stalled');
+      bgTex.dispose();
+      shadowTex.dispose();
+      return;
+    }
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
     mount.appendChild(renderer.domElement);
 
-    // Environment map — metals (foil, solder, brass) need one to read as
-    // metal. RoomEnvironment is too dim and crushes metalness=1 to black, so we
-    // render a bright custom studio lightbox to PMREM instead (see studioEnv).
-    // The visible background stays the dark gradient; the env only feeds
-    // reflections.
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    const envScene = buildStudioEnvScene();
-    const envTex = pmrem.fromScene(envScene, 0.02).texture;
+    // Environment map — metals (foil, solder, brass) need one to read as metal
+    // (see makeStudioEnv).
+    const { pmrem, envTex } = makeStudioEnv(renderer);
     scene.environment = envTex;
-    envScene.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (m.geometry) m.geometry.dispose();
-      const mat = m.material as THREE.Material | THREE.Material[] | undefined;
-      if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-      else if (mat) mat.dispose();
-    });
 
     // Global env bounce. The studio env is bright, so keep this ~1; per-finish
     // envMapIntensity in FINISH_PBR does the metal-specific lift.
@@ -963,6 +1234,8 @@ export default function BoxScene() {
         shaderBack: makePlateShader(blank, 1),
         glassMat: makeGlassMaterial(),
         textures: [],
+        boundFront: null,
+        boundBack: null,
       };
     }
 
@@ -977,6 +1250,7 @@ export default function BoxScene() {
       faces,
       raycastTargets: [],
       rebuildDisposables: { geoms: [], mats: [], texs: [] },
+      finishMats: null,
       keyLight,
       pmrem,
       envTex,
@@ -987,6 +1261,7 @@ export default function BoxScene() {
       bindToken: 0,
       camTween: null,
       userDragging: false,
+      renderDebt: DIRTY_FRAMES,
     };
     ctxRef.current = ctx;
 
@@ -1003,15 +1278,44 @@ export default function BoxScene() {
       setLid: (deg: number) => useStore.getState().setLidTargetDeg(deg),
       getLidDeg: () => ctxRef.current?.lidCurrentDeg ?? 0,
       autoRotate: useStore.getState().autoRotate,
+      requestRender: (frames?: number) => requestRender(frames),
     };
     (window as unknown as { __studio: StudioHandle }).__studio = studio;
 
     const canvas = renderer.domElement;
+    // GPU context loss. preventDefault() opts into browser restoration; three's
+    // own listeners (registered in the WebGLRenderer ctor, so they run before
+    // these) skip rendering while lost and re-init GL state on restore. What
+    // three CANNOT do is regenerate the PMREM env render target — we do that
+    // here, or every metal stays black for the rest of the session.
+    let restoreTimer = 0;
     const onContextLost = (e: Event) => {
       e.preventDefault();
       log('webgl_context_lost');
+      setGpuStatus('lost');
+      window.clearTimeout(restoreTimer);
+      restoreTimer = window.setTimeout(() => {
+        log('webgl_restore_timeout', { waited_ms: RESTORE_GRACE_MS });
+        setGpuStatus('stalled');
+      }, RESTORE_GRACE_MS);
     };
-    const onContextRestored = () => log('webgl_context_restored');
+    const onContextRestored = () => {
+      window.clearTimeout(restoreTimer);
+      const c = ctxRef.current;
+      if (c) {
+        c.envTex.dispose();
+        c.pmrem.dispose();
+        const env = makeStudioEnv(c.renderer);
+        c.pmrem = env.pmrem;
+        c.envTex = env.envTex;
+        c.scene.environment = env.envTex;
+      }
+      // Static geometry is cheap pure assembly math — rebuild it rather than
+      // trust GL objects that lived through a context death.
+      rebuild();
+      log('webgl_context_restored');
+      setGpuStatus('ok');
+    };
     canvas.addEventListener('webglcontextlost', onContextLost);
     canvas.addEventListener('webglcontextrestored', onContextRestored);
 
@@ -1084,6 +1388,7 @@ export default function BoxScene() {
       renderer.setSize(w, h, false);
       camera.aspect = w / Math.max(1, h);
       camera.updateProjectionMatrix();
+      requestRender();
     };
     onResize();
     const ro = new ResizeObserver(onResize);
@@ -1091,15 +1396,19 @@ export default function BoxScene() {
 
     let rafId = 0;
     let lastT = performance.now();
+    let lastRenderT = 0;
     const tick = (now: number) => {
       const c = ctxRef.current;
       rafId = requestAnimationFrame(tick);
       if (!c) return;
       const dt = Math.min(0.05, (now - lastT) / 1000);
       lastT = now;
-      // Damped lid animation toward the target angle.
+      // Damped lid animation toward the target angle. The integration itself
+      // always runs — only the DRAW is dirty-flagged — so the lid still reaches
+      // its target while the scene is otherwise idle.
       const target = c.lidTargetDeg;
       let cur = c.lidCurrentDeg;
+      if (cur !== target) c.renderDebt = Math.max(c.renderDebt, DIRTY_FRAMES);
       cur += (target - cur) * Math.min(1, dt * 8);
       if (Math.abs(cur - target) < 0.01) cur = target;
       c.lidCurrentDeg = cur;
@@ -1112,6 +1421,7 @@ export default function BoxScene() {
       // Gentle camera-azimuth tween toward the selected face. Never runs
       // while the user is dragging (controls 'start' clears the tween).
       if (c.camTween && !c.userDragging) {
+        c.renderDebt = Math.max(c.renderDebt, DIRTY_FRAMES);
         const tw = c.camTween;
         const k = Math.min(1, (now - tw.t0) / tw.durMs);
         const az = tw.fromAz + (tw.toAz - tw.fromAz) * easeInOutQuad(k);
@@ -1122,13 +1432,26 @@ export default function BoxScene() {
         camera.position.copy(controls.target).add(offset);
         if (k >= 1) c.camTween = null;
       }
-      controls.update();
-      renderer.render(scene, camera);
+      // OrbitControls.update() reports whether the camera actually moved, which
+      // covers damping decay, the turntable, an in-flight drag AND a camera
+      // placed straight onto the object from outside React (setCameraAzEl in the
+      // e2e helpers) — it diffs against its own last known transform.
+      if (controls.update() || c.userDragging) {
+        c.renderDebt = Math.max(c.renderDebt, DIRTY_FRAMES);
+      }
+      // Idle heartbeat — the safety valve described at IDLE_RENDER_MS.
+      if (c.renderDebt <= 0 && now - lastRenderT >= IDLE_RENDER_MS) c.renderDebt = 1;
+      if (c.renderDebt > 0) {
+        c.renderDebt -= 1;
+        lastRenderT = now;
+        renderer.render(scene, camera);
+      }
     };
     rafId = requestAnimationFrame(tick);
 
     return () => {
       cancelAnimationFrame(rafId);
+      window.clearTimeout(restoreTimer);
       ro.disconnect();
       canvas.removeEventListener('webglcontextlost', onContextLost);
       canvas.removeEventListener('webglcontextrestored', onContextRestored);
@@ -1158,10 +1481,17 @@ export default function BoxScene() {
       renderer.dispose();
       mount.removeChild(renderer.domElement);
     };
+    // reinitTick: 'Reload view' tears the whole renderer down and rebuilds it
+    // after a context loss the browser never restored. Every effect below that
+    // seeds ctx/uniform state carries the same dep so the fresh scene comes back
+    // fully configured instead of at material defaults.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [reinitTick]);
 
   // --- rebuild static geometry when spec geometry / layout changes ----------
+  // `foil.finish` is deliberately NOT in this key: it cannot move a vertex, only
+  // the metalwork materials, so it gets its own restyle effect below. Keeping it
+  // here made every click on a finish swatch rebuild the whole scene graph.
   const geomKey = useMemo(
     () =>
       JSON.stringify({
@@ -1169,16 +1499,40 @@ export default function BoxScene() {
         d: boxSpec.depth_um,
         h: boxSpec.height_um,
         glass: boxSpec.glass,
-        foil: boxSpec.foil,
+        foil: {
+          tape_width_um: boxSpec.foil.tape_width_um,
+          safety_um: boxSpec.foil.safety_um,
+          bead_um: boxSpec.foil.bead_um,
+        },
         hinge: boxSpec.hinge,
         layout,
       }),
     [boxSpec, layout]
   );
   useEffect(() => {
-    rebuild();
+    scheduleRebuild();
+    return () => {
+      // Cancel-then-schedule is what makes a burst of slider updates collapse to
+      // ONE rebuild of the latest key instead of a queue of stale ones.
+      if (rebuildRafRef.current) {
+        cancelAnimationFrame(rebuildRafRef.current);
+        rebuildRafRef.current = 0;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geomKey]);
+  }, [geomKey, reinitTick]);
+
+  // --- foil finish: restyle the metalwork in place, no geometry rebuild ------
+  // Skipped when there is no build yet (finishMats null) — the rebuild above
+  // applies the finish itself, so a fresh scene is never left unstyled.
+  const finishKey = boxSpec.foil.finish;
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx || !ctx.finishMats) return;
+    applyFinishMats(ctx.finishMats, finishKey);
+    requestRender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finishKey, reinitTick]);
 
   // --- bind manifest -> textures + recipe uniforms per face -----------------
   useEffect(() => {
@@ -1186,88 +1540,130 @@ export default function BoxScene() {
     if (!ctx || !boxManifest) return;
     const token = ++ctx.bindToken;
     const loader = new THREE.TextureLoader();
+    const retryTimers: number[] = [];
     for (const fid of FACE_IDS) {
       const fm = boxManifest.faces[fid];
       if (!fm) continue;
       const rt = ctx.faces[fid];
-      const rawRecipe = fm.render_recipe;
-      const recipe: RenderRecipe =
-        rawRecipe && rawRecipe in RECIPE_IDS
-          ? (rawRecipe as RenderRecipe)
-          : 'moire_interactive';
-      // Recipe extras (slimmed recipe_data still carries scalar knobs +
-      // the stereo view PNG urls — only frame_scene is stripped).
-      const rd = fm.recipe_data ?? {};
-      const viewAUrl =
-        recipe === 'stereo_lenticular' && typeof rd.view_a_png === 'string'
-          ? rd.view_a_png
-          : null;
-      const viewBUrl =
-        recipe === 'stereo_lenticular' && typeof rd.view_b_png === 'string'
-          ? rd.view_b_png
-          : null;
-      const loads = [loader.loadAsync(fm.files.front_png), loader.loadAsync(fm.files.back_png)];
-      if (viewAUrl && viewBUrl) {
-        loads.push(loader.loadAsync(viewAUrl), loader.loadAsync(viewBUrl));
+      // A composed box plate is ALWAYS foliage_moire — plates.py forces it, and it
+      // is the only recipe the two-plane renderer implements. Anything else (a
+      // manifest cached before the recipe was forced, an unknown string, a missing
+      // field) is REFUSED, not fallen back on: the old fallback bound
+      // moire_interactive to BOTH plane materials, which is the banned single-plane
+      // model — in-shader parallax_offset instead of the real T/n gap, opaque (so
+      // the inner plane never shows) and with uFront/uBack swapped on the inner
+      // plane. It also mislabelled itself in face_texture_bound as if the manifest
+      // had asked for it. Leave the planes unbound and invisible: a bare glass face
+      // is a visible, greppable failure; a plausible-looking wrong physics is not.
+      if (fm.render_recipe !== 'foliage_moire') {
+        log('face_recipe_unsupported', {
+          face: fid,
+          slug: fm.spec.pattern_slug,
+          recipe: fm.render_recipe ?? null,
+          expected: 'foliage_moire',
+        });
+        rt.shader.visible = false;
+        rt.shaderBack.visible = false;
+        // Nothing honest is bound any more: forget the URLs so a later manifest
+        // that DOES declare foliage_moire binds this face instead of skipping it
+        // as already-current.
+        rt.boundFront = null;
+        rt.boundBack = null;
+        requestRender();
+        continue;
       }
-      Promise.all(loads)
-        .then((texs) => {
-          if (ctxRef.current !== ctx || ctx.bindToken !== token) {
-            for (const tex of texs) tex.dispose();
-            return;
-          }
-          const [front, back] = texs;
-          const viewA: THREE.Texture | undefined = texs[2];
-          const viewB: THREE.Texture | undefined = texs[3];
-          for (const tex of texs) {
-            tex.colorSpace = THREE.LinearSRGBColorSpace;
-            tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-            tex.generateMipmaps = false;
-            tex.needsUpdate = true;
-          }
-          // The front/back masks (texs[0], texs[1]) are LABEL/CODE textures, not
-          // continuous tone: runFoliageMoireLayer decodes r through hard region
-          // thresholds (FRAME_MIN/RAINBOW_MIN/ART_MIN) and a quantized angle-bucket
-          // floor(). Bilinear interpolation across any boundary manufactures
-          // intermediate codes that never existed in the mask, decoding to the
-          // wrong bucket / wrong region in a thin edge band — which reads as a
-          // "traced" outline on every motif and a black stripe wherever the ramp
-          // dips below the gold threshold. Sample them NEAREST. (anisotropy is a
-          // no-op without a mipmap chain, so it is intentionally dropped here.)
-          for (const mask of [front, back]) {
-            mask.magFilter = THREE.NearestFilter;
-            mask.minFilter = THREE.NearestFilter;
-          }
-          // The stereo view PNGs (texs[2], texs[3]) ARE continuous-tone scenes —
-          // keep them bilinear so the lenticular interlace stays smooth.
-          for (const view of [viewA, viewB]) {
-            if (!view) continue;
-            view.magFilter = THREE.LinearFilter;
-            view.minFilter = THREE.LinearFilter;
-            view.anisotropy = 8;
-          }
-          for (const old of rt.textures) old.dispose();
-          rt.textures = texs;
-          // Shared recipe uniforms are written to BOTH plane materials; the ONLY
-          // per-plane differences are the mask bound to uFront (front vs back
-          // PNG) and the fixed uLayer set at material creation.
-          const applyShared = (u: Record<string, THREE.IUniform>) => {
-            // (width, height) — UV u spans the width, v the height; wall plates
-            // are non-square so the physical grating axes need both.
-            (u.uExtentUm.value as THREE.Vector2).set(fm.extent_um[0], fm.extent_um[1]);
-            u.uThicknessUm.value = fm.substrate.thickness_um;
-            u.uN.value = fm.substrate.n;
-            u.uRecipe.value = RECIPE_IDS[recipe];
-            if (recipe === 'stereo_lenticular') {
-              u.uSlitOrientation.value = ((Number(rd.slit_axis_deg ?? 0) || 0) * Math.PI) / 180;
-              u.uSlitPeriodUm.value = Number(rd.slit_period_um ?? 40.0) || 40.0;
-              u.uViewA.value = viewA ?? front;
-              u.uViewB.value = viewB ?? front;
-            } else {
+      // Recipe extras (slimmed recipe_data still carries the scalar knobs — only
+      // frame_scene is stripped).
+      const rd = fm.recipe_data ?? {};
+      // recipe_data keys whose absence changes the GEOMETRY rather than a shade:
+      // the art-box rect gates the barrier comb and registers the capybara wake (a
+      // (0,0) fallback stretches both to the whole face), the preview periods carry
+      // the grating pitch, and the barrier phase carries the switch registration.
+      // Degrade loudly — the fallbacks below still keep the face renderable.
+      const missing = [
+        'water_art_half_uv',
+        'preview_carrier_period_um',
+        'preview_slit_period_um',
+        'fab_center_period_um',
+        ...(rd.switch_interlace ? ['switch_barrier_phase_um'] : []),
+        ...(Number(rd.water_scan_n ?? 0) > 0
+          ? ['water_body_carrier_preview_um', 'water_waterline_y']
+          : []),
+      ].filter((k) => rd[k] == null);
+      if (missing.length > 0) {
+        log('face_recipe_data_incomplete', {
+          face: fid,
+          slug: fm.spec.pattern_slug,
+          missing,
+        });
+      }
+      const frontUrl = fm.files.front_png;
+      const backUrl = fm.files.back_png;
+      // A manifest change usually moves ONE face, but this pass used to re-fetch,
+      // re-decode and re-upload all twelve mask PNGs. Mask paths are content
+      // addressed (data/plates/<hash>/...), so an unchanged pair IS the same
+      // composed plate: reuse the bound textures and only re-apply the recipe
+      // uniforms. Nothing (re)binds, so no face_texture_bound is logged — the
+      // e2e suite reads that event as proof a NEW mask landed. 'Retry' clears
+      // these URLs first (see retryMasks) so it stays a real reload.
+      const alreadyBound =
+        rt.boundFront === frontUrl && rt.boundBack === backUrl && rt.textures.length === 2;
+      // Bounded retry: a transient blip — a network hiccup, or the plate cache
+      // evicted between the manifest write and this fetch — used to leave the
+      // face on the 1x1 blank (or the PREVIOUS design's masks) forever, with the
+      // only trace a console.debug line. Retry once, then fail loudly:
+      // face_texture_failed plus a badge over the scene, because one dark wall is
+      // otherwise indistinguishable from the user's own design.
+      const attemptBind = (attempt: number): void => {
+        const loads = alreadyBound
+          ? [Promise.resolve(rt.textures[0]), Promise.resolve(rt.textures[1])]
+          : [loader.loadAsync(frontUrl), loader.loadAsync(backUrl)];
+        Promise.all(loads)
+          .then((texs) => {
+            if (ctxRef.current !== ctx || ctx.bindToken !== token) {
+              if (!alreadyBound) for (const tex of texs) tex.dispose();
+              return;
+            }
+            const [front, back] = texs;
+            if (!alreadyBound) {
+              for (const tex of texs) {
+                tex.colorSpace = THREE.LinearSRGBColorSpace;
+                tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+                tex.generateMipmaps = false;
+                tex.needsUpdate = true;
+              }
+              // The front/back masks (texs[0], texs[1]) are LABEL/CODE textures, not
+              // continuous tone: runFoliageMoireLayer decodes r through hard region
+              // thresholds (FRAME_MIN/RAINBOW_MIN/ART_MIN) and a quantized angle-bucket
+              // floor(). Bilinear interpolation across any boundary manufactures
+              // intermediate codes that never existed in the mask, decoding to the
+              // wrong bucket / wrong region in a thin edge band — which reads as a
+              // "traced" outline on every motif and a black stripe wherever the ramp
+              // dips below the gold threshold. Sample them NEAREST. (anisotropy is a
+              // no-op without a mipmap chain, so it is intentionally dropped here.)
+              for (const mask of [front, back]) {
+                mask.magFilter = THREE.NearestFilter;
+                mask.minFilter = THREE.NearestFilter;
+              }
+              for (const old of rt.textures) old.dispose();
+              rt.textures = texs;
+            }
+            // Shared recipe uniforms are written to BOTH plane materials; the ONLY
+            // per-plane differences are the mask bound to uFront (front vs back
+            // PNG) and the fixed uLayer set at material creation.
+            const applyShared = (u: Record<string, THREE.IUniform>) => {
+              // (width, height) — UV u spans the width, v the height; wall plates
+              // are non-square so the physical grating axes need both.
+              (u.uExtentUm.value as THREE.Vector2).set(fm.extent_um[0], fm.extent_um[1]);
+              u.uThicknessUm.value = fm.substrate.thickness_um;
+              u.uN.value = fm.substrate.n;
+              u.uRecipe.value = RECIPE_IDS.foliage_moire;
+              // uViewA/uViewB belong to the legacy stereo_lenticular path (recipe 0),
+              // which a composed plate can never be — the guard above refused
+              // anything but foliage_moire. Point them at a real texture anyway so no
+              // sampler is left dangling.
               u.uViewA.value = front;
               u.uViewB.value = front;
-            }
-            if (recipe === 'foliage_moire') {
               // Two-plane geometric renderer. The FRONT (outer) plane draws the
               // foliage louvre (slit period/angle) + colibrí carrier; the BACK
               // (inner) plane draws the uniform carrier + globe/water. The leaf
@@ -1286,7 +1682,7 @@ export default function BoxScene() {
               u.uFrameBucketCount.value = Number(rd.frame_bucket_count ?? 6) || 6;
               u.uFrameAngleSpan.value =
                 ((Number(rd.frame_angle_span_deg ?? 3.5) || 3.5) * Math.PI) / 180;
-              // --- GRATING PITCH preview periods (Tasks 1 + 2) ----------------
+              // --- GRATING PITCH preview periods (Tasks 1 + 2) ------------------
               // The frame back carrier + leaf louvre are drawn at the USER-TUNED
               // grating pitch, MAGNIFIED for on-screen resolvability (see
               // plates.PREVIEW_PITCH_MAGNIFY): the raw fab pitch can be the 4 µm
@@ -1297,8 +1693,8 @@ export default function BoxScene() {
               // stay the TRUE pitch (advertised + baked). uPatternScale multiplies
               // on top. Fallbacks read the true pitch × the magnify factor so a
               // stale manifest (no preview_* fields) still resolves. The
-              // centerpiece 60 µm switch/comb below is NOT part of the pitch family
-              // and stays at exact fab dimensions.
+              // centerpiece 60 µm switch/comb below is NOT part of this family: it
+              // is drawn at exact fab pitch and is NOT scaled (see uPatternScale).
               u.uCarrierPeriodUm.value =
                 Number(rd.preview_carrier_period_um ??
                   (Number(rd.fab_back_period_um ?? 22.0) || 22.0) * 5.0) || 110.0;
@@ -1306,57 +1702,114 @@ export default function BoxScene() {
                 Number(rd.preview_slit_period_um ??
                   (Number(rd.fab_front_period_um ?? 22.0 * 1.09) || 22.0 * 1.09) * 5.0) ||
                 110.0 * 1.09;
-              // Centerpiece switch / water-comb / barrier pitch: the fab 60 µm
-              // value → ~5° crossing at the T/n air gap.
-              u.uCenterPeriodUm.value = Number(rd.fab_center_period_um ?? 60.0) || 60.0;
+              // Centerpiece switch / water-comb / barrier pitch: the fab 60 µm value
+              // → ~5° crossing at the T/n air gap. On a barrier-interlace face the
+              // canonical field is switch_interlace_period_um (comb AND lanes share
+              // that ONE period by construction); fab_center_period_um is the same
+              // number for every other face.
+              const centerPeriodRd = rd.switch_interlace
+                ? (rd.switch_interlace_period_um ?? rd.fab_center_period_um)
+                : rd.fab_center_period_um;
+              u.uCenterPeriodUm.value = Number(centerPeriodRd ?? 60.0) || 60.0;
               u.uSwitchAxis.value = ((Number(rd.switch_axis_deg ?? 0) || 0) * Math.PI) / 180;
-              // Barrier-interlace faces (globe-duo, gear-quill) — Task 3.
+              // Barrier-interlace faces (globe-duo, gear-quill, colibri-flap) — Task 3
+              // — plus the SOLVED registration phase, so the preview comb + lanes ride
+              // the same lattice the fab bake and the generators do instead of the old
+              // hardcoded face-edge assumption.
               u.uSwitchInterlace.value = rd.switch_interlace ? 1.0 : 0.0;
+              u.uSwitchBarrierPhaseUm.value = Number(rd.switch_barrier_phase_um ?? 0) || 0;
               // Live Pattern Scale (Task 1b) — the store may have changed it
               // before this manifest bound; keep the freshly-bound uniforms in sync.
               u.uPatternScale.value = useStore.getState().patternScale;
               u.uWaterScanN.value = Number(rd.water_scan_n ?? 0) || 0;
               u.uWaterRippleWavelengthUm.value =
                 Number(rd.water_ripple_wavelength_um ?? 900.0) || 900.0;
-              u.uWaterPhasePitchPreviewUm.value =
-                Number(rd.water_phase_pitch_preview_um ?? 0) || 0;
+              // Capybara dry-body shimmer: the body's OWN fab period (24 µm),
+              // preview-magnified. 0 → the shader falls back to the frame carrier.
+              u.uWaterBodyPeriodUm.value = Number(rd.water_body_carrier_preview_um ?? 0) || 0;
+              // Effective waterline. The backend does not publish one yet, so this
+              // falls back to capybara_scanimation.WATERLINE_Y — the value the plate
+              // compositor hardcodes when it bakes the masks, which is what the
+              // preview must agree with. Do NOT wire this to the pattern's
+              // `waterline` param: the composed-plate masks ignore that param, so
+              // following it here would desynchronize the shader from the mask.
+              u.uWaterWaterlineY.value = Number(rd.water_waterline_y ?? 0.66) || 0.66;
               {
                 const half = (rd.water_art_half_uv ?? [0, 0]) as number[];
                 const ctr = (rd.water_art_center_uv ?? [0.5, 0.5]) as number[];
-                (u.uWaterArtScale.value as THREE.Vector2).set(
+                (u.uArtBoxHalfUv.value as THREE.Vector2).set(
                   Number(half[0]) || 0,
                   Number(half[1]) || 0
                 );
-                (u.uWaterArtCenter.value as THREE.Vector2).set(
+                (u.uArtBoxCenterUv.value as THREE.Vector2).set(
                   Number(ctr[0]) || 0.5,
                   Number(ctr[1]) || 0.5
                 );
               }
               u.uRainbowLevel.value =
                 rd.rainbow_level != null ? (Number(rd.rainbow_level) || 0) / 255 : -1.0;
+            };
+            applyShared(rt.shader.uniforms);
+            applyShared(rt.shaderBack.uniforms);
+            // Per-plane masks: OUTER plane samples the FRONT mask, INNER the BACK.
+            // uBack is kept bound (legacy single-plane recipes read it); the
+            // foliage_moire path ignores it and reads only uFront (this layer).
+            rt.shader.uniforms.uFront.value = front;
+            rt.shader.uniforms.uBack.value = back;
+            rt.shaderBack.uniforms.uFront.value = back;
+            rt.shaderBack.uniforms.uBack.value = front;
+            // Bound and honest — undo any earlier refusal on this face.
+            rt.shader.visible = true;
+            rt.shaderBack.visible = true;
+            rt.boundFront = frontUrl;
+            rt.boundBack = backUrl;
+            requestRender();
+            if (alreadyBound) return;
+            log('face_texture_bound', {
+              face: fid,
+              slug: fm.spec.pattern_slug,
+              recipe: 'foliage_moire',
+              // Always false: a composed plate is never stereo_lenticular. Kept so the
+              // @effects metric field stays present.
+              stereo_views: false,
+            });
+            clearFaceFailed(fid);
+          })
+          .catch((e) => {
+            if (ctxRef.current !== ctx || ctx.bindToken !== token) return;
+            const message = (e as Error).message;
+            if (attempt + 1 < FACE_TEXTURE_ATTEMPTS) {
+              log('face_texture_retry', {
+                face: fid,
+                slug: fm.spec.pattern_slug,
+                attempt: attempt + 1,
+                error: message,
+              });
+              retryTimers.push(
+                window.setTimeout(() => {
+                  if (ctxRef.current === ctx && ctx.bindToken === token) attemptBind(attempt + 1);
+                }, FACE_TEXTURE_RETRY_MS)
+              );
+              return;
             }
-          };
-          applyShared(rt.shader.uniforms);
-          applyShared(rt.shaderBack.uniforms);
-          // Per-plane masks: OUTER plane samples the FRONT mask, INNER the BACK.
-          // uBack is kept bound (legacy single-plane recipes read it); the
-          // foliage_moire path ignores it and reads only uFront (this layer).
-          rt.shader.uniforms.uFront.value = front;
-          rt.shader.uniforms.uBack.value = back;
-          rt.shaderBack.uniforms.uFront.value = back;
-          rt.shaderBack.uniforms.uBack.value = front;
-          log('face_texture_bound', {
-            face: fid,
-            slug: fm.spec.pattern_slug,
-            recipe,
-            stereo_views: !!(viewA && viewB),
+            log('face_texture_failed', {
+              face: fid,
+              slug: fm.spec.pattern_slug,
+              attempts: attempt + 1,
+              error: message,
+            });
+            markFaceFailed(fid);
           });
-        })
-        .catch((e) => {
-          log('face_texture_failed', { face: fid, error: (e as Error).message });
-        });
+      };
+      attemptBind(0);
     }
-  }, [boxManifest]);
+    return () => {
+      for (const h of retryTimers) window.clearTimeout(h);
+    };
+    // rebindTick: the 'Retry' button on the mask-failure badge. reinitTick: a
+    // rebuilt renderer needs every face bound again from scratch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boxManifest, rebindTick, reinitTick]);
 
   // --- auto-rotate (slow turntable) ------------------------------------------
   useEffect(() => {
@@ -1365,10 +1818,11 @@ export default function BoxScene() {
     ctx.controls.autoRotate = autoRotate;
     const w = window as unknown as { __studio?: StudioHandle };
     if (w.__studio) w.__studio.autoRotate = autoRotate;
-  }, [autoRotate]);
+    requestRender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRotate, reinitTick]);
 
   // --- selected face highlight + gentle camera tween -------------------------
-  const firstSelectRef = useRef(true);
   useEffect(() => {
     const ctx = ctxRef.current;
     if (!ctx) return;
@@ -1378,9 +1832,13 @@ export default function BoxScene() {
       g.emissive.setHex(sel ? 0x1d4a7a : 0x000000);
       g.emissiveIntensity = sel ? 0.5 : 0.0;
     }
+    requestRender();
     // Tween the camera azimuth toward the selected wall (~400 ms ease).
-    // Skipped on mount, for top/bottom (no natural azimuth), in flat layout,
-    // and while the user is orbit-dragging — never fight OrbitControls.
+    // Skipped on mount (and on a renderer reinit, which resets the flag — the
+    // highlight must be re-applied to the fresh materials but a surprise camera
+    // move on 'Reload view' is not wanted), for top/bottom (no natural
+    // azimuth), in flat layout, and while the user is orbit-dragging — never
+    // fight OrbitControls.
     if (firstSelectRef.current) {
       firstSelectRef.current = false;
       return;
@@ -1395,13 +1853,16 @@ export default function BoxScene() {
     while (to - fromAz > Math.PI) to -= 2 * Math.PI;
     while (to - fromAz < -Math.PI) to += 2 * Math.PI;
     ctx.camTween = { fromAz, toAz: to, t0: performance.now(), durMs: 400 };
-  }, [selectedFaceId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFaceId, reinitTick]);
 
   // --- lid target ------------------------------------------------------------
+  // No requestRender here: the loop books its own debt for every frame the lid
+  // is still travelling toward the target.
   useEffect(() => {
     const ctx = ctxRef.current;
     if (ctx) ctx.lidTargetDeg = lidTargetDeg;
-  }, [lidTargetDeg]);
+  }, [lidTargetDeg, reinitTick]);
 
   // --- pattern scale (Task 1b) -----------------------------------------------
   useEffect(() => {
@@ -1411,7 +1872,9 @@ export default function BoxScene() {
       ctx.faces[fid].shader.uniforms.uPatternScale.value = patternScale;
       ctx.faces[fid].shaderBack.uniforms.uPatternScale.value = patternScale;
     }
-  }, [patternScale]);
+    requestRender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [patternScale, reinitTick]);
 
   // --- illumination / laser color --------------------------------------------
   useEffect(() => {
@@ -1429,7 +1892,9 @@ export default function BoxScene() {
         s.uniforms.uLaserColor.value.setHex(laserRgb[laserColor]);
       }
     }
-  }, [illumination, laserColor]);
+    requestRender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [illumination, laserColor, reinitTick]);
 
   // --- light direction ---------------------------------------------------------
   useEffect(() => {
@@ -1446,13 +1911,87 @@ export default function BoxScene() {
       ctx.faces[fid].shaderBack.uniforms.uLightWorld.value.set(x, y, z);
     }
     ctx.keyLight.position.set(x, y, z);
-  }, [lightAz, lightEl]);
+    requestRender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lightAz, lightEl, reinitTick]);
 
   return (
-    <div
-      ref={mountRef}
-      data-testid="box-scene"
-      style={{ width: '100%', height: '100%', minHeight: 0, minWidth: 0 }}
-    />
+    // The mount div keeps its own box so ResizeObserver still measures the
+    // canvas area; the status layers are absolutely positioned siblings, never
+    // React children of the mount (three appends the canvas there imperatively).
+    <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0, minWidth: 0 }}>
+      <div
+        ref={mountRef}
+        data-testid="box-scene"
+        style={{ width: '100%', height: '100%', minHeight: 0, minWidth: 0 }}
+      />
+      {gpuStatus !== 'ok' && (
+        <div
+          data-testid="gpu-overlay"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 10,
+            background: 'rgba(6,7,11,0.86)',
+            color: KIT.text,
+            fontSize: 13,
+            textAlign: 'center',
+            padding: 16,
+            // The canvas is frozen anyway; let orbit drags through so the view
+            // is not hostage to the overlay if a restore is slow.
+            pointerEvents: 'none',
+          }}
+        >
+          <div>
+            {gpuStatus === 'lost'
+              ? '3D preview lost the GPU — restoring…'
+              : '3D preview lost the GPU — it did not come back.'}
+          </div>
+          {gpuStatus === 'stalled' && (
+            <>
+              <div style={{ opacity: 0.7, fontSize: 12, maxWidth: 320 }}>
+                Reloading rebuilds the renderer; your design and the cut list are untouched.
+              </div>
+              <div style={{ pointerEvents: 'auto' }}>
+                <Button onClick={reloadView} testId="gpu-reload-view">
+                  Reload view
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {gpuStatus === 'ok' && failedFaces.length > 0 && (
+        <div
+          data-testid="face-texture-warning"
+          style={{
+            position: 'absolute',
+            left: 10,
+            bottom: 10,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 8px',
+            borderRadius: 4,
+            border: `1px solid ${KIT.error}`,
+            background: 'rgba(15,18,24,0.92)',
+            color: KIT.text,
+            fontSize: 11,
+          }}
+        >
+          <span>
+            Mask load failed: {failedFaces.join(', ')} — these faces show blank or previous
+            patterns.
+          </span>
+          <Button onClick={retryMasks} testId="face-texture-retry">
+            Retry
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }

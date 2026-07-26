@@ -148,15 +148,24 @@ def _line_rects_local(
     width ``duty·period``, spaced ``period``, phase-shifted by ``phase`` periods.
     Each line spans the full bbox height as ONE rectangle — the count is the
     number of lines across the width, NOT the pixel area.
+
+    Phase sign is the ONE shared convention: gold line ``k``'s left edge is at
+    ``(k − phase)·period``, matching ``plates._grating_grid`` (gold where
+    ``fract(x/p + phase) < duty``) and :func:`_angled_grating_local_rects`. It
+    must stay that way — the interlace front comb runs at ``phase = −0.25``, so
+    the opposite sign would shift the fabricated barrier bar by p/2 onto the
+    designed open slot and invert the tilt→image mapping. Pinned by
+    ``tests/test_grating_phase.py``.
     """
     x0b, y0b, x1b, y1b = zone_bbox_um
     line_w = duty * period_um
-    # First gold line's left edge ≥ x0b. Line k left edge at (k + phase)·period.
-    k0 = math.floor((x0b / period_um) - phase)
-    k1 = math.ceil((x1b / period_um) - phase) + 1
+    # Enumerate one period either side of the bbox so no partially-overlapping
+    # edge line is dropped for any phase/duty; the x-clip below drops the misses.
+    k0 = math.floor((x0b / period_um) + phase) - 1
+    k1 = math.ceil((x1b / period_um) + phase) + 1
     rects = []
     for k in range(k0, k1):
-        lx0 = (k + phase) * period_um
+        lx0 = (k - phase) * period_um
         lx1 = lx0 + line_w
         # Clip to bbox in x.
         cx0 = max(lx0, x0b)
@@ -253,13 +262,23 @@ class ZoneMasks:
     # rastered here, and both are boundary-only zones like the other masks.
     water_band: np.ndarray | None = None
     capy_body: np.ndarray | None = None      # dry capybara silhouette (above water)
+    # EFFECTIVE waterline (art-box normalized y, 0 = top) this plate's zones were
+    # built at — resolved ONCE from the face's ``waterline`` pattern param by
+    # ``plates._water_waterline_y``, the same resolver the composed preview mask,
+    # the fab SVG bake and the shader's ``water_waterline_y`` read. Carried here
+    # (rather than re-read from the module constant downstream) so the rastered
+    # body/band zones and the EXACT vector barrier + back-frame builders in
+    # ``build_plate_fine`` cannot be built at two different waterlines. None on a
+    # non-scanimation plate.
+    waterline_y: float | None = None
 
 
 def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     """Regenerate a plate's zone masks at ``pitch_um`` from the SOURCE motifs.
 
-    Reuses plates.py's own helpers (`generate_frame` → `render_scene_to_image`
-    for the foliage band graylevels, `_centerpiece_masks` for the silhouettes,
+    Reuses plates.py's own helpers (`frame_scene_for_plate` →
+    `render_scene_to_image` for the foliage band graylevels — the composed
+    plate's own scene, not a regrown one — `_centerpiece_masks` for the silhouettes,
     `_front_accent_zone` for the rainbow patch, the capybara `_build` for the
     scanimation). Boundary quantization only — periods are added later as vector
     geometry.
@@ -285,14 +304,19 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     if active_w > 0 and active_h > 0:
         from .patterns.frames import (
             RectFrame,
-            generate_frame,
             render_scene_to_image,
         )
 
         rect = RectFrame(width_um=active_w, height_um=active_h)
         fp = spec.frame.to_frame_params()
         fp.fill_interior = False
-        scene = generate_frame(rect, fp)
+        # Reuse the composed plate's scene.json sidecar — the fine bake must
+        # carry the SAME foliage band the preview PNG and the fab SVG do, and
+        # regrowing it here cost 1-3 s per face on every export.
+        pid = P.plate_hash(spec)
+        scene = P.frame_scene_for_plate(
+            P.PLATES_ROOT / pid, P.get_plate(pid), rect, fp
+        )
         sil_img = render_scene_to_image(
             scene, rect, fp, pitch_um, level_fn=P._frame_level_for
         )
@@ -372,7 +396,16 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     if spec.pattern_slug == P.WATER_SCAN_SLUG and side_px > 0:
         from .patterns.artistic import capybara_scanimation as capyscan
 
-        scene = capyscan._capybara_and_water(side_px, capyscan.WATERLINE_Y)
+        # Honour the face's tunable ``waterline`` param instead of the module
+        # constant: ONE resolver (plates._water_waterline_y) feeds the composed
+        # preview mask, the fab SVG bake, the recipe_data the shader binds and —
+        # via zm.waterline_y below — this fine-GDS bake, so a face that moves its
+        # waterline gets a band/wake that matches its preview and its SVG. The
+        # silhouettes above already honour it (``_centerpiece_masks`` takes
+        # ``spec.pattern_params``), so hardwiring it here also split THIS module
+        # against itself: the dry-body zone moved while the water band did not.
+        waterline_y = P._water_waterline_y(spec.pattern_params)
+        scene = capyscan._capybara_and_water(side_px, waterline_y)
 
         def _place_side(side_mask: np.ndarray, w_px: int | None = None) -> np.ndarray:
             w_px = side_px if w_px is None else w_px
@@ -391,13 +424,16 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         # The submerged body is carved only from the central square columns.
         ap_w = max(side_px, int(round(P._aperture_width_um(spec) / pitch_um)))
         rows = np.arange(side_px)[:, None] / side_px  # 0..1 y-down over the square
-        below = np.broadcast_to(rows >= capyscan.WATERLINE_Y, (side_px, ap_w))
+        below = np.broadcast_to(rows >= waterline_y, (side_px, ap_w))
         water_full = np.array(below, dtype=bool)
         col_off = (ap_w - side_px) // 2
         water_full[:, col_off : col_off + side_px] = scene["water_band"]
 
         zm.water_band = _place_side(water_full, w_px=ap_w)
         zm.capy_body = _place_side(scene["capy_above"])
+        # Publish the resolved value so build_plate_fine's EXACT vector builders
+        # bake at the SAME waterline these raster zones were carved at.
+        zm.waterline_y = waterline_y
         _mask_rim(zm.water_band, spec.weld_margin_um, pitch_um)
         _mask_rim(zm.capy_body, spec.weld_margin_um, pitch_um)
 
@@ -527,6 +563,15 @@ def _scanimation_barrier_bar_rects(
     return np.asarray(rects, dtype=float)
 
 
+# Slots evaluated per vectorised chunk in _scanimation_back_frame_rects. The flow
+# field is ELEMENTWISE, so a chunk of S slots is one (S,1)×(1,n_y) broadcast whose
+# per-element operands (and their order) are exactly the old per-slot 1-D ones —
+# and every Y-ONLY term (depth, shear, the wake tanh, the centerline gaussian) is
+# then evaluated ONCE per chunk instead of once per slot. Chunked rather than done
+# in one shot so the S×n_y temporaries stay in the low tens of MB.
+_SCAN_SLOT_CHUNK = 256
+
+
 def _scanimation_back_frame_rects(
     spec: Any,
     waterline_y: float,
@@ -549,9 +594,10 @@ def _scanimation_back_frame_rects(
     also ≥ 2 µm. Each surviving y-run becomes ONE rect spanning the slot's exact
     15 µm width; nothing sub-floor survives (F3).
 
-    Memory: one slot-column of ``band_h/y_samp`` samples at a time (a few ×10³),
-    streamed slot-by-slot — never the whole band raster (the blocker's ~3.8M-cell
-    trap). The rect count is bounded by (#slots × #crests-per-slot) ≈ a few ×10³.
+    Memory: one CHUNK of ``_SCAN_SLOT_CHUNK`` slot-columns of ``band_h/y_samp``
+    samples at a time, streamed chunk-by-chunk — never the whole band raster (the
+    blocker's ~3.8M-cell trap). The rect count is bounded by
+    (#slots × #crests-per-slot) ≈ a few ×10³.
     """
     from .patterns.artistic import capybara_scanimation as capyscan
 
@@ -580,56 +626,73 @@ def _scanimation_back_frame_rects(
     min_run = max(1, int(round(LITHO_FLOOR_UM / (band_h_um / n_y))))
     dy = band_h_um / n_y
 
-    rects: list[tuple[float, float, float, float]] = []
-    for p in range(n_periods):
-        period_x0 = wx0 + p * frame_pitch_um
-        for k in range(n_phases):
-            sx0 = period_x0 + k * slot_um
-            sx1 = sx0 + slot_um
-            cx0 = max(sx0, wx0)
-            cx1 = min(sx1, wx1)
-            if cx1 - cx0 <= 1e-9:
-                continue
-            # Sample the flow field for phase k at this slot's center x, normalized
-            # to the BODY square (wings fall outside [0,1] → periodic continuation).
-            xc = 0.5 * (sx0 + sx1)
-            xn = (xc - body_x0) / body_side
-            xn_arr = np.full(n_y, xn, dtype=np.float64)
-            s = capyscan._flow_streamline_field(
-                xn_arr, yn, wavelength, n_phases, float(k), waterline_y
-            )
-            f = s - np.floor(s + 0.5)
-            amp = capyscan._flow_amplitude(xn_arr, yn, waterline_y)
-            half = 0.16 * amp
-            gold = (np.abs(f) < half) & (amp > 0.05)
-            if not gold.any():
-                continue
-            # Floor BOTH the crest thickness and the gap between crests in this
-            # slot to the 2 µm litho minimum: close any sub-floor y-gap (merge
-            # crests that nearly touch — a printer would bridge them) then drop
-            # any run still thinner than the floor. Guarantees every emitted run
-            # is ≥ 2 µm tall AND every gap ≥ 2 µm, so the merged-geometry DRC finds
-            # nothing sub-floor in the back frames.
-            gold = _close_and_open_1d(gold, min_run)
-            if not gold.any():
-                continue
-            # Extract contiguous y-runs.
-            runs = _bool_runs(gold)
-            for r0, r1 in runs:  # inclusive index range, y descending
-                if (r1 - r0 + 1) < min_run:
-                    continue
-                # Run rows r0..r1 (top→bottom in plate y). Row i covers
-                # [ys_plate[i]-dy/2, ys_plate[i]+dy/2].
-                ry1 = ys_plate[r0] + dy / 2.0
-                ry0 = ys_plate[r1] - dy / 2.0
-                rects.append((cx0, cx1, ry0, ry1))
-    if not rects:
-        return np.empty((0, 4), dtype=float)
-    return np.asarray(rects, dtype=float)
+    # Slot table flattened in (period, phase) order — the SAME order the per-slot
+    # double loop emitted, so the rect SEQUENCE is unchanged. sx0 keeps the old
+    # two-step form (period origin first, then k·slot) so the floats are identical.
+    p_i = np.arange(n_periods, dtype=np.float64)[:, None]
+    k_i = np.arange(n_phases, dtype=np.float64)[None, :]
+    sx0 = (wx0 + p_i * frame_pitch_um) + k_i * slot_um
+    sx1 = (sx0 + slot_um).ravel()
+    sx0 = sx0.ravel()
+    phase_step = np.broadcast_to(k_i, (n_periods, n_phases)).ravel()
+    cx0 = np.maximum(sx0, wx0)
+    cx1 = np.minimum(sx1, wx1)
+    live = np.flatnonzero((cx1 - cx0) > 1e-9)
+
+    # Sample the flow field for phase k at each slot's center x, normalized to the
+    # BODY square (wings fall outside [0,1] → periodic continuation). X is one
+    # column per slot, Y one row of band samples: the broadcast product is the
+    # elementwise field the old per-slot calls computed, slot by slot.
+    yn_row = yn[None, :]
+    parts: list[np.ndarray] = []
+    for c in range(0, live.size, _SCAN_SLOT_CHUNK):
+        sel = live[c : c + _SCAN_SLOT_CHUNK]
+        xc = 0.5 * (sx0[sel] + sx1[sel])
+        xn = ((xc - body_x0) / body_side)[:, None]
+        s = capyscan._flow_streamline_field(
+            xn, yn_row, wavelength, n_phases, phase_step[sel][:, None], waterline_y
+        )
+        f = s - np.floor(s + 0.5)
+        amp = capyscan._flow_amplitude(xn, yn_row, waterline_y)
+        half = 0.16 * amp
+        gold = (np.abs(f) < half) & (amp > 0.05)
+        if not gold.any():
+            continue
+        # Floor BOTH the crest thickness and the gap between crests in each slot
+        # to the 2 µm litho minimum: close any sub-floor y-gap (merge crests that
+        # nearly touch — a printer would bridge them) then drop any run still
+        # thinner than the floor. Guarantees every emitted run is ≥ 2 µm tall AND
+        # every gap ≥ 2 µm, so the merged-geometry DRC finds nothing sub-floor in
+        # the back frames. Row-wise: each slot column is closed/opened alone.
+        gold = _close_and_open_rows(gold, min_run)
+        # Contiguous y-runs, all slots at once. np.nonzero is C-order, so runs come
+        # out slot-major / top→bottom — the old append order exactly.
+        rows, r_start, r_end = _row_runs(gold)
+        if rows.size == 0:
+            continue
+        long_enough = (r_end - r_start) >= min_run   # no-op after OPEN; kept as the gate
+        rows = rows[long_enough]
+        r_start = r_start[long_enough]
+        r_end = r_end[long_enough]
+        if rows.size == 0:
+            continue
+        # Run rows r_start..r_end-1 (top→bottom in plate y). Row i covers
+        # [ys_plate[i]-dy/2, ys_plate[i]+dy/2].
+        ry1 = ys_plate[r_start] + dy / 2.0
+        ry0 = ys_plate[r_end - 1] - dy / 2.0
+        parts.append(np.stack([cx0[sel][rows], cx1[sel][rows], ry0, ry1], axis=1))
+    return _concat_rects(parts)
 
 
 def _bool_runs(mask: np.ndarray) -> list[tuple[int, int]]:
-    """Contiguous True runs of a 1-D bool array → list of (start, end) inclusive."""
+    """Contiguous True runs of a 1-D bool array → list of (start, end) inclusive.
+
+    Kept as the INDEPENDENT 1-D reference for :func:`_row_runs` (same runs, one
+    row, exclusive→inclusive end): the scanimation builder runs on the row-wise
+    vectorised pair, and this is what a parity test pins them against. Not on any
+    hot path — do not route it through the vectorised form, or the reference stops
+    being independent.
+    """
     if not mask.any():
         return []
     m = mask.astype(np.int8)
@@ -639,13 +702,80 @@ def _bool_runs(mask: np.ndarray) -> list[tuple[int, int]]:
     return list(zip(starts.tolist(), ends.tolist()))
 
 
+def _row_runs(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-ROW contiguous True runs of a 2-D bool array, all rows at once.
+
+    Returns ``(rows, starts, ends)`` — ``ends`` EXCLUSIVE — in C order, i.e. row
+    ascending then column ascending, which is the order a per-row
+    :func:`_bool_runs` loop would visit them. Padding a False column on each side
+    keeps every run row-local, so the two ``np.nonzero`` results pair up
+    one-for-one within each row.
+    """
+    s_px, l_px = mask.shape
+    padded = np.zeros((s_px, l_px + 2), dtype=np.int8)
+    padded[:, 1:-1] = mask
+    d = np.diff(padded, axis=1)
+    rows, starts = np.nonzero(d == 1)
+    _, ends = np.nonzero(d == -1)
+    return rows, starts, ends
+
+
+def _fill_runs(shape: tuple[int, int], rows: np.ndarray, starts: np.ndarray, ends: np.ndarray) -> np.ndarray:
+    """Bool mask of ``shape`` with ``[starts, ends)`` set on each row.
+
+    Difference-array + cumsum instead of a Python slice loop. The runs handed in
+    are disjoint WITHIN a row (they come from :func:`_row_runs`, where a gap of at
+    least one cell separates consecutive runs), so the two scatter writes never
+    collide and plain fancy indexing is exact. int16 accumulator: the running sum
+    is only ever 0 or 1.
+    """
+    s_px, l_px = shape
+    acc = np.zeros((s_px, l_px + 1), dtype=np.int16)
+    acc[rows, starts] += 1
+    acc[rows, ends] -= 1
+    return np.cumsum(acc, axis=1, dtype=np.int16)[:, :l_px] > 0
+
+
+def _close_and_open_rows(mask: np.ndarray, min_run: int) -> np.ndarray:
+    """Row-wise 1-D CLOSE then OPEN of a 2-D bool array by ``min_run`` samples.
+
+    Same operator as :func:`_close_and_open_1d`, applied independently to every
+    row with no Python run loop: CLOSE fills any False gap shorter than
+    ``min_run`` that is flanked by True on BOTH sides (a run touching either end
+    of the row is never filled), OPEN then drops any True run shorter than
+    ``min_run``. Both passes read their runs from the mask as it stood BEFORE the
+    pass — exactly what the sequential 1-D version did, since its in-place writes
+    could not change the run list it had already extracted.
+    """
+    if min_run <= 1 or mask.size == 0:
+        return mask
+    s_px, l_px = mask.shape
+    out = mask.copy()
+    # CLOSE: short INTERIOR False runs (start > 0 and end < row length).
+    rows, starts, ends = _row_runs(~out)
+    sel = (starts > 0) & (ends < l_px) & ((ends - starts) < min_run)
+    if sel.any():
+        out |= _fill_runs((s_px, l_px), rows[sel], starts[sel], ends[sel])
+    # OPEN: short True runs, including the ones touching a row end.
+    rows, starts, ends = _row_runs(out)
+    sel = (ends - starts) < min_run
+    if sel.any():
+        out &= ~_fill_runs((s_px, l_px), rows[sel], starts[sel], ends[sel])
+    return out
+
+
 def _close_and_open_1d(mask: np.ndarray, min_run: int) -> np.ndarray:
     """1-D CLOSE then OPEN of a bool array by ``min_run`` samples.
 
     CLOSE fills any False gap shorter than ``min_run`` (sub-floor gap between two
     crests → bridged), OPEN drops any True run shorter than ``min_run`` (sub-floor
     crest tip → removed). Leaves every surviving run and gap ≥ ``min_run`` samples,
-    i.e. ≥ the 2 µm floor. Vectorised via run extraction (no scipy)."""
+    i.e. ≥ the 2 µm floor.
+
+    Kept as the INDEPENDENT 1-D reference for :func:`_close_and_open_rows`, which
+    is what the scanimation builder uses (every slot column at once) — a parity
+    test pins the two. Not on any hot path; do not reimplement it in terms of the
+    row-wise form, or the reference stops being independent."""
     if min_run <= 1 or mask.size == 0:
         return mask
     m = mask.copy()
@@ -722,8 +852,14 @@ class PlateFine:
     stats: dict[str, Any] = field(default_factory=dict)
 
 
-def build_plate_fine(spec: Any, face: str) -> PlateFine:
+def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -> PlateFine:
     """Compose one plate's front+back fine geometry at native periods.
+
+    ``drc_before_report``: also measure the PRE-heal merged layers
+    (``*_merged_before`` blocks). Off by default — the heal runs
+    unconditionally and the AFTER report is the printed-geometry gate; the
+    before-report is audit narrative that doubles the check cost. The CLI
+    wafer/audit paths pass True.
 
     ``spec`` is the face's ``PlateSpec`` (already normalized). Periods come from
     ``plates._carrier_recipe_data`` (the fab_* fields — the TRUE optical values,
@@ -916,9 +1052,19 @@ def build_plate_fine(spec: Any, face: str) -> PlateFine:
     #        finely in y and floored to 2 µm. NONE of this passes through the
     #        coarse zone raster, so the 15 µm slot survives (was empty / aliased).
     if is_scanimation:
-        from .patterns.artistic import capybara_scanimation as capyscan
-
-        wl = capyscan.WATERLINE_Y
+        # EFFECTIVE waterline, resolved ONCE in _build_zone_masks from the face's
+        # ``waterline`` param (plates._water_waterline_y) — the same number the
+        # composed preview mask, the fab SVG bake and recipe_data's
+        # ``water_waterline_y`` carry. Taking it from the zone masks (not from
+        # capyscan.WATERLINE_Y, which used to be hardwired here) is what keeps the
+        # rastered body/band zones and these exact vector builders in one frame.
+        # The fallback re-resolves rather than falling back to the constant, so a
+        # future caller that builds ZoneMasks by hand still cannot drift.
+        wl = (
+            zm.waterline_y
+            if zm.waterline_y is not None
+            else P._water_waterline_y(spec.pattern_params)
+        )
         fp = P.WATER_SCAN_FAB_PITCH_UM
         nph = P.WATER_SCAN_N_PHASES
         carrier_um = P.WATER_SCAN_FAB_CARRIER_UM
@@ -948,6 +1094,9 @@ def build_plate_fine(spec: Any, face: str) -> PlateFine:
             "slot_um": fp / nph,
             "barrier_bar_um": fp * (1.0 - 1.0 / nph),
             "n_phases": nph,
+            # Recorded so a wafer run's stats show WHICH waterline was baked (it
+            # is now a per-face param, not a module constant).
+            "waterline_y": float(wl),
         }
 
     # --- concat + per-group rect DRC (fast) --------------------------------
@@ -994,12 +1143,13 @@ def build_plate_fine(spec: Any, face: str) -> PlateFine:
     front_layer_polys = _compose_layer_polys(front_rects, front_angled)
     back_layer_polys = _compose_layer_polys(back_rects, back_angled)
 
-    stats["drc"]["front_merged_before"] = drc_report_region(
-        front_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
-    )
-    stats["drc"]["back_merged_before"] = drc_report_region(
-        back_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
-    )
+    if drc_before_report:
+        stats["drc"]["front_merged_before"] = drc_report_region(
+            front_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
+        )
+        stats["drc"]["back_merged_before"] = drc_report_region(
+            back_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
+        )
 
     front_polys = drc_clean_region(
         front_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
@@ -1136,21 +1286,45 @@ def _angled_grating_local_rects(
     period is realized in full while a super-cell period still emits exactly its
     one line. Then vectorised-merge the contiguous y-runs per line index. Only the
     zone BOUNDARY is quantized to ``pitch_um``; the period + line width are exact.
+
+    A FILLED axis-aligned rectangle zone (the frame buckets' big blocks, the back
+    carrier window, the art box) takes a separable fast path for the projection —
+    see :func:`_zone_filled_rect`. It is bit-identical, not an approximation: the
+    cell staircase this emits per line depends on WHICH cells project into the
+    line's stripe, so an analytic rotate-the-bbox clip would move rect edges by up
+    to a cell and change the boundary lines' x extents (the fine GDS is cached
+    under ``api.export.FINE_GDS_VERSION``, so that is a version-bumping change,
+    not a free one).
     """
-    ys, xs = np.nonzero(zone)
-    if xs.size == 0:
-        return np.empty((0, 4), dtype=float)
     h_px, w_px = zone.shape
     hx = w_px * pitch_um / 2.0
     hy = h_px * pitch_um / 2.0
-    # Zone cell centers in µm (plate frame, y up).
-    cx = xs * pitch_um - hx + pitch_um / 2.0
-    cy = hy - ys * pitch_um - pitch_um / 2.0
     # Rotate INTO the grating-local frame (rotate by -angle).
     a = math.radians(-angle_deg)
     ca, sa = math.cos(a), math.sin(a)
-    lx = cx * ca - cy * sa
-    ly = cx * sa + cy * ca
+    rect = _zone_filled_rect(zone)
+    if rect is not None:
+        r0, r1, c0, c1 = rect
+        # Filled rectangle ⇒ the cell centers are a product grid, so lx/ly are
+        # OUTER SUMS of a per-column and a per-row term: cx·ca, cx·sa, cy·ca, cy·sa
+        # are evaluated (n_cols + n_rows) times instead of n_cells times, and
+        # np.nonzero never has to enumerate the zone. Bit-identical to the general
+        # path below: the same two products are summed per element in the same
+        # order, and IEEE guarantees ``u - v == u + (-v)``. C-order ravel of the
+        # (row, col) grid reproduces np.nonzero's row-major cell order.
+        cx_c = np.arange(c0, c1 + 1) * pitch_um - hx + pitch_um / 2.0
+        cy_r = hy - np.arange(r0, r1 + 1) * pitch_um - pitch_um / 2.0
+        lx = ((cx_c * ca)[None, :] + (-(cy_r * sa))[:, None]).ravel()
+        ly = ((cx_c * sa)[None, :] + (cy_r * ca)[:, None]).ravel()
+    else:
+        ys, xs = np.nonzero(zone)
+        if xs.size == 0:
+            return np.empty((0, 4), dtype=float)
+        # Zone cell centers in µm (plate frame, y up).
+        cx = xs * pitch_um - hx + pitch_um / 2.0
+        cy = hy - ys * pitch_um - pitch_um / 2.0
+        lx = cx * ca - cy * sa
+        ly = cx * sa + cy * ca
     line_w = duty * period_um
     # A cell is a pitch×pitch square in the PLATE frame; its projection onto the
     # local-x axis spans ±hspan about lx (hspan = ½·pitch·(|cos|+|sin|)). Every
@@ -1160,27 +1334,26 @@ def _angled_grating_local_rects(
     k_lo = np.floor((lx - hspan) / period_um + phase).astype(int)
     k_hi = np.floor((lx + hspan) / period_um + phase).astype(int)
     span = k_hi - k_lo + 1                      # #period-cells each cell touches
-    max_span = int(span.max())
-    # Build (cell, k) pairs by tiling: for offset o in [0, max_span), the cell
-    # contributes line k_lo+o when o < span[cell]. Vectorised, no Python per-cell
-    # loop; the pair count is #cells · (avg period-cells per cell), bounded small
-    # for our zones (accent ~10², carriers ~2-3× the cell count).
-    offs = np.arange(max_span)
-    valid = offs[None, :] < span[:, None]        # (n_cells, max_span)
-    cell_i, o_i = np.nonzero(valid)
-    k_all = k_lo[cell_i] + o_i
-    ly_all = ly[cell_i]
+    n_pairs = int(span.sum())
+    if n_pairs <= 0:
+        return np.empty((0, 4), dtype=float)
+    # Build (cell, k) pairs by RAGGED indexing: cell c contributes lines
+    # k_lo[c] .. k_hi[c]. Identical pairs, in the identical order, to the
+    # (n_cells × max_span) bool mask + np.nonzero this replaces (C-order nonzero is
+    # cell-major, offset-minor) — without materialising the mask. The pair count is
+    # #cells · (avg period-cells per cell), bounded small for our zones (accent
+    # ~10², carriers ~2-3× the cell count).
+    cell_i = np.repeat(np.arange(span.size), span)
+    k_all = k_lo[cell_i] + (np.arange(n_pairs) - np.repeat(np.cumsum(span) - span, span))
     # Keep only lines whose GOLD stripe actually overlaps this cell's x-span
     # (the period cell touches, but the gap half must not spuriously fill).
     gold_x0 = (k_all - phase) * period_um
-    gold_x1 = gold_x0 + line_w
-    cell_x0 = lx[cell_i] - hspan
-    cell_x1 = lx[cell_i] + hspan
-    overlap = (gold_x1 > cell_x0) & (gold_x0 < cell_x1)
+    cell_lx = lx[cell_i]
+    overlap = ((gold_x0 + line_w) > (cell_lx - hspan)) & (gold_x0 < (cell_lx + hspan))
     if not overlap.any():
         return np.empty((0, 4), dtype=float)
     idx_g = k_all[overlap]
-    ly_g = ly_all[overlap]
+    ly_g = ly[cell_i[overlap]]
     # Fully vectorised run extraction: sort by (line_idx, ly); a run breaks where
     # the line index changes OR the local-y gap exceeds ~1.5·pitch. Each run → one
     # local-frame rectangle. Duplicate (line, ly) pairs from adjacent cells are
@@ -1291,6 +1464,27 @@ def _merge_adjacent_columns(rects: np.ndarray) -> np.ndarray:
     return out
 
 
+def _zone_filled_rect(zone: np.ndarray) -> tuple[int, int, int, int] | None:
+    """``(r0, r1, c0, c1)`` inclusive bounds when ``zone`` is a FILLED axis-aligned
+    rectangle, else None (also None for an empty zone).
+
+    Two 1-D ``any`` reductions for the bounds plus one ``sum`` against the bbox
+    area — no per-cell index materialisation, so the check is cheap enough to run
+    unconditionally before every angled clip.
+    """
+    rows = zone.any(axis=1)
+    if not rows.any():
+        return None
+    cols = zone.any(axis=0)
+    r0 = int(np.argmax(rows))
+    r1 = int(rows.size - 1 - np.argmax(rows[::-1]))
+    c0 = int(np.argmax(cols))
+    c1 = int(cols.size - 1 - np.argmax(cols[::-1]))
+    if int(zone.sum()) != (r1 - r0 + 1) * (c1 - c0 + 1):
+        return None
+    return (r0, r1, c0, c1)
+
+
 def _zone_bbox(
     zone: np.ndarray, pitch_um: float, extent_um: tuple[float, float]
 ) -> tuple[float, float, float, float]:
@@ -1366,6 +1560,115 @@ def _vernier_rects(cx: float, cy: float, pitch_um: float, n: int, line_um: float
         x = x0 + i * pitch_um
         out.append((x - line_um / 2.0, x + line_um / 2.0, cy - hy, cy + hy))
     return np.asarray(out, dtype=float)
+
+
+def _group_congruent_rings(
+    polys: list[np.ndarray], dbu_um: float
+) -> list[tuple[np.ndarray, list[list[int]]]]:
+    """Group rings by their DBU-quantized vertex list relative to their own bbox
+    origin → ``[(rel_dbu, [[ox_dbu, oy_dbu], ...]), ...]``.
+
+    Groups come out in FIRST-APPEARANCE order and each origin list in input order
+    — the exact order the per-polygon dict build produced, so the GDS cell names
+    and shape insertion order are unchanged.
+
+    Bucketed by vertex COUNT first: rings with different vertex counts can never be
+    congruent (their quantized vertex lists differ in length, which is what the old
+    ``rel.tobytes()`` key encoded), so stacking each bucket into one ``(N, K, 2)``
+    array is exact — and it turns the per-ring min/round/astype/tobytes round trip
+    (~5 numpy calls × ~360k rings per box) into a handful of whole-array calls per
+    bucket. Every value is produced by the same expression on the same operands, so
+    the emitted DBU integers are identical.
+    """
+    by_count: dict[int, list[int]] = {}
+    valid: list[np.ndarray] = []
+    for verts in polys:
+        v = np.asarray(verts, dtype=float)
+        if v.ndim != 2 or v.shape[0] < 3 or v.shape[1] != 2:
+            continue
+        by_count.setdefault(v.shape[0], []).append(len(valid))
+        valid.append(v)
+    if not valid:
+        return []
+    # (first-appearance index, rel, origins) so buckets can be merged back into one
+    # first-appearance-ordered sequence.
+    found: list[tuple[int, np.ndarray, list[list[int]]]] = []
+    for members in by_count.values():
+        member_idx = np.asarray(members)
+        stack = np.stack([valid[i] for i in members])            # (N, K, 2)
+        origin = stack.min(axis=1)                               # (N, 2)
+        rel = np.round((stack - origin[:, None, :]) / dbu_um).astype(np.int64)
+        org = np.round(origin / dbu_um).astype(np.int64)          # (N, 2)
+        flat = rel.reshape(rel.shape[0], -1)
+        _, first, inv = np.unique(flat, axis=0, return_index=True, return_inverse=True)
+        inv = np.asarray(inv).reshape(-1)
+        # Stable argsort blocks the members of each group together, ascending within
+        # the block — so a block IS the group's origin list in input order.
+        order = np.argsort(inv, kind="stable")
+        lab = inv[order]
+        b0 = np.flatnonzero(np.concatenate([[True], lab[1:] != lab[:-1]]))
+        b1 = np.concatenate([b0[1:], [inv.size]])
+        for s, e in zip(b0.tolist(), b1.tolist()):
+            g = int(lab[s])
+            block = order[s:e]
+            found.append(
+                (int(member_idx[first[g]]), rel[first[g]], org[block].tolist())
+            )
+    found.sort(key=lambda t: t[0])
+    return [(rel, origins) for _, rel, origins in found]
+
+
+def insert_polys_deduped(
+    top,
+    layer: int,
+    polys: list[np.ndarray],
+    *,
+    dbu_um: float = DBU_UM,
+    min_refs: int = 4,
+    cell_prefix: str = "u",
+) -> dict[str, int]:
+    """Insert healed rings with GDS hierarchy instead of flat replication.
+
+    A plate layer is mostly PERIODIC gold — a carrier grating is ~10^3 copies of
+    ONE line, an interlace comb ~10^2 copies of one bar. Writing each copy as
+    its own flat polygon replicates identical vertex lists thousands of times;
+    GDS's native answer is a cell per unique shape referenced (SREF) at each
+    placement, which fab tools expect for periodic masks and which shrinks both
+    write time and file size by the repetition factor.
+
+    Shapes are grouped by their vertex list relative to their bbox origin,
+    quantized to the DBU grid; groups smaller than ``min_refs`` stay flat so
+    one-off silhouette pieces don't pollute the cell table. Every emitted
+    coordinate is ``origin_dbu + rel_dbu`` for BOTH flat and referenced forms,
+    so instances of one shape are exactly congruent (placement rounding ≤ 1
+    DBU = 1 nm, far below the 2 µm litho floor).
+
+    Returns ``{"cells": ..., "refs": ..., "flat": ...}`` for stats/logging.
+    """
+    import klayout.db as kdb
+
+    ly = top.layout()
+    stats = {"cells": 0, "refs": 0, "flat": 0}
+    for rel, origins in _group_congruent_rings(polys, dbu_um):
+        # Python ints once per GROUP: the flat branch rebuilds the point list per
+        # placement, and an np.int64 → int cast per vertex there is pure overhead.
+        rel_pts = rel.tolist()
+        if len(origins) < min_refs:
+            for ox, oy in origins:
+                pts = [kdb.Point(x + ox, y + oy) for x, y in rel_pts]
+                top.shapes(layer).insert(kdb.Polygon(pts))
+            stats["flat"] += len(origins)
+            continue
+        cell = ly.create_cell(f"{cell_prefix}{stats['cells']}")
+        stats["cells"] += 1
+        cell.shapes(layer).insert(
+            kdb.Polygon([kdb.Point(x, y) for x, y in rel_pts])
+        )
+        idx = cell.cell_index()
+        for ox, oy in origins:
+            top.insert(kdb.CellInstArray(idx, kdb.Trans(kdb.Vector(ox, oy))))
+        stats["refs"] += len(origins)
+    return stats
 
 
 def build_fiducials() -> dict[str, np.ndarray]:
@@ -1563,7 +1866,8 @@ def build_wafer_fine_gds(
         plate_spec = spec.faces.get(fid)
         if p is None or plate_spec is None:
             continue
-        fine = build_plate_fine(plate_spec, fid)
+        # CLI wafer path keeps the full before/after audit blocks.
+        fine = build_plate_fine(plate_spec, fid, drc_before_report=True)
         # Placement rotation (packer may 90°-rotate a plate to fit).
         rot = p.rotated and rotate_plate_geom
         dx, dy = p.cx, p.cy

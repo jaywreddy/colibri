@@ -9,6 +9,18 @@ from ..base import GeneratedPattern, ParamSpec, Pattern, register
 from ..motifs import orchid
 
 
+def _resolve_grid(period_um: float, extent_um: float) -> tuple[int, float]:
+    """``(n_grid, cell_um)`` for the carrier raster.
+
+    Resolves the carrier with ≥8 samples per period, capped at 1200 so the raster
+    grid itself stays cheap (1.4M bool cells max). Module-level because both
+    ``generate`` and ``pixel_pitch_um`` need it and the plate compositor reads the
+    pitch WITHOUT generating — one expression, so they cannot disagree.
+    """
+    n_grid = min(1200, max(384, int(extent_um / max(1.0, period_um / 8))))
+    return n_grid, extent_um / n_grid
+
+
 @register
 class OrchidShimmerMoire(Pattern):
     slug = "orchid-shimmer-moire"
@@ -34,6 +46,46 @@ class OrchidShimmerMoire(Pattern):
         ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
     ]
 
+    # --- metadata (no geometry) — see Pattern.metadata ----------------------
+
+    @classmethod
+    def pixel_pitch_um(
+        cls,
+        period_um: float = 16.0,
+        detune: float = 0.06,
+        skew_deg: float = 4.0,
+        extent_um: float = 2000.0,
+    ) -> float:
+        return _resolve_grid(period_um, extent_um)[1]
+
+    @classmethod
+    def min_feature_um(
+        cls,
+        period_um: float = 16.0,
+        detune: float = 0.06,
+        skew_deg: float = 4.0,
+        extent_um: float = 2000.0,
+    ) -> float:
+        return period_um * 0.5
+
+    @classmethod
+    def extra_metadata(
+        cls,
+        period_um: float = 16.0,
+        detune: float = 0.06,
+        skew_deg: float = 4.0,
+        extent_um: float = 2000.0,
+    ) -> tuple[dict, dict, tuple[str, ...]]:
+        return (
+            {
+                "back_period_um": period_um * (1.0 + detune),
+                "expected_beat_period_um": period_um * (1.0 + detune)
+                / max(1e-6, detune),
+            },
+            {},
+            (),
+        )
+
     @classmethod
     def generate(
         cls,
@@ -44,9 +96,7 @@ class OrchidShimmerMoire(Pattern):
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        # Resolve the carrier with ≥8 samples per period, capped at 1200 so
-        # the raster grid itself stays cheap (1.4M bool cells max).
-        n_grid = min(1200, max(384, int(extent_um / max(1.0, period_um / 8))))
+        n_grid, cell_um = _resolve_grid(period_um, extent_um)
 
         # Rect-count estimate for the front layer: raster_to_polygons emits
         # one rectangle per horizontal run, and the carrier chops every
@@ -61,7 +111,6 @@ class OrchidShimmerMoire(Pattern):
             extent_um=extent_um,
         )
 
-        cell_um = extent_um / n_grid
         flower = orchid.orchid_silhouette(extent, n_grid=n_grid)
 
         # Front: orchid ∩ carrier, intersected in RASTER space (silhouette
@@ -78,15 +127,18 @@ class OrchidShimmerMoire(Pattern):
         back_period_um = period_um * (1.0 + detune)
         back = linear_grating(back_period_um, 0.5, extent, rotation_deg=skew_deg)
 
+        # Metadata comes from the accessors above so the numbers a plate reads
+        # without generating are the ones a full generate publishes.
+        kw = dict(
+            period_um=period_um, detune=detune, skew_deg=skew_deg, extent_um=extent_um
+        )
+        extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(
             front=front,
             back=back,
             extent_um=extent,
             pixel_pitch_um=cell_um,
-            min_feature_um=period_um * 0.5,
-            extra={
-                "back_period_um": back_period_um,
-                "expected_beat_period_um": period_um * (1.0 + detune)
-                / max(1e-6, detune),
-            },
+            min_feature_um=cls.min_feature_um(**kw),
+            extra=extra,
+            recipe_data=recipe_data,
         )

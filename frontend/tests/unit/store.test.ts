@@ -177,13 +177,13 @@ describe('loadThumbnails', () => {
     params: [],
   });
 
-  it('fetches /patterns/{slug}/default once per slug and stores thumbnail URLs', async () => {
-    const fetchSpy = vi.fn().mockImplementation(async (url: string) => ({
+  it('probes /patterns/{slug}/thumbnail once per slug and stores the probe URL', async () => {
+    // The sweep is a read-only HEAD-style probe of the cached-thumbnail route
+    // (never a /default materialize — that could start a multi-second
+    // generation at boot); on 200 the probed URL itself is the <img> src.
+    const fetchSpy = vi.fn().mockImplementation(async () => ({
       ok: true,
       status: 200,
-      json: async () => ({
-        files: { thumbnail: `${url.split('/')[2]}-thumb.png` },
-      }),
       text: async () => '',
     }));
     vi.stubGlobal('fetch', fetchSpy);
@@ -192,8 +192,8 @@ describe('loadThumbnails', () => {
     await useStore.getState().loadThumbnails();
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(useStore.getState().thumbnails).toEqual({
-      aaa: 'aaa-thumb.png',
-      bbb: 'bbb-thumb.png',
+      aaa: '/patterns/aaa/thumbnail',
+      bbb: '/patterns/bbb/thumbnail',
     });
 
     // Second call is a no-op — already-loaded slugs are skipped.

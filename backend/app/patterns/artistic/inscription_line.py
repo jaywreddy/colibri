@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from .._helpers import raster_to_polygons
+from .._helpers import check_lattice_budget, raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, register
 from ..motifs import inscription
+
+
+def _resolve_grid(period_um: float, extent_um: float) -> tuple[int, float]:
+    """``(n_grid, cell_um)`` for the carrier raster.
+
+    ≥8 samples/period so the carrier phase offset is geometrically clean.
+    Module-level because both ``generate`` and ``pixel_pitch_um`` need it and the
+    plate compositor reads the pitch WITHOUT generating — one expression, so they
+    cannot disagree.
+    """
+    n_grid = max(384, int(extent_um / max(1.0, period_um / 10)))
+    return n_grid, extent_um / n_grid
 
 
 @register
@@ -109,6 +123,56 @@ class InscriptionLine(Pattern):
             joiner = "  "
         return f"{initials}{joiner}{int(year)}"
 
+    # --- metadata (no geometry) — see Pattern.metadata ----------------------
+
+    @classmethod
+    def pixel_pitch_um(
+        cls,
+        initials: str = "J & P",
+        separator: str = "·",
+        year: int = 2026,
+        heart: bool = True,
+        period_um: float = 20.0,
+        extent_um: float = 4000.0,
+    ) -> float:
+        return _resolve_grid(period_um, extent_um)[1]
+
+    @classmethod
+    def min_feature_um(
+        cls,
+        initials: str = "J & P",
+        separator: str = "·",
+        year: int = 2026,
+        heart: bool = True,
+        period_um: float = 20.0,
+        extent_um: float = 4000.0,
+    ) -> float:
+        return period_um * 0.5
+
+    @classmethod
+    def extra_metadata(
+        cls,
+        initials: str = "J & P",
+        separator: str = "·",
+        year: int = 2026,
+        heart: bool = True,
+        period_um: float = 20.0,
+        extent_um: float = 4000.0,
+    ) -> tuple[dict, dict, tuple[str, ...]]:
+        # Informational only — kept out of recipe_data on purpose: the
+        # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
+        # carries a period key, and with an empty back layer there is no
+        # mask-level tilt effect to quick-set to.
+        return (
+            {
+                "carrier_period_um": period_um,
+                "switch_axis_deg": 0.0,
+                "text": cls.compose_text(initials, separator, year),
+            },
+            {},
+            (),
+        )
+
     @classmethod
     def generate(
         cls,
@@ -125,9 +189,22 @@ class InscriptionLine(Pattern):
         # The ♥ separator always wants the drawn heart in its gap.
         want_heart = bool(heart) or str(separator).strip() == cls.HEART_SEP
 
-        # >=8 samples/period so the carrier phase offset is geometrically clean.
-        n_grid = max(384, int(extent_um / max(1.0, period_um / 10)))
-        cell_um = extent_um / n_grid
+        n_grid, cell_um = _resolve_grid(period_um, extent_um)
+
+        # Rect-count estimate: raster_to_polygons emits one rect per horizontal
+        # run, and the carrier chops every script row into ~extent/period runs.
+        # Worst case (silhouette covering the full grid) is n_grid rows ×
+        # stripes-per-extent — gate before the (extent/period)-sized text
+        # raster. NOTE the defaults (4000 µm / 20 µm) land at EXACTLY the 400k
+        # cap, so this extent cannot be raised without also capping n_grid the
+        # way monogram-carrier-reveal does (min(1200, ...)).
+        n_stripes = int(math.ceil(extent_um / period_um))
+        check_lattice_budget(
+            n_grid * n_stripes,
+            "inscription-line front carrier",
+            period_um=period_um,
+            extent_um=extent_um,
+        )
 
         line = inscription.inscription_silhouette(
             extent, n_grid=n_grid, text=text, heart=want_heart
@@ -145,19 +222,23 @@ class InscriptionLine(Pattern):
         front_poly = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back_poly = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
 
+        # Metadata comes from the accessors above so the numbers a plate reads
+        # without generating are the ones a full generate publishes.
+        kw = dict(
+            initials=initials,
+            separator=separator,
+            year=year,
+            heart=heart,
+            period_um=period_um,
+            extent_um=extent_um,
+        )
+        extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(
             front=front_poly,
             back=back_poly,
             extent_um=extent,
             pixel_pitch_um=cell_um,
-            min_feature_um=period_um * 0.5,
-            # Informational only — kept out of recipe_data on purpose: the
-            # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
-            # carries a period key, and with an empty back layer there is no
-            # mask-level tilt effect to quick-set to.
-            extra={
-                "carrier_period_um": period_um,
-                "switch_axis_deg": 0.0,
-                "text": text,
-            },
+            min_feature_um=cls.min_feature_um(**kw),
+            extra=extra,
+            recipe_data=recipe_data,
         )

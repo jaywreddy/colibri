@@ -8,7 +8,7 @@ from shapely import affinity
 from shapely.geometry import MultiPolygon, Point, Polygon, box
 from shapely.ops import unary_union
 
-from .base import Substrate, ensure_multipolygon
+from .base import LITHO_FLOOR_UM, Substrate, ensure_multipolygon
 
 
 # Hard ceiling on the lattice cells a single generator call may BUILD
@@ -55,6 +55,77 @@ def exterior_tilt_deg(shift_um: float, substrate: Substrate | None = None) -> fl
     return math.degrees(
         math.asin(min(1.0, sub.n * math.sin(math.atan(shift_um / sub.thickness_um))))
     )
+
+
+def barrier_lattice(
+    slit_period_um: float,
+    extent_um: float,
+    *,
+    min_rows: int = 192,
+    floor_um: float = LITHO_FLOOR_UM,
+) -> tuple[int, float, int, float]:
+    """Solve the interlace raster AND the front-comb phase of a parallax barrier.
+
+    Returns ``(cols_per_period, cell_um, n_grid, xoff)`` for the construction
+    every barrier slug in ``patterns/artistic`` shares: a square
+    ``n_grid × n_grid`` back raster whose columns interlace two channels
+    ``cols_per_period // 2`` wide (channel A on the low-x half of each period,
+    channel B on the high-x half), under a full-field
+    ``linear_grating(slit_period_um, 1 - duty, ...)`` front comb translated by
+    ``xoff``. Single source of truth so the six generators cannot drift apart.
+
+    Three constraints, all physical:
+
+    1. **The back interlace period must EQUAL the slit period, exactly.** The
+       raster is derived FROM the slit lattice — pick an even
+       ``cols_per_period`` first and let ``cell_um = slit_period_um /
+       cols_per_period`` follow — never ``cell_um = extent_um / n_grid``, which
+       truncates: at p = 60 µm / extent = 2000 µm that built a 60.15 µm
+       interlace under a 60.0 µm comb, and the 0.25 % beat walked the
+       registration through a full half period across the tile, so no region of
+       it ever switched cleanly. (The p = 40 family came out accidentally
+       exact — that is where the audited 0.819/0.000 separation was measured
+       before being copy-pasted onto the p = 60 slugs.)
+
+    2. **Every emitted feature stays printable.** 8 columns per period — 4 per
+       channel — is the sampling target; ``min_rows`` raises it so small extents
+       still get a legible silhouette raster, and ``floor_um`` caps it because
+       ``cell_um`` is the shortest run a channel mask can emit. ``n_grid`` is
+       FLOORED, not rounded: a rounded-up grid overhangs the extent and gets
+       clipped, which would leave a sub-floor sliver column at the tile edge;
+       flooring gives up ≤ one cell of extent instead.
+
+    3. **Each open slit must be centred ON a channel boundary — the STRADDLE
+       class.** That is what makes the switch symmetric in tilt sign and
+       extinguishes the off-channel image at ±p/4. (A slit-CENTRED barrier is
+       the mirror image — mud at p/4, sharp at p/2 — i.e. a sign-symmetric blink
+       at twice the stamped ``switch_half_angle_deg``.) ``linear_grating``
+       centres opaque bars on multiples of the period, so open-slit centres sit
+       at ``i·p + p/2 + xoff``, while the raster starts at ``-raster_half_um``
+       and restarts a channel-A run every ``p``, putting the B→A boundaries at
+       ``t·p - raster_half_um``; solving for coincidence makes the phase
+       EXTENT-AWARE. A fixed ``xoff = p/2`` flipped the registration CLASS with
+       every 100 µm extent step.
+
+    Solved MOD p, not mod p/2. Both residues land a slit centre on *a* boundary
+    and are therefore straddle-class, but only mod p pins WHICH channel sits on
+    the +x side of every slit: the mod-p solution always puts channel A on the
+    +x side and channel B on the -x side, so a +x back shift — ``+tilt`` — always
+    reveals channel B. Under mod p/2 that parity, and with it the documented
+    "+tilt reveals view_b" convention, flipped with the extent.
+    """
+    cols_per_period = max(
+        8, 2 * int(math.ceil(min_rows * slit_period_um / extent_um / 2.0))
+    )
+    cols_per_period = min(
+        cols_per_period, 2 * int(slit_period_um / (2.0 * floor_um))
+    )
+    cols_per_period = max(2, cols_per_period)
+    cell_um = slit_period_um / cols_per_period
+    n_grid = int(extent_um / cell_um + 1e-9)
+    raster_half_um = n_grid * cell_um / 2.0
+    xoff = (slit_period_um / 2.0 - raster_half_um) % slit_period_um
+    return cols_per_period, cell_um, n_grid, xoff
 
 
 def crop_box(extent_um: tuple[float, float]) -> Polygon:

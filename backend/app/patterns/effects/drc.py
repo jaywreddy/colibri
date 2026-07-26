@@ -38,6 +38,7 @@ Design choices honoured from the Build-B contract:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -555,6 +556,229 @@ def _histogram(vals: np.ndarray, edges: list) -> dict:
 # metal, not a gap or sliver).
 
 
+# Tiling for the width/space CHECKS (measurement only — the heal never tiles).
+# klayout's width_check/space_check degrade catastrophically on one giant merged
+# polygon: the back layer of a 40 mm face merges its full-window carrier into a
+# single ring whose self-check ran ~27 MINUTES, while the same check on the
+# front layer's 18k separate polygons takes ~12 s. Checking per-tile keeps every
+# region small. Correctness: a tile's region is built from every input polygon
+# whose bbox touches the tile WINDOW (core + border, border > check distance),
+# so all metal that can interact with core geometry is present and locally
+# merged; a violation is counted only if its bbox center lies in the half-open
+# CORE, so tiles partition the plane and nothing double-counts. Clip artifacts
+# cannot occur at all — inputs are inserted whole, never clipped.
+# 1000 µm empirically minimizes the real back layer's check (angled near-floor
+# combs): 250 µm → 12.4 s (per-tile overhead), 1 mm → 5.6 s, 2 mm → 39 s,
+# 5 mm → 105 s (superlinear contiguous-edge cost takes over).
+_CHECK_TILE_UM = 1000.0
+_CHECK_BORDER_UM = 16.0
+
+
+def _tiled_check_stats(
+    polys,
+    kdb,
+    *,
+    width_dbu: int,
+    gap_dbu: int,
+    dbu_um: float,
+    tile_um: float = _CHECK_TILE_UM,
+    border_um: float = _CHECK_BORDER_UM,
+) -> tuple[int, float, int, float]:
+    """Run width/space checks tile-by-tile; return (n_width, min_w_um, n_space, min_s_um).
+
+    Check options match the single-region path exactly (Euclidian,
+    ignore_angle=80, shielded=False, NeverIncludeZeroDistance) — see the module
+    note above for why each is the honest printed-geometry measure.
+    """
+    import time as _time
+
+    _t0 = _time.time()
+    scale = 1.0 / dbu_um
+    entries: list[tuple[float, float, float, float, object]] = []  # bbox µm + payload
+    big = kdb.Region()  # rings spanning many tiles — decomposed once in C++
+    for item in polys:
+        a = np.asarray(item, dtype=float)
+        if a.ndim == 2 and a.shape[1] == 4:  # rect array (N,4) [x0,x1,y0,y1]
+            for x0, x1, y0, y1 in a:
+                lo_x, hi_x = min(x0, x1), max(x0, x1)
+                lo_y, hi_y = min(y0, y1), max(y0, y1)
+                entries.append((lo_x, lo_y, hi_x, hi_y, (lo_x, lo_y, hi_x, hi_y)))
+        elif a.ndim == 2 and a.shape[1] == 2 and a.shape[0] >= 3:  # vertex ring
+            lo_x, lo_y = a[:, 0].min(), a[:, 1].min()
+            hi_x, hi_y = a[:, 0].max(), a[:, 1].max()
+            # Axis-aligned 4-point rings ARE rects — normalize to the tuple
+            # form so they take the clipping path below. This covers both
+            # _compose_layer_polys output (every axis rect arrives as a ring)
+            # and healed full-height carrier lines; without it a 40 mm line
+            # ring re-enters every tile unclipped and the superlinear
+            # long-edge check cost returns through the back door.
+            if (
+                a.shape[0] == 4
+                and np.unique(a[:, 0]).size == 2
+                and np.unique(a[:, 1]).size == 2
+            ):
+                entries.append((lo_x, lo_y, hi_x, hi_y, (lo_x, lo_y, hi_x, hi_y)))
+            elif hi_x - lo_x > 2 * tile_um or hi_y - lo_y > 2 * tile_um:
+                # Rings spanning many tiles — LONG ANGLED grating lines (an
+                # 11 µm × 40 mm line at 30° has a ~20 × 35 mm bbox) and any
+                # merged plate-spanning blob. These are the measured killer:
+                # klayout's check cost grows superlinearly with contiguous
+                # edge length, and near-floor-gap diagonal combs of full-plate
+                # lines took ~27 min/check. They go into one Region and are
+                # CLIPPED per tile below (bbox-indexed select + window AND),
+                # so no tile ever sees an edge longer than the window.
+                big.insert(
+                    kdb.Polygon(
+                        [kdb.Point(int(round(x * scale)), int(round(y * scale))) for x, y in a]
+                    )
+                )
+            else:
+                entries.append((lo_x, lo_y, hi_x, hi_y, a))
+    have_big = not big.is_empty()
+    if have_big:
+        big.merge()
+        bb = big.bbox()
+    if not entries and not have_big:
+        return 0, float("inf"), 0, float("inf")
+
+    xs0 = [e[0] for e in entries] + ([bb.left * dbu_um] if have_big else [])
+    ys0 = [e[1] for e in entries] + ([bb.bottom * dbu_um] if have_big else [])
+    xs1 = [e[2] for e in entries] + ([bb.right * dbu_um] if have_big else [])
+    ys1 = [e[3] for e in entries] + ([bb.top * dbu_um] if have_big else [])
+    gx0, gy0, gx1, gy1 = min(xs0), min(ys0), max(xs1), max(ys1)
+    nx = max(1, int(math.ceil((gx1 - gx0) / tile_um)))
+    ny = max(1, int(math.ceil((gy1 - gy0) / tile_um)))
+
+    buckets: dict[tuple[int, int], list] = {}
+    for lo_x, lo_y, hi_x, hi_y, payload in entries:
+        ix0 = max(0, int((lo_x - border_um - gx0) / tile_um))
+        ix1 = min(nx - 1, int((hi_x + border_um - gx0) / tile_um))
+        iy0 = max(0, int((lo_y - border_um - gy0) / tile_um))
+        iy1 = min(ny - 1, int((hi_y + border_um - gy0) / tile_um))
+        for ix in range(ix0, ix1 + 1):
+            for iy in range(iy0, iy1 + 1):
+                buckets.setdefault((ix, iy), []).append(payload)
+    if have_big:
+        # Pre-clip the plate-spanning/angled geometry into tile-COLUMN strips
+        # (nx ANDs on the big region, not one per tile — a diagonal line's
+        # bbox overlaps ~10× more tiles than the line itself crosses, so
+        # per-tile selection overselects brutally). Strip pieces are ≤ one
+        # window wide and a window-diagonal long, so binning them by row and
+        # inserting them whole keeps every edge bounded by the window size.
+        for ix in range(nx):
+            sx0 = gx0 + ix * tile_um - border_um
+            sx1 = gx0 + (ix + 1) * tile_um + border_um
+            strip = big & kdb.Region(
+                kdb.Box(
+                    int(round(sx0 * scale)), bb.bottom - 1,
+                    int(round(sx1 * scale)), bb.top + 1,
+                )
+            )
+            for poly in strip.each():
+                pb = poly.bbox()
+                iy0 = max(0, int((pb.bottom * dbu_um - border_um - gy0) / tile_um))
+                iy1 = min(ny - 1, int((pb.top * dbu_um + border_um - gy0) / tile_um))
+                for iy in range(iy0, iy1 + 1):
+                    buckets.setdefault((ix, iy), []).append(poly.dup())
+
+    _t_bin = _time.time()
+    logger.debug(
+        "tiled_check: %d entries, %d buckets, prep %.1fs",
+        len(entries), len(buckets), _t_bin - _t0,
+    )
+    _slowest = (0.0, None, 0)
+    euc = kdb.Region.Euclidian
+    zdm = kdb.Region.NeverIncludeZeroDistance
+    # Violations are counted as merged marker AREAS, not raw edge pairs: tile
+    # clipping fragments one long sub-floor run into one pair per tile, and even
+    # unclipped klayout pair granularity is representation-dependent. Each kept
+    # pair's marker polygon (the gap/sliver area itself) goes into a region;
+    # markers of the same physical site overlap across tile borders (windows
+    # overlap by 2×border), so the merged count is the number of connected
+    # sub-floor SITES — stable under tiling and the honest QA number.
+    w_markers = kdb.Region()
+    s_markers = kdb.Region()
+    mnw = mns = float("inf")
+    for (ix, iy), payloads in buckets.items():
+        _t_tile = _time.time()
+        # Tile WINDOW in µm (core + border) — rect payloads are CLIPPED to it.
+        # Check cost grows superlinearly with contiguous edge length (measured:
+        # the back layer's full-plate-height carrier lines cost ~40× more per
+        # meter of edge than the front's short segments), so unclipped tall
+        # rects would re-check their full length in every tile they touch.
+        # Analytic box clipping is exact; the artificial cut edges it creates
+        # sit ON the window boundary, ≥ border > check distance from the core,
+        # so the center-in-core filter below discards any pair they join.
+        wx0 = gx0 + ix * tile_um - border_um
+        wy0 = gy0 + iy * tile_um - border_um
+        wx1 = gx0 + (ix + 1) * tile_um + border_um
+        wy1 = gy0 + (iy + 1) * tile_um + border_um
+        reg = kdb.Region()
+        for payload in payloads:
+            if isinstance(payload, tuple):
+                lo_x, lo_y, hi_x, hi_y = payload
+                lo_x, hi_x = max(lo_x, wx0), min(hi_x, wx1)
+                lo_y, hi_y = max(lo_y, wy0), min(hi_y, wy1)
+                if hi_x <= lo_x or hi_y <= lo_y:
+                    continue
+                reg.insert(
+                    kdb.Box(
+                        int(round(lo_x * scale)), int(round(lo_y * scale)),
+                        int(round(hi_x * scale)), int(round(hi_y * scale)),
+                    )
+                )
+            elif isinstance(payload, np.ndarray):
+                pts = [
+                    kdb.Point(int(round(x * scale)), int(round(y * scale)))
+                    for x, y in payload
+                ]
+                reg.insert(kdb.Polygon(pts))
+            else:  # pre-clipped kdb.Polygon strip pieces (already DBU)
+                reg.insert(payload)
+        if reg.is_empty():
+            continue
+        reg.merge()
+        # Half-open core in DBU: [cx0, cx1) × [cy0, cy1) partitions the plane.
+        cx0 = int(round((gx0 + ix * tile_um) * scale))
+        cy0 = int(round((gy0 + iy * tile_um) * scale))
+        cx1 = int(round((gx0 + (ix + 1) * tile_um) * scale))
+        cy1 = int(round((gy0 + (iy + 1) * tile_um) * scale))
+
+        def _tally(edge_pairs, markers) -> float:
+            mn = float("inf")
+            for ep in edge_pairs.each():
+                d = abs(ep.distance())
+                if d <= 0:
+                    continue
+                c = ep.bbox().center()
+                if not (cx0 <= c.x < cx1 and cy0 <= c.y < cy1):
+                    continue
+                markers.insert(ep.polygon(0))
+                mn = min(mn, d * dbu_um)
+            return mn
+
+        w_mn = _tally(
+            reg.width_check(width_dbu, metrics=euc, ignore_angle=80, shielded=False, zero_distance_mode=zdm),
+            w_markers,
+        )
+        s_mn = _tally(
+            reg.space_check(gap_dbu, metrics=euc, ignore_angle=80, shielded=False, zero_distance_mode=zdm),
+            s_markers,
+        )
+        mnw = min(mnw, w_mn)
+        mns = min(mns, s_mn)
+        _dt = _time.time() - _t_tile
+        if _dt > _slowest[0]:
+            _slowest = (_dt, (ix, iy), len(payloads))
+    w_markers.merge()
+    s_markers.merge()
+    logger.debug(
+        "tiled_check: tiles %.1fs total, slowest %.2fs at %s (%d payloads)",
+        _time.time() - _t_bin, _slowest[0], _slowest[1], _slowest[2],
+    )
+    return int(w_markers.count()), mnw, int(s_markers.count()), mns
+
+
 def _region_from_polys(polys, dbu_um: float):
     """Build a merged klayout Region (integer DBU) from plate-frame polygons.
 
@@ -609,8 +833,14 @@ def drc_report_region(
     the floor. Returns the violation counts + narrowest width/space found (µm) —
     the honest printed-layer tally the audit's klayout method produces.
     """
-    reg, kdb = _region_from_polys(polys, dbu_um)
-    if reg.is_empty():
+    import klayout.db as kdb
+
+    # No whole-plate Region here: building+merging it cost a full Python
+    # insert loop and served only the n_polys count. The heal path merges
+    # already, so len(polys) IS the merged count for after-reports; for the
+    # opt-in raw before-reports it is the input count (documented).
+    n_input = sum(1 for p in polys if np.asarray(p).size)
+    if n_input == 0:
         return {
             "kind": "region", "n_polys": 0, "n_width_viol": 0, "n_space_viol": 0,
             "min_width_um": float("inf"), "min_space_um": float("inf"),
@@ -618,48 +848,28 @@ def drc_report_region(
     floor_dbu = int(round(min_width_um / dbu_um))
     gap_dbu = int(round(min_gap_um / dbu_um))
 
-    def _min_over(edge_pairs) -> tuple[int, float]:
-        n = 0
-        mn = float("inf")
-        for ep in edge_pairs.each():
-            # EdgePair.distance() is the true perpendicular separation of the two
-            # (near-)parallel edges in DBU — the width or gap the check flagged.
-            # A ZERO distance is collinear-overlapping/touching gold: it prints as
-            # SOLID metal, not a sub-floor sliver or bridging gap, so it is not a
-            # litho defect (it survives NeverIncludeZeroDistance only as an
-            # overlapping-collinear artifact of abutting rects). Count only the
-            # genuine 0 < d < floor features.
-            d = abs(ep.distance())
-            if d <= 0:
-                continue
-            n += 1
-            mn = min(mn, d * dbu_um)
-        return n, mn
-
-    # Two options make this the honest printed-geometry measure the audit used:
+    # Check options (inside _tiled_check_stats) — the honest printed-geometry
+    # measure the audit used:
     #   * ignore_angle = 80°: edges meeting at ≥ 80° are NOT paired, excluding the
     #     acute-corner false positives an angled grating's rotated rectangles
     #     trigger (a clean 45° 2.2 µm grating: 0 width pairs with it, 10 without).
     #   * NeverIncludeZeroDistance: coincident edges between abutting-but-unmerged
-    #     rectangles (adjacent slot/crest rects sharing a boundary) print as SOLID
-    #     gold, not a 0 µm sliver/gap — they are geometry-representation artifacts,
-    #     not litho defects, so the check must skip them (the ~0.0 µm pairs).
-    # shielded=False: shielding (suppressing a violation seen "through" another
-    # feature) is the dominant cost of these checks on a dense grating region
-    # (~7× slower); a shielded violation always co-occurs with an unshielded one,
-    # so disabling it costs no real defect while making the once-per-export gate
-    # tractable on the 13.7 GB host (measured 82 s → 12 s per space_check).
-    euc = kdb.Region.Euclidian
-    zdm = kdb.Region.NeverIncludeZeroDistance
-    nw, mnw = _min_over(
-        reg.width_check(floor_dbu, metrics=euc, ignore_angle=80, shielded=False, zero_distance_mode=zdm)
-    )
-    ns, mns = _min_over(
-        reg.space_check(gap_dbu, metrics=euc, ignore_angle=80, shielded=False, zero_distance_mode=zdm)
+    #     rectangles print as SOLID gold, not a 0 µm sliver/gap — geometry-
+    #     representation artifacts, not litho defects (and only genuine
+    #     0 < d < floor pairs are tallied).
+    #   * shielded=False: shielding is the dominant cost on a dense grating
+    #     (~7× slower) and a shielded violation always co-occurs with an
+    #     unshielded one.
+    # The checks run TILED (see _tiled_check_stats): one merged whole-plate
+    # region sends klayout's self-check quadratic on the back layer's fused
+    # full-window carrier (measured ~27 min per check on a 40 mm face vs ~1 s
+    # for the identical geometry checked in 2 mm tiles).
+    nw, mnw, ns, mns = _tiled_check_stats(
+        polys, kdb, width_dbu=floor_dbu, gap_dbu=gap_dbu, dbu_um=dbu_um
     )
     return {
         "kind": "region",
-        "n_polys": int(reg.count()),
+        "n_polys": n_input,
         "n_width_viol": nw,
         "n_space_viol": ns,
         "min_width_um": mnw,

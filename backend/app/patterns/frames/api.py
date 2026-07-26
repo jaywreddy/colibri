@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy import ndimage
 from shapely.geometry import MultiPolygon
 
@@ -153,10 +153,10 @@ def render_scene_to_image(
     renders) everything paints at 255, i.e. a plain silhouette mask. The plate
     compositor passes a lookup that encodes each species' moiré angle bucket as
     the graylevel (see plates.frame_level / MOTIF_ANGLE_BUCKET), so the shader
-    can give every motif its own fringe direction. Motifs are painted one type
-    at a time so a per-motif fill level is a single flat value; the small
-    max-blend at the end keeps overlaps at the higher (later) level rather than
-    summing into an out-of-band value.
+    can give every motif its own fringe direction. Motifs are painted one family
+    at a time so a per-motif fill level is a single flat value, and the families
+    go down in ASCENDING level order — see the sort below for why that is exactly
+    the max-composite this used to build out of per-family scratch canvases.
     """
     extent_um = (rect.width_um, rect.height_um)
     w_px = max(1, int(round(rect.width_um / pixel_pitch_um)))
@@ -164,13 +164,6 @@ def render_scene_to_image(
 
     def lvl(key: str) -> int:
         return 255 if level_fn is None else int(level_fn(key))
-
-    # Paint each motif family onto its own scratch layer at that family's flat
-    # level, then max-composite. This keeps the graylevel EXACT (no additive
-    # bleed at overlaps that would push a pixel out of its angle bucket) while
-    # still being a couple of cheap numpy maxima, not per-motif compositing.
-    import numpy as np
-    from PIL import ImageChops, ImageDraw
 
     img = Image.new("L", (w_px, h_px), 0)
 
@@ -180,55 +173,109 @@ def render_scene_to_image(
         return px, py
 
     # --- vine segments — paint as wide lines directly (no pen overhead) ---
-    vine_lvl = lvl("vine")
-    vdraw = ImageDraw.Draw(img)
-    for seg in scene.segments:
-        p1 = to_px(seg.x1, seg.y1)
-        p2 = to_px(seg.x2, seg.y2)
-        w_px_seg = max(1, int(round(seg.w / pixel_pitch_um)))
-        vdraw.line([p1, p2], fill=vine_lvl, width=w_px_seg)
+    def paint_vines(level: int) -> None:
+        vdraw = ImageDraw.Draw(img)
+        for seg in scene.segments:
+            p1 = to_px(seg.x1, seg.y1)
+            p2 = to_px(seg.x2, seg.y2)
+            w_px_seg = max(1, int(round(seg.w / pixel_pitch_um)))
+            vdraw.line([p1, p2], fill=level, width=w_px_seg)
 
-    # --- leaves, grouped by type so each type paints at its own flat level ---
+    # --- motif families, each painted at its own flat level by a level pen ---
+    def paint_sprites(drawer, sprites: list, mults: dict, angle_attr: str):
+        def _paint(level: int) -> None:
+            pen = _LevelRasterPen(img, extent_um, pixel_pitch_um, level)
+            for sp in sprites:
+                pen.save()
+                pen.translate(sp.x, sp.y)
+                pen.rotate(getattr(sp, angle_attr))
+                drawer(pen, sp.size * mults.get(sp.type, 1.0), sp.seed)
+                pen.restore()
+
+        return _paint
+
+    # One paint group per motif family (plus the vine), each with its flat level.
+    groups: list[tuple[int, Callable[[int], None]]] = [(lvl("vine"), paint_vines)]
+
     leaves_by_type: dict[str, list] = {}
     for leaf in scene.leaves:
         if LEAVES.get(leaf.type) is not None:
             leaves_by_type.setdefault(leaf.type, []).append(leaf)
-    for ltype, group in leaves_by_type.items():
-        layer = Image.new("L", (w_px, h_px), 0)
-        pen = RasterPen(layer, extent_um, pixel_pitch_um)
-        drawer = LEAVES[ltype]
-        for leaf in group:
-            size = leaf.size * LEAF_SIZE_MULT.get(leaf.type, 1.0)
-            pen.save()
-            pen.translate(leaf.x, leaf.y)
-            pen.rotate(leaf.angle)
-            drawer(pen, size, leaf.seed)
-            pen.restore()
-        if lvl(ltype) != 255:
-            layer = layer.point(lambda v, L=lvl(ltype): L if v else 0)
-        img = ImageChops.lighter(img, layer)
+    for ltype, lgroup in leaves_by_type.items():
+        groups.append(
+            (lvl(ltype), paint_sprites(LEAVES[ltype], lgroup, LEAF_SIZE_MULT, "angle"))
+        )
 
-    # --- flowers, grouped by type ---
     flowers_by_type: dict[str, list] = {}
     for flower in scene.flowers:
         if FLOWERS.get(flower.type) is not None:
             flowers_by_type.setdefault(flower.type, []).append(flower)
-    for ftype, group in flowers_by_type.items():
-        layer = Image.new("L", (w_px, h_px), 0)
-        pen = RasterPen(layer, extent_um, pixel_pitch_um)
-        drawer = FLOWERS[ftype]
-        for flower in group:
-            size = flower.size * FLOWER_SIZE_MULT.get(flower.type, 1.0)
-            pen.save()
-            pen.translate(flower.x, flower.y)
-            pen.rotate(flower.rot)
-            drawer(pen, size, flower.seed)
-            pen.restore()
-        if lvl(ftype) != 255:
-            layer = layer.point(lambda v, L=lvl(ftype): L if v else 0)
-        img = ImageChops.lighter(img, layer)
+    for ftype, fgroup in flowers_by_type.items():
+        groups.append(
+            (lvl(ftype), paint_sprites(FLOWERS[ftype], fgroup, FLOWER_SIZE_MULT, "rot"))
+        )
+
+    # Painting straight into ONE canvas in ascending-level order is bit-exact
+    # with the max-composite this replaced (a full-canvas scratch layer + LUT
+    # remap + ImageChops.lighter per family: three passes over a 2.25 Mpx plate
+    # raster each, ~34 Mpx of PIL traffic to lay down a few hundred sprites).
+    # ImageDraw does not antialias, so every family's coverage is binary; in
+    # ascending order a family only ever overwrites pixels whose level is <= its
+    # own, so overwrite == max. Overlaps therefore still keep the HIGHER level
+    # (never a summed out-of-band value that would fall out of its angle bucket),
+    # and equal levels are order-independent, so the stable sort's tie order is
+    # free. A DESCENDING or insertion-order pass would NOT be equivalent.
+    groups.sort(key=lambda g: g[0])
+    for level, paint in groups:
+        paint(level)
 
     return _despeckle(img)
+
+
+class _LevelDraw:
+    """``ImageDraw`` proxy that rewrites the pen's hardcoded gold to one level.
+
+    ``RasterPen`` paints every primitive at ``fill=255`` / ``outline=255``; a
+    frame motif family needs its own flat graylevel (its angle bucket).
+    Rewriting the kwarg on the way through lets the family paint straight into
+    the shared canvas instead of onto a scratch layer that then has to be
+    LUT-remapped and max-blended. Only KEYWORD ``fill``/``outline`` are
+    rewritten — RasterPen always passes them that way.
+    """
+
+    def __init__(self, draw: "ImageDraw.ImageDraw", level: int) -> None:
+        self._draw = draw
+        self._level = int(level)
+
+    def __getattr__(self, name: str):
+        target = getattr(self._draw, name)
+        level = self._level
+
+        def _paint(*args, **kwargs):
+            if kwargs.get("fill") is not None:
+                kwargs["fill"] = level
+            if kwargs.get("outline") is not None:
+                kwargs["outline"] = level
+            return target(*args, **kwargs)
+
+        # Memoized on the instance: one wrapper per primitive kind, not one per
+        # motif primitive call.
+        setattr(self, name, _paint)
+        return _paint
+
+
+class _LevelRasterPen(RasterPen):
+    """RasterPen that paints a whole motif family at one flat graylevel."""
+
+    def __init__(
+        self,
+        image: Image.Image,
+        extent_um: tuple[float, float],
+        pixel_pitch_um: float,
+        level: int,
+    ) -> None:
+        super().__init__(image, extent_um, pixel_pitch_um)
+        self._draw = _LevelDraw(self._draw, level)
 
 
 def _despeckle(img: Image.Image, min_px: int = 9) -> Image.Image:
@@ -243,20 +290,30 @@ def _despeckle(img: Image.Image, min_px: int = 9) -> Image.Image:
     touching well under 0.1% of the gold. Cheap: one labeled pass over an
     ``L`` mask, no geometry work.
     """
-    arr = np.asarray(img) > 0
-    if not arr.any():
+    arr = np.asarray(img)
+    painted = arr > 0
+    rows = np.flatnonzero(painted.any(axis=1))
+    if rows.size == 0:
         return img
-    lbl, n = ndimage.label(arr)
+    cols = np.flatnonzero(painted.any(axis=0))
+    y0, y1 = int(rows[0]), int(rows[-1]) + 1
+    x0, x1 = int(cols[0]), int(cols[-1]) + 1
+    # Label the PAINTED BBOX, not the whole canvas: a connected component cannot
+    # reach outside the painted pixels, so the crop's labelling and component
+    # counts are identical to the full canvas'. On a frame band inside a plate
+    # raster that is one int32 band instead of one int32 canvas.
+    lbl, n = ndimage.label(painted[y0:y1, x0:x1])
     if n <= 1:
         return img
     counts = np.bincount(lbl.ravel())
-    # counts[0] is the background; components are 1..n.
-    small = np.nonzero(counts[1:] < min_px)[0] + 1
-    if small.size == 0:
+    keep = counts >= min_px
+    keep[0] = True  # counts[0] is the background; it is already 0 in arr
+    if keep.all():
         return img
-    kill = np.isin(lbl, small)
-    cleaned = np.array(img)
-    cleaned[kill] = 0
+    cleaned = arr.copy()
+    # LUT gather rather than np.isin: isin sorts the whole label array, while
+    # keep[lbl] is one fancy-index pass over it. Writes through the crop view.
+    cleaned[y0:y1, x0:x1][~keep[lbl]] = 0
     return Image.fromarray(cleaned, mode="L")
 
 

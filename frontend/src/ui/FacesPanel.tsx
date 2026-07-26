@@ -4,6 +4,12 @@ import { KIT, Section } from './kit';
 import FaceEditor from './FaceEditor';
 import IlluminationPanel from './IlluminationPanel';
 
+/**
+ * Human-readable face names — the single source for every label a user reads
+ * (face grid, "EDITING:" banner, cut list). `top` is the box's lid, so it reads
+ * "Lid" everywhere; the raw `top` id stays in the spec, manifests and fab
+ * artifacts (CUTLIST.csv, per-face files).
+ */
 export const FACE_LABELS: Record<FaceId, string> = {
   front: 'Front',
   back: 'Back',

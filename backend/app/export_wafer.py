@@ -12,23 +12,34 @@ exposure/etch pass produces the whole box. This module:
      the box size (W = D, H/W ratio held, glass + foil kept physical) because
      the default 50x50x40 mm box provably does NOT fit: its 6 plates total
      ~11,700 mm2 of glass against a ~7,850 mm2 wafer (~6,940 mm2 usable).
-  3. Writes a GDS (``wafer`` top cell) with the wafer outline, plate outlines +
-     dicing streets, front/back gold masks placed per plate footprint, and
-     text labels — :func:`build_wafer_gds`.
+  3. Writes the wafer GDS — :func:`build_wafer_gds`, which DELEGATES to
+     ``export_fine.build_wafer_fine_gds`` (true optical periods, per-face
+     centerpiece, carrier/barrier gratings, DRC healing, BSA fiducials).
   4. Emits a matching layout-preview SVG (rects + circle only, no pattern
      polygons) for fast vision checks — :func:`write_layout_svg`.
 
-Geometry is reused wholesale from ``compose_plate`` (the existing central
-pattern + frame polygon path) — no new pattern pipeline is invented. All
-lengths are micrometers unless a ``_mm`` suffix says otherwise.
+SUPERSEDED — the original writer here composed each plate with
+``plates.compose_plate``, which concatenates the STANDALONE central pattern (at
+the pattern class's own few-mm ``extent_um``, never scaled into the plate
+aperture) with a SOLID frame silhouette: no carrier grating, no barrier comb, no
+tilt-switch centerpiece, no back carrier window. Layers (10,0)/(20,0) of such a
+wafer bear no resemblance to the preview PNG or to front/back.svg, and a box
+fabbed from it has no moiré and no tilt switch — the whole optical function is
+missing. That path survives only as :func:`build_wafer_gds_coarse` behind the
+explicit ``--legacy-coarse`` flag, for layout inspection; it is NOT fabbable.
+What this module remains the single source of truth for is the packer, the
+max-scale solver and the layout SVG — ``export_fine`` imports all three.
+
+All lengths are micrometers unless a ``_mm`` suffix says otherwise.
 
 CLI (do NOT run full generation casually — it materializes 6 plates):
 
-    uv run python -m app.export_wafer --out data/wafer/wafer.gds [--mini]
+    uv run python -m app.export_wafer --out data/wafer/wafer.gds
 
-``--mini`` uses the largest fitting box from :func:`solve_max_scale`; without
-it the exporter STILL defaults to the fitting mini box (the default box cannot
-fit), and ``--force-default`` opts into attempting the un-fitting default.
+Always the largest fitting box from :func:`solve_max_scale` (the default
+50x50x40 box provably does not fit); ``--mini`` is accepted as a no-op for
+compatibility. ``--pack-only`` runs just the packer + layout SVG.
+``--force-default`` / ``--detail`` apply to ``--legacy-coarse`` only.
 """
 from __future__ import annotations
 
@@ -384,33 +395,42 @@ DETAIL_TIERS = ("optical", "framed", "hero")
 def mini_box_spec(result: MiniBoxResult, *, detail: str = "optical") -> "Any":
     """Build a full ``BoxSpec`` (6 faces, patterns + frames) at the mini dims.
 
-    Mirrors ``boxes.default_box_spec`` face-for-face (same pattern slug +
-    per-face frame seeds) but at the fitting size, with the smallest foil tape
-    so the keep-out rim stays inside the shrunken plates.
+    Takes the REAL six-face plan from ``boxes.default_box_spec`` — per-face
+    centerpiece slug AND per-face frame profile — and resizes it to the fitting
+    box with the smallest foil tape so the keep-out rim stays inside the
+    shrunken plates. (It used to stamp ``DEFAULT_FACE_PATTERN_SLUG`` on all six
+    faces, i.e. six copies of the front globe switch, discarding the plan;
+    ``export_fine.mini_spec_real_faces`` does the same resize for the fab path.)
+
+    Only :func:`build_wafer_gds_coarse` consumes this now — the fab wafer builds
+    its spec in ``export_fine.mini_spec_real_faces``.
 
     ``detail`` selects the fidelity/polygon-budget tradeoff:
-      * ``"optical"`` (wafer default) — no decorative frame, coarsened moiré.
-        Deterministic and well under ``WAFER_POLY_BUDGET`` (~43k total).
-      * ``"framed"`` — lean colonize frame + coarse moiré. Richer, but the
-        seed-variable vine count may push some wafers over budget.
-      * ``"hero"`` — the box's full showpiece detail (frame band/density and
-        20 um moiré). Best for a single-plate reticle; blows the wafer budget.
+      * ``"optical"`` (default) — no decorative frame, and the coarse
+        ``WAFER_MOIRE_PERIOD_UM`` carrier on the faces that actually declare a
+        ``period_um`` knob (jamón tray, inscription); the barrier/scanimation
+        faces keep their native periods. Leanest tier — but with the real
+        six-face plan the total is no longer the ~43k the one-slug version had.
+      * ``"framed"`` — lean colonize frame on top. Richer, but the seed-variable
+        vine count may push some wafers over ``WAFER_POLY_BUDGET``.
+      * ``"hero"`` — every face at its box default (full frame profile, native
+        periods). Best for a single-plate reticle; blows the wafer budget.
     """
     if detail not in DETAIL_TIERS:
         raise ValueError(f"detail must be one of {DETAIL_TIERS} (got {detail!r})")
 
-    from .assembly import FoilSpec
-    from .boxes import DEFAULT_FACE_PATTERN_SLUG, BoxSpec
-    from .plates import FrameSpec, GlassSpec, PlateSpec
-    from .assembly import FACE_IDS
+    from .assembly import FACE_IDS, FoilSpec
+    from .boxes import default_box_spec
+    from .patterns.base import registry
+    from .plates import GlassSpec
 
-    spec = BoxSpec(
-        width_um=result.width_um,
-        depth_um=result.depth_um,
-        height_um=result.height_um,
-        glass=GlassSpec(thickness_um=result.glass_thickness_um),
-        foil=FoilSpec(tape_width_um=result.tape_width_um),
-    )
+    spec = default_box_spec()  # real per-face slugs + frame seeds/profiles
+    spec.width_um = result.width_um
+    spec.depth_um = result.depth_um
+    spec.height_um = result.height_um
+    spec.glass = GlassSpec(thickness_um=result.glass_thickness_um)
+    # Smallest foil preset so the keep-out rim stays inside the shrunk plates.
+    spec.foil = FoilSpec(tape_width_um=result.tape_width_um)
 
     if detail == "optical":
         frame_kw: dict[str, Any] = {"band_um": 0.0, "density": 0.0, "foliage": 0.0, "bloom": 0.0}
@@ -427,12 +447,17 @@ def mini_box_spec(result: MiniBoxResult, *, detail: str = "optical") -> "Any":
         frame_kw = {}
         pattern_params = {}
 
-    for i, fid in enumerate(FACE_IDS):
-        spec.faces[fid] = PlateSpec(
-            pattern_slug=DEFAULT_FACE_PATTERN_SLUG,
-            pattern_params=dict(pattern_params),
-            frame=FrameSpec(seed=100 + i, **frame_kw),
-        )
+    for fid in FACE_IDS:
+        plate = spec.faces.get(fid)
+        if plate is None:
+            continue
+        if frame_kw:  # tier override on top of the face's own frame profile
+            plate.frame = replace(plate.frame, **frame_kw)
+        # The six faces run six DIFFERENT generators, most of which have no
+        # ``period_um`` knob at all — pass a tier param only to a face whose
+        # generator declares it, or ``generate()`` gets an unexpected kwarg.
+        declared = registry[plate.pattern_slug].defaults() if plate.pattern_slug in registry else {}
+        plate.pattern_params = {k: v for k, v in pattern_params.items() if k in declared}
     spec.normalize_face_dims()
     return spec
 
@@ -447,44 +472,76 @@ def _circle_pts(radius_um: float, n: int = 256) -> list[tuple[float, float]]:
 
 
 def _add_multipolygon(comp: Any, polys: Any, layer: tuple[int, int], dx: float, dy: float) -> int:
-    """Add every ring of a shapely MultiPolygon to ``comp`` on ``layer``,
-    translated by (dx, dy). Returns the polygon count added.
+    """Add a shapely MultiPolygon to ``comp`` on ``layer``, translated by
+    (dx, dy). Returns the polygon count added.
 
-    Holes are added as their own polygons on the same layer — for a fill-only
-    lithography mask that is acceptable (evenodd is handled at the SVG stage;
-    for GDS the fab treats these as drawn geometry and the interior rings are
-    negligible in count for our patterns). We do NOT run any GEOS boolean here
-    (hot-path budget rule).
+    Interior rings are SUBTRACTED from their exterior, not drawn: GDSII has no
+    hole concept, so a ring emitted on the same layer prints as gold and every
+    punched eye / monogram counter / ``raster_to_polygons`` interior fills in.
+    The subtraction is per polygon and only for polygons that have interiors —
+    see ``export_gds.hole_free_dpolygons`` for why that does not violate the
+    no-whole-geometry-boolean rule.
     """
     from shapely.geometry import MultiPolygon, Polygon
+
+    from .export_gds import hole_free_dpolygons
 
     geoms = polys.geoms if isinstance(polys, MultiPolygon) else [polys]
     count = 0
     for poly in geoms:
         if not isinstance(poly, Polygon) or poly.is_empty:
             continue
-        ext = [(x + dx, y + dy) for x, y in poly.exterior.coords]
-        comp.add_polygon(ext, layer=layer)
-        count += 1
-        for ring in poly.interiors:
-            comp.add_polygon([(x + dx, y + dy) for x, y in ring.coords], layer=layer)
+        for dpoly in hole_free_dpolygons(poly, dx, dy):
+            comp.add_polygon(dpoly, layer=layer)
             count += 1
     return count
 
 
 def build_wafer_gds(
+    out_path: Path,
+    *,
+    drc_report_path: Path | None = None,
+) -> dict[str, Any]:
+    """The wafer deliverable — delegates to ``export_fine.build_wafer_fine_gds``.
+
+    This name stays the module's public entry point (it is what the justfile and
+    the docs reference) but the geometry now comes from the fine-pitch writer:
+    the real six-face plan, the aperture-scaled centerpiece, true 22/23.98/60/4.4
+    um periods, DRC healing at the 2 um litho floor and the BSA fiducials.
+
+    The fine builder owns its own packing (``repack_with_keepout``, so no plate
+    overlaps a fiducial) and derives the face spec from ``boxes.default_box_spec``
+    at the resulting size, so it takes neither a ``spec`` nor ``placements`` —
+    the coarse writer's arguments are gone deliberately. The superseded
+    ``compose_plate`` layout lives on as :func:`build_wafer_gds_coarse`.
+    """
+    from .export_fine import build_wafer_fine_gds
+
+    return build_wafer_fine_gds(out_path, drc_report_path=drc_report_path)
+
+
+def build_wafer_gds_coarse(
     spec: Any,
     placements: list[Placement],
     out_path: Path,
 ) -> dict[str, Any]:
-    """Compose every plate's polygons and lay them out on a wafer GDS.
+    """SUPERSEDED coarse layout writer — NOT a fab mask. Layout checks only.
 
-    ``spec`` is a ``BoxSpec``; ``placements`` come from :func:`pack_plates`
-    (wafer-centered, un-rotated footprints). Each plate's front/back gold
-    masks are generated once via ``plates.compose_plate`` (the existing
-    polygon path — NOT a new pipeline) and stamped into its footprint on
-    layers (10,0)/(20,0). Plate outlines + dicing streets go on (1,0), the
-    wafer outline on (99,0), and face-name labels on (3,0).
+    Composes every plate with ``plates.compose_plate`` and stamps the resulting
+    polygons into its footprint on layers (10,0)/(20,0), plate outlines + dicing
+    streets on (1,0), the wafer outline on (99,0), face labels on (3,0).
+
+    What comes out is NOT fabbable, by construction: ``compose_plate``
+    concatenates the standalone central pattern at the pattern class's own
+    ``extent_um`` (a few mm, never scaled to ``_aperture(spec)``) with a SOLID
+    frame silhouette, and passes the pattern's own back layer straight through.
+    So there is no carrier grating, no barrier comb, no tilt-switch centerpiece
+    and no back carrier window — the plate has no optical function, and the solid
+    frame areas are a different fab process than the intended 50%-duty lines.
+    Use :func:`build_wafer_gds` for anything that will be exposed; this stays
+    only because it is the cheapest way to eyeball packing + footprints with
+    real polygon content. ``spec`` is a ``BoxSpec``; ``placements`` come from
+    :func:`pack_plates` (wafer-centered, un-rotated footprints).
 
     Returns a summary dict (polygon count, layers, placement report). Requires
     gdsfactory; raises NotImplementedError if it is missing (matching the
@@ -507,7 +564,7 @@ def build_wafer_gds(
 
     from .plates import compose_plate
 
-    comp = gf.Component("wafer")
+    comp = gf.Component("wafer_coarse_not_fab")
 
     # (99,0) wafer usable-region outline.
     comp.add_polygon(_circle_pts(USABLE_RADIUS_UM), layer=LAYER_WAFER)
@@ -572,6 +629,8 @@ def build_wafer_gds(
 
     return {
         "gds_path": str(out_path),
+        "fab_ready": False,  # no gratings / centerpiece / aperture scaling
+        "superseded_by": "export_fine.build_wafer_fine_gds",
         "total_polygons": total_polys,
         "poly_budget": WAFER_POLY_BUDGET,
         "within_budget": total_polys <= WAFER_POLY_BUDGET,
@@ -638,8 +697,10 @@ def write_layout_svg(
 def _resolve_spec_and_placements(
     force_default: bool, detail: str = "optical"
 ) -> tuple[Any, list[Placement], dict[str, Any]]:
-    """Pick the box to lay out: the largest fitting mini box by default, or
-    attempt the (non-fitting) default box under --force-default."""
+    """Pick the box for the ``--legacy-coarse`` layout: the largest fitting mini
+    box by default, or attempt the (non-fitting) default box under
+    --force-default. The fab path does its own solving inside
+    :func:`build_wafer_gds`."""
     from .boxes import default_box_spec
 
     if force_default:
@@ -676,19 +737,34 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--force-default",
         action="store_true",
-        help="attempt the default 50x50x40 box (it does not fit; will error)",
+        help="[--legacy-coarse only] attempt the default 50x50x40 box "
+        "(it does not fit; will error)",
     )
     ap.add_argument(
         "--detail",
         choices=DETAIL_TIERS,
-        default="optical",
-        help="fidelity/budget tier: optical (default, frameless, <budget), "
-        "framed (lean frame), hero (full showpiece frame, over budget)",
+        default=None,
+        help="[--legacy-coarse only] fidelity/budget tier: optical (default, "
+        "frameless, <budget), framed (lean frame), hero (full showpiece frame, "
+        "over budget)",
     )
     ap.add_argument(
         "--pack-only",
         action="store_true",
         help="run only the pure-math packer + SVG preview (no pattern generation)",
+    )
+    ap.add_argument(
+        "--drc-report",
+        default=None,
+        help="path for the fab writer's per-face DRC report JSON",
+    )
+    ap.add_argument(
+        "--legacy-coarse",
+        action="store_true",
+        help="write the SUPERSEDED compose_plate layout instead of the fab "
+        "wafer: no carrier/barrier gratings, no tilt-switch centerpiece, "
+        "central art left at its native few-mm extent. Layout inspection ONLY "
+        "— the result is not a fabbable mask.",
     )
     args = ap.parse_args(argv)
 
@@ -710,14 +786,47 @@ def main(argv: list[str] | None = None) -> int:
         print(f"svg -> {svg_out}")
         return 0
 
-    spec, placements, info = _resolve_spec_and_placements(args.force_default, args.detail)
+    if args.legacy_coarse:
+        spec, placements, info = _resolve_spec_and_placements(
+            args.force_default, args.detail or "optical"
+        )
+        write_layout_svg(placements, svg_out)
+        summary = build_wafer_gds_coarse(spec, placements, out)
+        print(f"mode={info}")
+        n = summary["total_polygons"]
+        over = " OVER BUDGET" if n > WAFER_POLY_BUDGET else ""
+        print(f"gds -> {summary['gds_path']} ({n} polygons, budget {WAFER_POLY_BUDGET}{over})")
+        print(f"svg -> {svg_out}")
+        print("NOT FAB-READY: coarse compose_plate layout (no gratings, no "
+              "centerpiece, central art unscaled). Drop --legacy-coarse for the "
+              "fab wafer.")
+        return 0
+
+    for flag, name in ((args.force_default, "--force-default"), (args.detail, "--detail")):
+        if flag:
+            raise SystemExit(
+                f"{name} applies to --legacy-coarse only; the fab wafer always "
+                "uses the largest fitting mini box at native optical periods."
+            )
+
+    # Mirror the fine builder's own packing (deterministic: same solver, same
+    # fiducial keep-out) so the preview SVG shows the footprints it actually
+    # wrote, not the pre-keep-out ones.
+    from .export_fine import repack_with_keepout
+
+    result = solve_max_scale()
+    if result is None:
+        raise SystemExit("No box size fits the wafer — check constants.")
+    result, placements = repack_with_keepout(result)
     write_layout_svg(placements, svg_out)
-    summary = build_wafer_gds(spec, placements, out)
-    print(f"mode={info}")
-    n = summary["total_polygons"]
-    over = " OVER BUDGET" if n > WAFER_POLY_BUDGET else ""
-    print(f"gds -> {summary['gds_path']} ({n} polygons, budget {WAFER_POLY_BUDGET}{over})")
+
+    drc_path = Path(args.drc_report) if args.drc_report else None
+    summary = build_wafer_gds(out, drc_report_path=drc_path)
+    print(f"mode=mini-fine  dims(mm)={result.dims_mm()}")
+    print(f"gds -> {summary['gds_path']} ({summary['total_polygons']} polygons)")
     print(f"svg -> {svg_out}")
+    for r in summary["plates"]:
+        print(f"  {r['face']:7s} {r['slug']:22s} front={r['front']:6d} back={r['back']:6d}")
     return 0
 
 

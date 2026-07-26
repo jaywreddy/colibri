@@ -42,6 +42,8 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage as ndi
 
+from ._pillow import check_silhouette_budget
+
 
 # --------------------------------------------------------------------------- #
 # Parameters
@@ -305,7 +307,13 @@ def trace_silhouette(
     """
     pr = params or TraceParams()
     n = max(64, int(n_grid))
+    # Own raster path (not render_silhouette), so gate n here too — callers size
+    # n_grid straight off unvalidated extent_um/period params.
+    check_silhouette_budget(n, "Traced silhouette")
     w = work if work is not None else min(1024, max(512, n * 2))
+    # The working grid is uncapped when a caller overrides it; it carries the
+    # float morphology stack, so it needs the same ceiling as the output grid.
+    check_silhouette_budget(w, "Traced silhouette working grid")
 
     gray, alpha = _load_gray_alpha(Path(image_path), pr.crop, w)
     fg = _foreground(gray, alpha, pr)

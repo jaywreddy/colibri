@@ -21,6 +21,58 @@ from typing import Any
 
 from shapely.geometry import MultiPolygon, Polygon
 
+# klayout database unit used for the per-polygon hole subtraction below. 1 nm is
+# three orders of magnitude finer than the 2 um litho floor, so the boolean is
+# lossless at our feature sizes.
+_HOLE_BOOL_DBU_UM = 0.001
+
+
+def hole_free_dpolygons(
+    poly: Polygon,
+    dx: float = 0.0,
+    dy: float = 0.0,
+    unit_um: float = 1.0,
+) -> list[Any]:
+    """One shapely polygon -> hole-free klayout ``DPolygon``s, translated by (dx, dy).
+
+    GDSII has no interior ring: a hole drawn on the same layer as its exterior
+    PRINTS AS GOLD, so every punched eye, monogram counter and
+    ``raster_to_polygons`` interior fills in. The rings must therefore be
+    SUBTRACTED, and each resulting polygon flattened to a single hole-free
+    contour (``Polygon.resolve_holes`` joins every hole to the hull with a cut
+    line, which is how a GDS represents one).
+
+    This is a per-polygon boolean in klayout, run only when the polygon actually
+    has interiors. CLAUDE.md's no-``unary_union`` rule targets whole-geometry
+    GEOS booleans on the request-serving hot paths; this is an offline fab
+    writer touching one polygon at a time, and the alternative is a wrong mask.
+    """
+    import klayout.db as kdb
+
+    def _dpoly(coords: Any) -> Any:
+        return kdb.DPolygon(
+            [kdb.DPoint(x * unit_um + dx, y * unit_um + dy) for x, y in coords]
+        )
+
+    hull = _dpoly(poly.exterior.coords)
+    if not poly.interiors:
+        return [hull]
+    dbu = _HOLE_BOOL_DBU_UM
+    region = kdb.Region(hull.to_itype(dbu))
+    for ring in poly.interiors:
+        region -= kdb.Region(_dpoly(ring.coords).to_itype(dbu))
+    region.merge()
+    out: list[Any] = []
+    for p in region.each():
+        flat = p.dup()
+        flat.resolve_holes()
+        out.append(
+            kdb.DPolygon(
+                [kdb.DPoint(pt.x * dbu, pt.y * dbu) for pt in flat.each_point_hull()]
+            )
+        )
+    return out
+
 
 def to_gds(
     polys: MultiPolygon,
@@ -31,9 +83,9 @@ def to_gds(
 ) -> Path:
     """Write a GDSII file containing ``polys``. Requires gdsfactory.
 
-    Raises ``NotImplementedError`` until the fab-export path is prioritised.
-    The signature and return contract are stable so callers can be written
-    now and the body filled in later without a breaking change.
+    Interior rings are subtracted from their exterior (see
+    :func:`hole_free_dpolygons`) so a hole reads as bare quartz, not gold.
+    Raises ``NotImplementedError`` in an environment without gdsfactory.
     """
     try:
         import gdsfactory as gf  # type: ignore[import-not-found]
@@ -57,13 +109,9 @@ def to_gds(
     for poly in geoms:
         if not isinstance(poly, Polygon) or poly.is_empty:
             continue
-        exterior = [(x * unit_um, y * unit_um) for x, y in poly.exterior.coords]
-        c.add_polygon(exterior, layer=layer)
-        for hole in poly.interiors:
-            ring = [(x * unit_um, y * unit_um) for x, y in hole.coords]
-            # gdsfactory handles holes via boolean subtraction in modern API;
-            # see the project's CONTRIBUTING notes before enabling.
-            c.add_polygon(ring, layer=layer)
+        # Holes are SUBTRACTED, not drawn — see hole_free_dpolygons.
+        for dpoly in hole_free_dpolygons(poly, unit_um=unit_um):
+            c.add_polygon(dpoly, layer=layer)
     c.write_gds(out_path)
     return Path(out_path)
 

@@ -1,4 +1,4 @@
-"""SVG export contract: one <path> per polygon, correct viewBox, μm units."""
+"""SVG export contract: every polygon emitted, correct viewBox, μm units."""
 from __future__ import annotations
 
 import re
@@ -15,12 +15,15 @@ def _square(cx: float, cy: float, s: float) -> Polygon:
     )
 
 
-def test_svg_contains_path_for_every_polygon() -> None:
+def test_svg_contains_subpath_for_every_polygon() -> None:
     polys = MultiPolygon([_square(0, 0, 5), _square(20, 0, 5), _square(-20, 0, 5)])
     svg = to_svg(polys, (100.0, 100.0))
-    # drawsvg emits <path d="..."/> — count them
-    n_paths = len(re.findall(r"<path\b", svg))
-    assert n_paths == 3
+    # All-rect input takes the single-path fast path (see
+    # test_export_svg_rects.py); the per-polygon count is now one closed
+    # subpath ("M…Z") each, not one <path> element each.
+    assert len(re.findall(r"<path\b", svg)) == 1
+    (d_attr,) = re.findall(r'd="([^"]+)"', svg)
+    assert d_attr.count("M") == 3 and d_attr.count("Z") == 3
 
 
 def test_svg_viewbox_matches_extent_um() -> None:

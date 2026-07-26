@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from ._pillow import check_silhouette_budget
+
 # ---------------------------------------------------------------------------
 # Hidden cursive inscription — a single centred line of formal script.
 #
@@ -135,6 +137,9 @@ def inscription_silhouette(
     del extent_um  # scale-free; caller controls cell pitch to hit the extent
 
     n = max(64, int(n_grid))
+    # Own raster path (not render_silhouette), so gate n here too — callers size
+    # n_grid straight off unvalidated extent_um/period params.
+    check_silhouette_budget(n, "Inscription silhouette")
     # Supersample so LANCZOS downscaling keeps the copperplate crisp. Cap the
     # working grid to stay light on the box (square, matches the plate paste).
     work = min(1024, max(384, n * 2))

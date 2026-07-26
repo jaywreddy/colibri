@@ -9,9 +9,21 @@ import type {
   PatternDescriptor,
   PlateSpec,
 } from './api';
-import { FACE_IDS, defaultBoxSpec, getDefault } from './api';
+import { FACE_IDS, defaultBoxSpec } from './api';
 import { stampFaces } from './assembly';
 import { log } from './logger';
+
+/**
+ * Read-only picker thumbnail route (see loadThumbnails). Doubles as the <img>
+ * src once the probe says 200 — the second request revalidates against the
+ * FileResponse's ETag instead of transferring the PNG again, which keeps this
+ * free of object-URL lifetime management.
+ */
+const thumbnailUrl = (slug: string): string =>
+  `/patterns/${encodeURIComponent(slug)}/thumbnail`;
+
+/** Controller of the in-flight sweep, so cancelThumbnails can drop it. */
+let thumbnailSweep: AbortController | null = null;
 
 export type Illumination = 'ambient' | 'laser' | 'backlight';
 export type SceneLayout = 'assembled' | 'flat';
@@ -28,13 +40,31 @@ type State = {
   // --- pattern picker thumbnails (slug -> URL; null = loading) ---
   thumbnails: Record<string, string | null>;
   /**
-   * Lazily fetch GET /patterns/{slug}/default for every catalog slug that
-   * has no thumbnail yet (sequentially — cold patterns materialize ~2 s
-   * server-side, then cache). Safe to call on every picker open: loaded and
-   * in-flight (null-marked) slugs are skipped, and failed slugs are cleared
-   * so the next call retries them.
+   * Slugs whose last thumbnail fetch failed (slug -> error message). Kept
+   * OUTSIDE `thumbnails` because a failed slug's marker there is deleted so
+   * the next loadThumbnails retries it; this map is what lets the picker draw
+   * a retry tile instead of a shimmer that would spin forever.
    */
-  loadThumbnails: () => Promise<void>;
+  thumbnailErrors: Record<string, string>;
+  /**
+   * Lazily probe GET /patterns/{slug}/thumbnail for every catalog slug that
+   * has no thumbnail yet (sequentially). That route is READ-ONLY: it serves
+   * the default variant's cached PNG or 404s, so this sweep never triggers a
+   * generate — the picker used to hit /{slug}/default, which made opening it
+   * on a cold cache sixteen full pattern generates holding the very per-slot
+   * locks a box regen wants (CLAUDE.md's single-heavy-compute rule). A 404
+   * lands in `thumbnailErrors`, i.e. the existing retry tile, and the tile
+   * fills in as soon as the variant is materialized for a real reason.
+   *
+   * Safe to call on every picker open: loaded and in-flight (null-marked)
+   * slugs are skipped, and failed slugs are cleared so the next call retries
+   * them. Pass a signal (or call `cancelThumbnails`) to drop a sweep whose
+   * consumer went away — the remaining slugs stay unmarked so a later mount
+   * re-probes them.
+   */
+  loadThumbnails: (opts?: { signal?: AbortSignal }) => Promise<void>;
+  /** Abort the in-flight thumbnail sweep (picker/panel unmount). */
+  cancelThumbnails: () => void;
 
   // --- the box ---
   boxSpec: BoxSpec;
@@ -96,6 +126,7 @@ type State = {
 export const useStore = create<State>((set, get) => ({
   catalog: [],
   thumbnails: {},
+  thumbnailErrors: {},
   boxSpec: defaultBoxSpec(),
   boxManifest: null,
   selectedFaceId: 'front',
@@ -112,33 +143,75 @@ export const useStore = create<State>((set, get) => ({
 
   setCatalog: (catalog) => set({ catalog }),
 
-  loadThumbnails: async () => {
+  loadThumbnails: async (opts = {}) => {
     const { catalog, thumbnails } = get();
     const missing = catalog.filter((c) => thumbnails[c.slug] === undefined);
     if (missing.length === 0) return;
+    if (opts.signal?.aborted) return;
+    const controller = new AbortController();
+    thumbnailSweep = controller;
+    opts.signal?.addEventListener('abort', () => controller.abort(), { once: true });
     // Mark as loading so the picker shows shimmers (and a re-open while
-    // fetches are in flight doesn't start a duplicate run).
-    set((s) => ({
-      thumbnails: {
-        ...s.thumbnails,
-        ...Object.fromEntries(missing.map((c) => [c.slug, null])),
-      },
-    }));
+    // probes are in flight doesn't start a duplicate run). Any earlier
+    // failure marker goes away here — this run IS the retry.
+    set((s) => {
+      const thumbnailErrors = { ...s.thumbnailErrors };
+      for (const c of missing) delete thumbnailErrors[c.slug];
+      return {
+        thumbnails: {
+          ...s.thumbnails,
+          ...Object.fromEntries(missing.map((c) => [c.slug, null])),
+        },
+        thumbnailErrors,
+      };
+    });
+    /** Drop the loading marker (optionally with a retry-tile message). */
+    const forget = (slug: string, message?: string) =>
+      set((s) => {
+        const next = { ...s.thumbnails };
+        delete next[slug];
+        const thumbnailErrors = { ...s.thumbnailErrors };
+        if (message === undefined) delete thumbnailErrors[slug];
+        else thumbnailErrors[slug] = message;
+        return { thumbnails: next, thumbnailErrors };
+      });
     for (const c of missing) {
+      if (controller.signal.aborted) {
+        // Unmarked, not failed: the next mount re-probes instead of showing a
+        // retry tile for work nobody was waiting on.
+        forget(c.slug);
+        continue;
+      }
       try {
-        const m = await getDefault(c.slug);
-        set((s) => ({ thumbnails: { ...s.thumbnails, [c.slug]: m.files.thumbnail } }));
+        const url = thumbnailUrl(c.slug);
+        const r = await fetch(url, { signal: controller.signal });
+        if (!r.ok) {
+          throw new Error(
+            r.status === 404
+              ? 'no cached preview yet — it appears once this pattern is generated'
+              : `HTTP ${r.status}${r.statusText ? ` ${r.statusText}` : ''}`
+          );
+        }
+        set((s) => ({ thumbnails: { ...s.thumbnails, [c.slug]: url } }));
         log('thumbnail_loaded', { slug: c.slug });
       } catch (e) {
-        // Drop the loading marker so a later open retries this slug.
-        set((s) => {
-          const next = { ...s.thumbnails };
-          delete next[c.slug];
-          return { thumbnails: next };
-        });
-        log('thumbnail_load_failed', { slug: c.slug, error: (e as Error).message });
+        const err = e as Error;
+        if (err.name === 'AbortError') {
+          forget(c.slug);
+          continue;
+        }
+        // Drop the loading marker so a later open retries this slug, and
+        // record the failure so the picker can show a retry tile meanwhile.
+        forget(c.slug, err.message);
+        log('thumbnail_load_failed', { slug: c.slug, error: err.message });
       }
     }
+    if (thumbnailSweep === controller) thumbnailSweep = null;
+  },
+
+  cancelThumbnails: () => {
+    thumbnailSweep?.abort();
+    thumbnailSweep = null;
   },
 
   // Geometry-affecting patches re-stamp the per-face plate specs (glass,

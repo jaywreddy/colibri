@@ -8,6 +8,45 @@ from ..effects.gratings import chirped_grating, clip_mask, linear_grating_mask
 from ..motifs.lab.food_pair import food_bodies_silhouette, food_steam_silhouette
 
 
+def _carriers(
+    period_um: float,
+    steam_base_period_um: float,
+    tip_period_um: float,
+    extent_um: float,
+):
+    """``(steam_chirp, body_carrier)`` grating results for these params.
+
+    The STEAM CHIRP is the authoritative raster grid: it carries the finest
+    (sub-5 µm) features, so ``chirped_grating`` picks the pitch that samples the
+    tip period at ≥4 samples/period AND fits the 400k-lattice budget
+    (auto-coarsening the whole chirp together if the requested extent+period would
+    overflow). The body carrier is then built at that SAME pitch so the masks
+    compose 1:1 with no resampling.
+
+    Both are cheap (≤400k-cell numpy masks) and this is the ONLY place the
+    EFFECTIVE post-coarsen periods and the pitch come from, so ``generate`` and
+    the metadata accessors cannot report different numbers.
+
+    Chirp axis: angle_deg=90 → HORIZONTAL grating lines whose period varies along
+    the vertical (steam-rise) axis. ``chirped_grating`` sweeps period from
+    period_start at the extent's low edge to period_end at the high edge. Our grid
+    is y-UP, so the high edge is the steam TIPS → the FINE period goes at the end
+    (tips), COARSE at the start (cup mouth).
+    """
+    extent = (extent_um, extent_um)
+    steam_g = chirped_grating(
+        period_start_um=steam_base_period_um,  # coarse — bottom (cup mouth)
+        period_end_um=tip_period_um,           # fine — top (steam tips)
+        extent_um=extent,
+        angle_deg=90.0,
+        coarsen=True,
+    )
+    body_g = linear_grating_mask(
+        period_um, extent, angle_deg=0.0, pitch_um=steam_g.pitch_um, coarsen=True
+    )
+    return steam_g, body_g
+
+
 @register
 class FoodPairChirp(Pattern):
     """Coffee cup + arepa with a CHIRPED-steam shimmer wave (front-only glimmer).
@@ -81,6 +120,91 @@ class FoodPairChirp(Pattern):
         ParamSpec("extent_um", "Extent", "float", 640.0, 400.0, 2000.0, 20.0, "μm"),
     ]
 
+    # --- metadata (no geometry) — see Pattern.metadata ----------------------
+
+    @classmethod
+    def pixel_pitch_um(
+        cls,
+        period_um: float = 20.0,
+        steam_base_period_um: float = 22.0,
+        tip_period_um: float = 4.5,
+        extent_um: float = 640.0,
+    ) -> float:
+        steam_g, _body_g = _carriers(
+            period_um, steam_base_period_um, tip_period_um, extent_um
+        )
+        return steam_g.pitch_um
+
+    @classmethod
+    def min_feature_um(
+        cls,
+        period_um: float = 20.0,
+        steam_base_period_um: float = 22.0,
+        tip_period_um: float = 4.5,
+        extent_um: float = 640.0,
+    ) -> float:
+        # Half the finest EFFECTIVE period anywhere in the front layer: both
+        # chirp ends AND the body carrier, all at 50% duty. Omitting the body
+        # let a body period finer than the steam chirp advertise a coarser
+        # minimum than the geometry actually contains — and this number is
+        # what GeneratedPattern checks against the 2 µm litho floor. The
+        # slider floor (tip 4 µm) is exactly 2 µm line / 2 µm gap, so no
+        # legal combination goes sub-floor.
+        steam_g, body_g = _carriers(
+            period_um, steam_base_period_um, tip_period_um, extent_um
+        )
+        return (
+            min(
+                steam_g.meta["period_end_um"],
+                steam_g.meta["period_start_um"],
+                body_g.period_um,
+            )
+            * 0.5
+        )
+
+    @classmethod
+    def extra_metadata(
+        cls,
+        period_um: float = 20.0,
+        steam_base_period_um: float = 22.0,
+        tip_period_um: float = 4.5,
+        extent_um: float = 640.0,
+    ) -> tuple[dict, dict, tuple[str, ...]]:
+        steam_g, body_g = _carriers(
+            period_um, steam_base_period_um, tip_period_um, extent_um
+        )
+        # Effective (post-coarsen) steam periods for the fab record.
+        steam_tip_eff = steam_g.meta["period_end_um"]
+        steam_base_eff = steam_g.meta["period_start_um"]
+        return (
+            # Carrier period + axis are informational only, kept out of
+            # recipe_data on purpose: the Pattern Lab zone UI offers tilt
+            # quick-sets whenever recipe_data carries a period key, and with an
+            # empty back layer there is no mask-level tilt effect to quick-set
+            # to.
+            {
+                "body_period_um": body_g.period_um,
+                "carrier_period_um": body_g.period_um,
+                "switch_axis_deg": 0.0,
+                "steam_base_period_um": steam_base_eff,
+                "steam_tip_period_um": steam_tip_eff,
+                "coarsened": bool(steam_g.coarsened or body_g.coarsened),
+            },
+            {
+                # Steam chirp span for any per-zone shader shimmer the integrator
+                # wires; the fine end is the diffraction-accent zone. (No
+                # carrier period key here — see the extra note above.)
+                "chirp_period_start_um": steam_base_eff,
+                "chirp_period_end_um": steam_tip_eff,
+                "chirp_axis_deg": 90.0,
+                # Marks the reserved sub-5 µm diffraction-accent band (steam
+                # tips). Integrator can drive a rainbow-flash accent here.
+                "diffraction_zone": "steam_tips",
+                "diffraction_period_um": steam_tip_eff,
+            },
+            (),
+        )
+
     @classmethod
     def generate(
         cls,
@@ -91,25 +215,8 @@ class FoodPairChirp(Pattern):
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        # The STEAM CHIRP is the authoritative raster grid: it carries the
-        # finest (sub-5 µm) features, so we let ``chirped_grating`` pick the
-        # pitch that samples the tip period at ≥4 samples/period AND fits the
-        # 400k-lattice budget (auto-coarsening the whole chirp together if the
-        # requested extent+period would overflow). Everything else — the
-        # silhouettes and the uniform body carrier — is then built at that SAME
-        # pitch/shape so the masks compose 1:1 with no resampling.
-        #
-        # Chirp axis: angle_deg=90 → HORIZONTAL grating lines whose period
-        # varies along the vertical (steam-rise) axis. chirped_grating sweeps
-        # period from period_start at the extent's low edge to period_end at the
-        # high edge. Our grid is y-UP, so the high edge is the steam TIPS → the
-        # FINE period goes at the end (tips), COARSE at the start (cup mouth).
-        steam_g = chirped_grating(
-            period_start_um=steam_base_period_um,  # coarse — bottom (cup mouth)
-            period_end_um=tip_period_um,           # fine — top (steam tips)
-            extent_um=extent,
-            angle_deg=90.0,
-            coarsen=True,
+        steam_g, body_g = _carriers(
+            period_um, steam_base_period_um, tip_period_um, extent_um
         )
         steam_carrier = steam_g.mask
         cell_um = steam_g.pitch_um
@@ -119,11 +226,8 @@ class FoodPairChirp(Pattern):
         bodies = food_bodies_silhouette(extent, n_grid=n_grid)
         steam = food_steam_silhouette(extent, n_grid=n_grid)
 
-        # --- Body carrier: uniform vertical stripes (angle 0 → vertical lines),
+        # Body carrier: uniform vertical stripes (angle 0 → vertical lines),
         # baked at the SAME pitch as the chirp so the masks align cell-for-cell.
-        body_g = linear_grating_mask(
-            period_um, extent, angle_deg=0.0, pitch_um=cell_um, coarsen=True
-        )
         body_carrier = body_g.mask
 
         # Clip each carrier to its region, then union into the front layer.
@@ -137,40 +241,21 @@ class FoodPairChirp(Pattern):
         front_poly = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back_poly = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
 
-        # Effective (post-coarsen) steam periods for the fab record.
-        steam_tip_eff = steam_g.meta["period_end_um"]
-        steam_base_eff = steam_g.meta["period_start_um"]
-
+        # Metadata comes from the accessors above so the numbers a plate reads
+        # without generating are the ones a full generate publishes.
+        kw = dict(
+            period_um=period_um,
+            steam_base_period_um=steam_base_period_um,
+            tip_period_um=tip_period_um,
+            extent_um=extent_um,
+        )
+        extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(
             front=front_poly,
             back=back_poly,
             extent_um=extent,
             pixel_pitch_um=cell_um,
-            # Finest feature is half the finest effective steam period.
-            min_feature_um=min(steam_tip_eff, steam_base_eff) * 0.5,
-            # Carrier period + axis are informational only, kept out of
-            # recipe_data on purpose: the Pattern Lab zone UI offers tilt
-            # quick-sets whenever recipe_data carries a period key, and with an
-            # empty back layer there is no mask-level tilt effect to quick-set
-            # to.
-            extra={
-                "body_period_um": body_g.period_um,
-                "carrier_period_um": body_g.period_um,
-                "switch_axis_deg": 0.0,
-                "steam_base_period_um": steam_base_eff,
-                "steam_tip_period_um": steam_tip_eff,
-                "coarsened": bool(steam_g.coarsened or body_g.coarsened),
-            },
-            recipe_data={
-                # Steam chirp span for any per-zone shader shimmer the integrator
-                # wires; the fine end is the diffraction-accent zone. (No
-                # carrier period key here — see the extra note above.)
-                "chirp_period_start_um": steam_base_eff,
-                "chirp_period_end_um": steam_tip_eff,
-                "chirp_axis_deg": 90.0,
-                # Marks the reserved sub-5 µm diffraction-accent band (steam
-                # tips). Integrator can drive a rainbow-flash accent here.
-                "diffraction_zone": "steam_tips",
-                "diffraction_period_um": steam_tip_eff,
-            },
+            min_feature_um=cls.min_feature_um(**kw),
+            extra=extra,
+            recipe_data=recipe_data,
         )

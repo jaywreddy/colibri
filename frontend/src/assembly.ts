@@ -32,9 +32,31 @@ export const FOIL_COLORS: Record<FoilFinish, string> = {
   gunmetal: '#3a3f47', // dark blued gunmetal
 };
 
-/** mm rounding for derived cut-list fields — 3 decimals, matching backend
- * ``round(x / 1000.0, 3)`` exactly. Display formatting stays in the UI. */
-const round3 = (x: number): number => Math.round(x * 1000) / 1000;
+/**
+ * Micrometers -> millimeters rounded to 3 decimals, HALF AWAY FROM ZERO.
+ *
+ * Shared contract helper: `backend/app/assembly.py::round_mm3` mirrors this
+ * formula term for term. Neither side may use its language's built-in
+ * rounding — Python's `round()` is half-to-EVEN while JavaScript's
+ * `Math.round()` is half-UP (and asymmetric for negatives), so the two
+ * disagree on every dimension whose mm value lands exactly on a
+ * half-thousandth: 24062.5 um is 24.062 mm to Python and 24.063 mm to JS,
+ * and the manifest cut list then contradicts the BuildPanel readout.
+ *
+ * Because 1 um is exactly 0.001 mm we round the MICROMETER value to an
+ * integer and divide once. That is deliberate: dividing first and
+ * re-multiplying (`(um / 1000) * 1000`) reintroduces the quotient's
+ * representation error and can floor a whole micrometer away (17.4 mm ->
+ * 17399.999999999998 -> 17.399). One exact-integer division also lands on the
+ * nearest double to n/1000 in both languages, so the fixture's
+ * `toBe(width_mm)` equality holds bit for bit.
+ *
+ * Display formatting (toFixed) stays in the UI.
+ */
+export function roundMm3(valueUm: number): number {
+  if (valueUm < 0) return -(Math.floor(-valueUm + 0.5) / 1000);
+  return Math.floor(valueUm + 0.5) / 1000;
+}
 
 // -----------------------------------------------------------------------------
 // Foil overlap + pattern keep-out
@@ -86,8 +108,9 @@ export function cutList(spec: BoxSpec): CutPlate[] {
     face,
     width_um: w,
     height_um: h,
-    width_mm: round3(w / 1000),
-    height_mm: round3(h / 1000),
+    // Shared rounding rule — see roundMm3 / assembly.py::round_mm3.
+    width_mm: roundMm3(w),
+    height_mm: roundMm3(h),
   });
   return [
     mk('bottom', W, D),
@@ -115,15 +138,28 @@ export function copperTapeLengthCm(spec: BoxSpec): number {
  * into every face's PlateSpec: glass, cut-list width/height, and
  * weld_margin (= keep-out). Mirrors backend normalization so the spec the
  * frontend holds always agrees with what the backend will materialize.
+ *
+ * CONTRACT (matches backend ``boxes.py::normalize_face_dims``): a key that is
+ * not one of the six cut-list faces is carried through UNMODIFIED, never
+ * dropped. normalize_face_dims iterates FACE_IDS and leaves anything else in
+ * ``self.faces`` untouched, and box_hash hashes the whole faces map — so
+ * silently deleting a stray key here would make the same logical box hash and
+ * serialize differently depending on which side normalized it last.
  */
 export function stampFaces(spec: BoxSpec): BoxSpec {
   const ko = keepoutUm(spec);
   const bw = backWindowUm(spec);
   const cuts = new Map(cutList(spec).map((c) => [c.face, c]));
-  const faces: Partial<Record<FaceId, PlateSpec>> = {};
+  // Keyed by string, not FaceId, because unknown keys survive the stamp.
+  const faces: Record<string, PlateSpec> = {};
   for (const [fid, face] of Object.entries(spec.faces) as [FaceId, PlateSpec][]) {
     const cut = cuts.get(fid);
-    if (!cut) continue;
+    if (!cut) {
+      // Not a cut-list face: preserve it verbatim (backend leaves it unstamped
+      // but present). Stamping it is impossible — it has no cut dims.
+      faces[fid] = face;
+      continue;
+    }
     faces[fid] = {
       ...face,
       glass: { ...spec.glass },
@@ -137,7 +173,9 @@ export function stampFaces(spec: BoxSpec): BoxSpec {
       carrier_pitch_um: spec.carrier_pitch_um ?? 22.0,
     };
   }
-  return { ...spec, faces };
+  // Cast back to the six-face record: the widened key type exists only so the
+  // unknown-key passthrough above is expressible.
+  return { ...spec, faces: faces as BoxSpec['faces'] };
 }
 
 // -----------------------------------------------------------------------------
@@ -306,6 +344,26 @@ export function validateBox(spec: BoxSpec): string[] {
         `H=${spec.height_um} um).`
     );
   }
+  // Walls are H - 2t tall and the left/right walls are D - 2t wide, so a box
+  // shorter/shallower than two glass thicknesses has no walls at all. These
+  // two predicates mirror backend validate_assembly verbatim. They are NOT
+  // redundant with the non-positive-plate branch below: that one only agrees
+  // by structural coincidence (H <= 2t happens to force a cut side <= 0), and
+  // the coincidence breaks the moment either side's cut formula is edited.
+  if (spec.height_um <= 2.0 * t) {
+    errors.push(
+      `Box height ${(spec.height_um / 1000).toFixed(1)} mm leaves no room for walls: ` +
+        `walls are H - 2t = ${((spec.height_um - 2 * t) / 1000).toFixed(1)} mm tall with ` +
+        `${(t / 1000).toFixed(1)} mm glass. Increase height or use thinner glass.`
+    );
+  }
+  if (spec.depth_um <= 2.0 * t) {
+    errors.push(
+      `Box depth ${(spec.depth_um / 1000).toFixed(1)} mm leaves no room for the left/right ` +
+        `walls between front and back (${((spec.depth_um - 2 * t) / 1000).toFixed(1)} mm). ` +
+        `Increase depth or use thinner glass.`
+    );
+  }
   if (spec.foil.tape_width_um <= 0) {
     errors.push(`Foil tape width must be positive (got ${spec.foil.tape_width_um} um).`);
   }
@@ -319,9 +377,15 @@ export function validateBox(spec: BoxSpec): string[] {
       errors.push(`Plate '${cut.face}' has non-positive size — box too small for glass thickness.`);
       continue;
     }
-    // Backend: min_side <= 2*ko + MIN_APERTURE_UM fails (exact boundary too).
-    const aperture = minSide - 2 * ko;
-    if (aperture <= MIN_APERTURE_UM) {
+    // Predicate arranged EXACTLY as backend validate_assembly writes it
+    // (`min_side <= 2.0 * ko + MIN_APERTURE_UM`), never the algebraically
+    // equal `minSide - 2 * ko <= MIN_APERTURE_UM`. With a keep-out that is not
+    // binary-representable (any fractional tape width or glass thickness) the
+    // two arrangements differ by an ULP right at the boundary — which is
+    // exactly where a spec accepted here would 400 on POST /boxes/generate.
+    // `aperture` below is display-only, never the decision.
+    if (minSide <= 2.0 * ko + MIN_APERTURE_UM) {
+      const aperture = minSide - 2.0 * ko;
       errors.push(
         `Plate '${cut.face}': patternable aperture ${(aperture / 1000).toFixed(1)} mm ` +
           `<= ${(MIN_APERTURE_UM / 1000).toFixed(1)} mm minimum ` +

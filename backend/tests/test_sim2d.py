@@ -17,6 +17,7 @@ from PIL import Image
 
 from app.sim2d import (
     DEFAULT_LASER,
+    GOLD,
     composite_parallax,
     contrast_curve,
     parallax_shift_um,
@@ -93,6 +94,46 @@ def test_laser_tints_transmission_with_laser_color() -> None:
     assert tuple(arr[SIZE // 2, SIZE // 2]) == expected
     # green channel dominates — it's a green laser
     assert arr[..., 1].min() > arr[..., 0].max()
+
+
+def test_ambient_overlap_darkening_is_the_back_layer_dependence() -> None:
+    """front=1 ambient pixels must still track the back layer (plate.frag).
+
+    Paired pin with frontend/tests/unit/composite2d.test.ts ("ambient: f=1
+    pixels still track the back layer"). Hand-computed from plate.frag's
+    ambient formula at front = 1:
+        reflected = 1, transmission = 0, overlap = back
+        rgb = GOLD * 0.85 * (1 - 0.35 * back)
+        back=0 -> (195.5, 159.7, 68.1)     back=1 -> (127.1, 103.8, 44.2)
+    Without the overlap term both states collapse to the same constant and
+    every ambient metric over a front-gold figure becomes tilt-blind.
+    """
+    clear = np.asarray(
+        composite_parallax(_flat(255), _flat(0), 0.0, 0.0, 1.0, illum="ambient")
+    )
+    covered = np.asarray(
+        composite_parallax(_flat(255), _flat(255), 0.0, 0.0, 1.0, illum="ambient")
+    )
+    mid = SIZE // 2
+    for channel, gold in enumerate(GOLD):
+        assert clear[mid, mid, channel] == pytest.approx(gold * 0.85 * 255, abs=1)
+        assert covered[mid, mid, channel] == pytest.approx(
+            gold * 0.85 * 0.65 * 255, abs=1
+        )
+    # The 35% swing itself, not just the endpoints.
+    assert covered[mid, mid, 0] / clear[mid, mid, 0] == pytest.approx(0.65, abs=0.01)
+
+
+def test_ambient_clear_pair_floor_is_the_shader_transmission_term() -> None:
+    """Blank pair: reflected=0, transmission=1, overlap=0 -> 0.04 * 255 = 10.2.
+
+    0.04 is plate.frag's constant; both 2D paths used to carry 0.06 (= 15.3).
+    Pinned identically in frontend/tests/unit/composite2d.test.ts.
+    """
+    arr = np.asarray(
+        composite_parallax(_flat(0), _flat(0), 0.0, 0.0, 1.0, illum="ambient")
+    )
+    assert tuple(arr[SIZE // 2, SIZE // 2]) == (10, 10, 10)
 
 
 def test_unknown_illum_raises() -> None:

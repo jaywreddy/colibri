@@ -34,8 +34,8 @@ uniform float uSlitPeriodUm;       // slit period Λ_slit (μm)
 // --- shared foliage/centerpiece uniforms (read when uRecipe == 3) -----------
 // Historically declared for the retired phase_shift_overlay recipe, but they
 // are LIVE on the foliage_moire path: uCarrierPeriodUm drives the frame back
-// carrier and uSwitchAxis the capybara body shimmer + the legacy 2-phase
-// centerpiece fallback. Do NOT delete with recipe 2.
+// carrier and uSwitchAxis the grating axis of the capybara body shimmer + the
+// legacy 2-phase centerpiece fallback. Do NOT delete with recipe 2.
 uniform float uSwitchAxis;         // radians; axis we project view onto
 uniform float uCarrierPeriodUm;    // carrier stripe period (μm)
 
@@ -81,32 +81,46 @@ uniform float uCenterPeriodUm;     // centerpiece stripe period (um)
 uniform float uLayer;              // 0 = outer/front plane, 1 = inner/back plane
 
 // --- Pattern Scale (Task 1b) ------------------------------------------------
-// Uniform multiplier applied to EVERY procedural preview period on BOTH planes
-// (frame carrier + louvre, centerpiece switch carrier, water comb + ripple
-// lanes, barrier-interlace lanes). uPatternScale == 1 draws the EXACT fab
-// dimensions (22 µm frame carrier, 60 µm switch/comb pitch, 15 µm slots …), which
-// are sub-pixel at the default box zoom (the anti-alias `collapse` in each
-// grating fades them to their mean coverage, so they read as flat gold rather
-// than aliasing). Larger scales (2/4/8×) blow the periods up so the fine
-// structure resolves on screen without physically zooming the camera. Frontend
-// only — no baked geometry changes, so the fab masks are untouched.
+// Multiplier applied to the MAGNIFIED-PREVIEW period family on BOTH planes: the
+// frame back carrier, the frame louvre, and the capybara body shimmer (the
+// backend already ships those three pre-magnified by PREVIEW_PITCH_MAGNIFY).
+// Larger scales (2/4/8×) blow that fine structure up so it resolves on screen
+// without physically zooming the camera. Frontend only — no baked geometry
+// changes, so the fab masks are untouched.
+//
+// The CENTERPIECE family (barrier/switch comb, interlace lanes, water comb) is
+// deliberately EXCLUDED: the geometric parallax gap is T/n regardless of scale,
+// so scaling the barrier pitch p scales the switch tilt angle atan(p/4 / (T/n))
+// with it — a 4× scale reports a 9.9° swap for a part that swaps at 2.5°. The
+// preview must answer "does a comfortable hand tilt perform the swap?" with the
+// FAB number, so the centerpiece always draws at exact fab pitch and legibility
+// there is a camera-zoom / pixel-ratio question, never a pitch question.
 uniform float uPatternScale;
 
 // --- Barrier-interlace tilt switch (Task 3) ---------------------------------
-// > 0.5 on the two hard-swap faces (globe-duo California↔Colombia, gear↔quill).
-// The centerpiece is re-architected from the phase-offset construction to a TRUE
-// lenticular/Poemotion barrier interlace: BOTH images live on the BACK layer,
-// interleaved in alternating lanes (A in even lanes, B in odd, lane pitch = half
-// the barrier pitch uCenterPeriodUm), and the OUTER plane is a NEUTRAL slit
-// barrier (open duty 0.5 → one lane wide) over the union of the two silhouettes.
-// The swap EMERGES from the two real planes' parallax: tilt one way and the slot
-// sits over the A-lanes (only A shows), tilt the other and it sits over the
-// B-lanes (only B shows) — a hard swap, not a phase redistribution. A and B are
-// the front/back silhouette PNGs; each plane reads BOTH (they are the two halves
-// of the ONE back-layer interleaved image + its barrier), which is the sanctioned
-// construction for this recipe (not the emergent-moiré cross-sampling the
-// two-plane rig forbids).
+// > 0.5 on the hard-swap faces (globe-duo California↔Colombia, gear↔quill,
+// colibrí wing flap). The centerpiece is re-architected from the phase-offset
+// construction to a TRUE lenticular/Poemotion barrier interlace: BOTH images live
+// on the BACK layer, interleaved in alternating lanes (A in even lanes, B in odd,
+// lane pitch = half the barrier pitch uCenterPeriodUm), and the OUTER plane is a
+// NEUTRAL slit barrier (open duty 0.5 → one lane wide) spanning the FULL
+// centerpiece ART BOX — never the A∪B silhouette union. The swap EMERGES from the
+// two real planes' parallax: tilt one way and the slot sits over the A-lanes (only
+// A shows), tilt the other and it sits over the B-lanes (only B shows) — a hard
+// swap, not a phase redistribution. A and B are the front/back silhouette PNGs;
+// each plane reads BOTH (they are the two halves of the ONE back-layer interleaved
+// image + its barrier), which is the sanctioned construction for this recipe (not
+// the emergent-moiré cross-sampling the two-plane rig forbids).
 uniform float uSwitchInterlace;
+// Solved barrier REGISTRATION phase (µm), from recipe_data
+// ``switch_barrier_phase_um`` — the ONE convention all three consumers share
+// (fab SVG bake, this shader, the standalone generators): x measured from the
+// FACE CENTRE, open-slit centres at k·p + phase, back channel A starting on that
+// same boundary's +x side. Read it; never assume it. The lattice used to be
+// anchored on the face EDGE here, which drifts from the fab lattice by
+// (extent/2) mod p — half a period on the default 50 mm face, i.e. the preview
+// showed B where the part shows A and the swap ran backwards.
+uniform float uSwitchBarrierPhaseUm;
 
 // --- water scanimation (foliage_moire, capybara back face) ------------------
 // When uWaterScanN > 0 the centerpiece BACK-art region (uBack ART level) is the
@@ -117,31 +131,43 @@ uniform float uSwitchInterlace;
 // water appears to flow around the animal (the same barrier-grid scanimation
 // the standalone pattern + fab SVG bake, rendered analytically here). N == 0
 // (every non-capybara face) disables this branch entirely.
+//
+// FLOW RATE — there is no preview knob for it, and there was never a live one (a
+// uWaterPhasePitchPreviewUm uniform was declared, bound and documented as the
+// divisor that walks the phase, but no line of GLSL ever read it; the two-plane
+// rewrite had already made the phase emerge geometrically). The rate is set by the
+// geometry: the outer comb reveals the next 1/N lane after uCenterPeriodUm/N µm of
+// substrate parallax — 15 µm at the fab 60 µm pitch and N=4, i.e. ~2.5° of tilt per
+// ripple phase through the T/n gap, which is also the fab timing
+// (WATER_SCAN_FAB_PITCH_UM = 60 µm). Retune it by changing the barrier pitch or N,
+// never by a preview-only constant.
 uniform float uWaterScanN;               // ripple phase count (0 = disabled)
 uniform float uWaterRippleWavelengthUm;  // crest spacing along the flow axis (μm)
-// PREVIEW phase-advance period. The fab scanimation walks one phase per 60 µm of
-// parallax (WATER_SCAN_FAB_PITCH_UM); at preview raster + parallax scale that is
-// invisible — a realistic 3-20° tilt only shifts the substrate ~30-180 µm, and
-// the crest-spacing normalization (uWaterRippleWavelengthUm ≈ mm-scale) made the
-// phase divisor mm-scale too, so the water FROZE (phase advanced ~0.13 of one
-// step across a whole hand rock). This coarse period DECOUPLES the phase walk
-// from the crest spacing: phaseStep = parallax_along_flow / this · N. Tuned so a
-// few degrees of tilt advances ~one full phase (see plates.py
-// WATER_PHASE_PITCH_PREVIEW_UM). The crest SPACING stays tied to the art box via
-// uWaterRippleWavelengthUm, so the water looks identical — only its motion wakes
-// up. Same fix pattern as the leaf-fringe preview/fab period split. <= 0 → fall
-// back to uWaterRippleWavelengthUm (legacy frozen behaviour).
-uniform float uWaterPhasePitchPreviewUm;
-// Centerpiece-art uv-rect so the flow WAKE geometry (body center, waterline,
-// calm patch — all authored in the 0..1 ART BOX) registers to the capybara on
-// the face. The centerpiece is a SQUARE of side (0.86·aperture) centered on the
+// Body shimmer period (μm) over the DRY capybara: recipe_data
+// ``water_body_carrier_preview_um`` — the 24 µm period the fab path actually bakes
+// there (WATER_SCAN_FAB_CARRIER_UM), pre-magnified for preview like the frame pair
+// and therefore scaled by uPatternScale. It is NOT the frame carrier this branch
+// used to reuse (uCarrierPeriodUm, 22 µm design): the two disagreed by the 22-vs-24
+// gap on the one region the eye lands on. <= 0 → fall back to uCarrierPeriodUm.
+uniform float uWaterBodyPeriodUm;
+// Effective waterline in ART-BOX v (0 = box top, 1 = box bottom), i.e. where the
+// dry body ends and the water band begins. Drives the body/water split AND the
+// flow wake's depth shear + calm patch, so it must match the mask the plate baked
+// (capybara_scanimation.WATERLINE_Y, exposed there as a 0.4-0.85 param). Bound
+// from recipe_data; there is no in-shader constant to drift from any more.
+uniform float uWaterWaterlineY;
+// Centerpiece ART-BOX uv-rect. Two consumers: the capybara flow WAKE geometry
+// (body center, waterline, calm patch — all authored in the 0..1 art box) and the
+// barrier-interlace comb, which spans the WHOLE box (see uSwitchInterlace). The
+// centerpiece is a SQUARE of side (CENTERPIECE_FILL·aperture) centered on the
 // plate, so on a non-square face it maps to different uv half-extents per axis.
-// uWaterArtScale = (halfWidthUv, halfHeightUv); uWaterArtCenter = its uv center
-// (normally (0.5,0.5)). See plates.py recipe_data water_art_scale/_center and
-// the BoxScene uniform binding. Fallback (0,0) → treat the whole face as the art
-// box (approx; only correct on a square face fully filled by the centerpiece).
-uniform vec2 uWaterArtScale;             // (halfW, halfH) of the art box in uv
-uniform vec2 uWaterArtCenter;            // uv center of the art box
+// uArtBoxHalfUv = (halfWidthUv, halfHeightUv); uArtBoxCenterUv = its uv center
+// (normally (0.5,0.5)). See plates.py recipe_data water_art_half_uv /
+// water_art_center_uv and the BoxScene uniform binding. Fallback (0,0) → treat the
+// whole face as the art box (approx; only correct on a square face fully filled by
+// the centerpiece) — BoxScene logs that degradation rather than taking it quietly.
+uniform vec2 uArtBoxHalfUv;              // (halfW, halfH) of the art box in uv
+uniform vec2 uArtBoxCenterUv;            // uv center of the art box
 
 // --- diffraction rainbow accent (foliage_moire) -----------------------------
 // A reserved graylevel (RAINBOW_LEVEL = 200/255 ≈ 0.784, see plates.py) marks
@@ -356,12 +382,12 @@ vec3 diffractionSheen(vec3 viewTangent, vec2 pUm, float ndl) {
 // Works in NORMALIZED art-box coords (uvN in 0..1, y-DOWN) for the wake geometry
 // (body center, waterline) and converts the ripple wavelength from μm to
 // normalized via the face extent, so the crest spacing and wake match the baked
-// fab geometry regardless of plate size. `waterlineY` and `bodyCx/Cy` mirror the
-// Python constants.
+// fab geometry regardless of plate size. `bodyCx/Cy` mirror the Python constants;
+// the waterline is the uWaterWaterlineY UNIFORM, because Python threads it through
+// as a parameter — a const here silently desynchronizes the preview from the mask.
 const float FLOW_DIR       = 1.0;   // +1: crests advance toward +x as phase grows
 const float FLOW_BODY_CX   = 0.46;  // body-center x (normalized, matches motif)
 const float FLOW_BODY_CY   = 0.60;
-const float FLOW_WATERLINE = 0.66;
 const float FLOW_BAND_FRAC = 0.55;  // streamline spacing = wavelength * this
 const float FLOW_A1        = 0.42;  // primary transverse undulation amplitude
 const float FLOW_A2        = 0.14;  // second-harmonic amplitude
@@ -381,7 +407,7 @@ float tanhApprox(float x) {
 // Scalar field whose near-integer iso-lines are the flowing streamlines. wLenN
 // is the ripple wavelength in NORMALIZED units. Mirrors _flow_streamline_field.
 float flowStreamlineField(vec2 uvN, float wLenN, float nPhases, float phaseStep) {
-  float depth = clamp((uvN.y - FLOW_WATERLINE) / max(1e-6, (1.0 - FLOW_WATERLINE)), 0.0, 1.0);
+  float depth = clamp((uvN.y - uWaterWaterlineY) / max(1e-6, (1.0 - uWaterWaterlineY)), 0.0, 1.0);
   float travel = wLenN * FLOW_DIR * (phaseStep / max(1.0, nPhases));
   float shear = 6.2831853 * FLOW_SHEAR * depth;
 
@@ -404,7 +430,7 @@ float flowStreamlineField(vec2 uvN, float wLenN, float nPhases, float phaseStep)
 // Crest strength 0..1: strong open water, calm elliptical patch under the belly,
 // gently fading with depth. Mirrors _flow_amplitude.
 float flowAmplitude(vec2 uvN) {
-  float depth = clamp((uvN.y - FLOW_WATERLINE) / max(1e-6, (1.0 - FLOW_WATERLINE)), 0.0, 1.0);
+  float depth = clamp((uvN.y - uWaterWaterlineY) / max(1e-6, (1.0 - uWaterWaterlineY)), 0.0, 1.0);
   float amp = 1.0 - 0.35 * depth;
   float bx = FLOW_BODY_CX;
   float by = FLOW_BODY_CY + 0.16;
@@ -436,15 +462,38 @@ float waterRippleCoverage(vec2 uvN, float wavelengthUm, float extentUm, float nP
 
 // Map a face uv into the centerpiece ART-BOX (0..1, y-DOWN, matching the Python
 // flow field). The art box is a (CENTERPIECE_FILL·aperture)-side square centered
-// on the plate; uWaterArtScale/Center carry its uv half-extents + center. On a
+// on the plate; uArtBoxHalfUv/CenterUv carry its uv half-extents + center. On a
 // non-square face the box maps to different uv half-extents per axis. Fallback
-// (0,0) → treat the whole face as the art box.
+// (0,0) → treat the whole face as the art box. Coordinates outside 0..1 mean the
+// fragment is outside the box — see artBoxInside.
 vec2 artBoxUV(vec2 uv) {
-  vec2 artScale  = (uWaterArtScale.x > 0.0) ? uWaterArtScale : vec2(0.5);
-  vec2 artCenter = (uWaterArtScale.x > 0.0) ? uWaterArtCenter : vec2(0.5);
+  vec2 artScale  = (uArtBoxHalfUv.x > 0.0) ? uArtBoxHalfUv : vec2(0.5);
+  vec2 artCenter = (uArtBoxHalfUv.x > 0.0) ? uArtBoxCenterUv : vec2(0.5);
   vec2 uvArt = (uv - artCenter) / (2.0 * artScale) + vec2(0.5);
   uvArt.y = 1.0 - uvArt.y;   // vUv y-UP; flow field authored y-DOWN
   return uvArt;
+}
+
+// 1 inside the centerpiece art-box square, 0 outside. The barrier-interlace comb
+// is gated on THIS, not on the A∪B silhouette union: a union-clipped comb is
+// itself a static front image (its envelope is the union, and the front mask does
+// not move with tilt, so no tilt angle can gate it out — the banned construction),
+// and the comb must physically cover every column a back lane can slide under
+// within the first zone. Both fab writers span the box for exactly this reason
+// (plates.py `art_box & barrier_comb`, export_fine's barrier bars).
+float artBoxInside(vec2 uvArt) {
+  vec2 lo = step(vec2(0.0), uvArt);
+  vec2 hi = step(uvArt, vec2(1.0));
+  return lo.x * lo.y * hi.x * hi.y;
+}
+
+// x (µm) for the barrier lattice: measured from the FACE CENTRE and shifted by the
+// solved registration phase, so open-slit centres land on k·uCenterPeriodUm +
+// uSwitchBarrierPhaseUm and channel A starts on that boundary's +x side — the one
+// convention plates.py::_barrier_masks, export_fine and the generators all use.
+// (The frame gratings stay in raw face-uv µm; only the barrier is registered.)
+vec2 barrierPUm(vec2 pUm) {
+  return vec2(pUm.x - 0.5 * uExtentUm.x - uSwitchBarrierPhaseUm, pUm.y);
 }
 
 // Slit-comb / slit-barrier gold coverage along the x axis at physical point
@@ -452,9 +501,11 @@ vec2 artBoxUV(vec2 uv) {
 // each period (gold BAR fills the remainder). Antialiased via fwidth; when a
 // pixel spans more than ~a period it fades to the mean bar coverage (1-openFrac)
 // so the fine comb reads as flat gold at the default (sub-pixel) zoom instead of
-// aliasing — the barrier structure only resolves once uPatternScale/zoom make a
-// period span several pixels. This is the outer-plane half of both the water
-// scanimation (openFrac = 1/N) and the barrier-interlace switch (openFrac = 0.5).
+// aliasing — the barrier structure only resolves once the CAMERA (zoom / render
+// pixel ratio) makes a period span several pixels. Pattern Scale deliberately does
+// not touch this pitch (see uPatternScale), because scaling it would scale the
+// switch tilt angle. This is the outer-plane half of both the water scanimation
+// (openFrac = 1/N) and the barrier-interlace switch (openFrac = 0.5).
 float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
   float coord = pUm.x / max(1.0, pitchUm) + phase;
   float f = fract(coord);
@@ -481,14 +532,18 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
   float duty = clamp(uGratingDuty, 0.05, 0.95);
   bool isBack = uLayer > 0.5;
 
-  // Pattern Scale: every procedural period is uPatternScale × its exact-fab µm
-  // value (1× = fab; larger blows the fine structure up so it resolves on
-  // screen). Applied uniformly on BOTH planes so the moiré/parallax geometry
-  // stays self-consistent.
+  // Pattern Scale: applied to the magnified-preview family only (frame carrier,
+  // frame louvre, capybara body shimmer), on BOTH planes so their moiré geometry
+  // stays self-consistent. The centerpiece pitch is EXCLUDED — see uPatternScale:
+  // the T/n gap does not scale, so scaling p would scale the switch tilt angle and
+  // the preview would answer the "does it swap at a hand tilt?" question wrong by
+  // exactly the scale factor.
   float scale = max(uPatternScale, 0.01);
   float carrierP = uCarrierPeriodUm * scale;   // frame back carrier
   float slitP    = uSlitPeriodUm    * scale;   // frame front louvre
-  float centerP  = uCenterPeriodUm  * scale;   // switch / water-comb / barrier pitch
+  float centerP  = uCenterPeriodUm;            // switch / water-comb / barrier pitch (exact fab)
+  // Capybara body shimmer: its own fab period, magnified like the frame pair.
+  float bodyP = (uWaterBodyPeriodUm > 0.0) ? (uWaterBodyPeriodUm * scale) : carrierP;
 
   // Shared region windows (see FRAME_MIN / RAINBOW_MIN / ART_MIN).
   float rainbowOn = step(0.0, uRainbowLevel);
@@ -497,7 +552,6 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
   band = max(band, rainbowHere);
   float art = step(ART_MIN, mR);                                    // centerpiece silhouette
   float artOther = step(ART_MIN, oR);                               // the switch's other image
-  float artUnion = max(art, artOther);                              // A∪B (barrier zone)
 
   bool isWater = uWaterScanN > 0.5;
   bool isInterlace = uSwitchInterlace > 0.5;
@@ -530,20 +584,26 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
       // pitch, 15 µm open slot = 1/N, 45 µm bar). The animated flow FALLS OUT of
       // this comb occluding the inner ripple lanes as the box tilts.
       vec2 uvArt = artBoxUV(vUv);
-      float body  = art * step(uvArt.y, FLOW_WATERLINE);
-      float water = art * step(FLOW_WATERLINE, uvArt.y);
-      float shimmer = gratingCoverage(pUm, uSwitchAxis, carrierP, duty);
+      float body  = art * step(uvArt.y, uWaterWaterlineY);
+      float water = art * step(uWaterWaterlineY, uvArt.y);
+      float shimmer = gratingCoverage(pUm, uSwitchAxis, bodyP, duty);
+      // Water comb: the fab bake anchors this lattice on the water band, not on
+      // the face centre, and publishes no phase for it — so it stays anchored with
+      // its own inner ripple lanes below (both on raw face-uv µm), which is what
+      // the scanimation mechanism needs. Absolute phase only picks which ripple
+      // frame shows head-on.
       float comb = slitBarCoverage(pUm, centerP, 1.0 / uWaterScanN, 0.0);
       float combCov = water * comb;
       cov += body * shimmer + combCov;
       dimCov += combCov;   // barrier occludes (alpha) but displays recessed
     } else if (isInterlace) {
       // Barrier-interlace switch: neutral slit barrier (open duty 0.5) over the
-      // union of the two silhouettes. Exactly one lane class shows per slot. The
-      // barrier stays opaque (occludes) but displays recessed so the revealed
-      // image (A or B, on the inner plane) is what the eye reads on tilt.
-      float comb = slitBarCoverage(pUm, centerP, 0.5, 0.25);
-      float combCov = artUnion * comb;
+      // FULL centerpiece art box (artBoxInside — NEVER the A∪B union). Exactly one
+      // lane class shows per slot. The barrier stays opaque (occludes) but displays
+      // recessed so the revealed image (A or B, on the inner plane) is what the eye
+      // reads on tilt.
+      float comb = slitBarCoverage(barrierPUm(pUm), centerP, 0.5, 0.25);
+      float combCov = artBoxInside(artBoxUV(vUv)) * comb;
       cov += combCov;
       dimCov += combCov;
     } else {
@@ -562,7 +622,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
       // period) carries ripple phase k. The travelling current EMERGES when the
       // outer comb reveals successive slots with tilt.
       vec2 uvArt = artBoxUV(vUv);
-      float artWidthUm = uExtentUm.x * (2.0 * ((uWaterArtScale.x > 0.0) ? uWaterArtScale.x : 0.5));
+      float artWidthUm = uExtentUm.x * (2.0 * ((uArtBoxHalfUv.x > 0.0) ? uArtBoxHalfUv.x : 0.5));
       float coord = pUm.x / max(1.0, centerP);
       float slotf = floor(fract(coord) * uWaterScanN);      // which phase this lane holds
       float laneCrest = waterRippleCoverage(uvArt, uWaterRippleWavelengthUm, artWidthUm,
@@ -574,14 +634,17 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
       cov += crestCov;
       hotCov += crestCov;   // flowing water — display bright even though inner
     } else if (isInterlace) {
-      // A in even lanes, B in odd (lane pitch = half the barrier pitch). Inner
-      // uFront = B (this layer's mask), uBack = A (the front silhouette). At the
+      // A in even lanes, B in odd (lane pitch = half the barrier pitch), on the
+      // SAME registered lattice as the outer comb (barrierPUm) — that shared
+      // lattice IS the registration: lane 0 starts at an open-slit centre, so head-on
+      // every slit straddles an A|B boundary and ±tilt reveals one class cleanly.
+      // Inner uFront = B (this layer's mask), uBack = A (the front silhouette). At the
       // default sub-pixel zoom the lanes collapse to both images half-shown (the
-      // head-on interlace); zoom/scale up and the discrete A|B lanes resolve.
-      float aVal = step(ART_MIN, oR);   // A (front silhouette, via uBack)
-      float bVal = step(ART_MIN, mR);   // B (this back silhouette, via uFront)
+      // head-on interlace); zoom in and the discrete A|B lanes resolve.
+      float aVal = artOther;            // A (front silhouette, via uBack)
+      float bVal = art;                 // B (this back silhouette, via uFront)
       float lanePitch = 0.5 * centerP;
-      float laneCoord = pUm.x / max(1.0, lanePitch);
+      float laneCoord = barrierPUm(pUm).x / max(1.0, lanePitch);
       float isOdd = mod(floor(laneCoord), 2.0);   // 0 = even → A, 1 = odd → B
       float laneCov = mix(aVal, bVal, isOdd);
       float meanCov = 0.5 * (aVal + bVal);

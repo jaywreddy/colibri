@@ -4,9 +4,22 @@ import math
 
 import numpy as np
 
-from .._helpers import raster_to_polygons
+from .._helpers import check_lattice_budget, raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, register
 from ..motifs import colibri, globe
+
+
+def _resolve_grid(period_um: float, extent_um: float) -> tuple[int, float]:
+    """``(n_grid, cell_um)`` for the carrier raster.
+
+    Sized so we resolve the carrier grating with several samples per period —
+    moiré beating is a sub-period effect, so we need fine resolution even though
+    the carrier itself is ~25 µm. Module-level because both ``generate`` and
+    ``pixel_pitch_um`` need it and the plate compositor reads the pitch WITHOUT
+    generating — one expression, so they cannot disagree.
+    """
+    n_grid = max(384, int(extent_um / max(1.5, period_um / 8)))
+    return n_grid, extent_um / n_grid
 
 
 def _stripes_at_angle(
@@ -59,6 +72,55 @@ class ColibriGlobeMoire(Pattern):
         ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
     ]
 
+    # --- metadata (no geometry) — see Pattern.metadata ----------------------
+
+    @classmethod
+    def pixel_pitch_um(
+        cls,
+        period_um: float = 25.0,
+        period_mismatch_um: float = 0.6,
+        rotation_deg: float = 1.5,
+        extent_um: float = 2000.0,
+    ) -> float:
+        return _resolve_grid(period_um, extent_um)[1]
+
+    @classmethod
+    def min_feature_um(
+        cls,
+        period_um: float = 25.0,
+        period_mismatch_um: float = 0.6,
+        rotation_deg: float = 1.5,
+        extent_um: float = 2000.0,
+    ) -> float:
+        return period_um * 0.5
+
+    @classmethod
+    def extra_metadata(
+        cls,
+        period_um: float = 25.0,
+        period_mismatch_um: float = 0.6,
+        rotation_deg: float = 1.5,
+        extent_um: float = 2000.0,
+    ) -> tuple[dict, dict, tuple[str, ...]]:
+        # Expected beat period from the period mismatch (the rotational
+        # contribution is small for the default ~1.5°). Stashed so the
+        # manifest's `extra` block reports something the optics-aware user
+        # can sanity-check the rendering against.
+        if period_mismatch_um > 1e-6:
+            beat_period_um = period_um * (period_um + period_mismatch_um) / period_mismatch_um
+        else:
+            beat_period_um = float("inf")
+        return (
+            {
+                "beat_period_um_from_pitch_mismatch": beat_period_um,
+                "rotation_beat_period_um": (
+                    period_um / math.radians(rotation_deg) if rotation_deg else float("inf")
+                ),
+            },
+            {},
+            (),
+        )
+
     @classmethod
     def generate(
         cls,
@@ -69,11 +131,20 @@ class ColibriGlobeMoire(Pattern):
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        # Pixel grid sized so we resolve the carrier grating with several
-        # samples per period — moire beating is a sub-period effect, so we
-        # need fine resolution even though the carrier itself is ~25 μm.
-        n_grid = max(384, int(extent_um / max(1.5, period_um / 8)))
-        cell_um = extent_um / n_grid
+        n_grid, cell_um = _resolve_grid(period_um, extent_um)
+
+        # Rect-count estimate: raster_to_polygons emits one rect per horizontal
+        # run, and each carrier chops every silhouette row into ~extent/period
+        # runs. Worst case (silhouette covering the full grid) is n_grid rows ×
+        # stripes-per-extent. Gate here — before the two n_grid² np.indices
+        # coordinate grids (int64, 16 B/cell) and the PIL silhouettes.
+        n_stripes = int(math.ceil(extent_um / period_um))
+        check_lattice_budget(
+            n_grid * n_stripes,
+            "colibri-globe-moire carrier",
+            period_um=period_um,
+            extent_um=extent_um,
+        )
 
         bird = colibri.colibri_silhouette(extent, n_grid=n_grid)
         gl = globe.globe_silhouette(extent, n_grid=n_grid)
@@ -92,25 +163,21 @@ class ColibriGlobeMoire(Pattern):
         front_poly = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back_poly = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
 
-        # Expected beat period from the period mismatch (the rotational
-        # contribution is small for the default ~1.5°). Stash it so the
-        # manifest's `extra` block reports something the optics-aware user
-        # can sanity-check the rendering against.
-        if period_mismatch_um > 1e-6:
-            beat_period_um = period_um * (period_um + period_mismatch_um) / period_mismatch_um
-        else:
-            beat_period_um = float("inf")
-
+        # Metadata comes from the accessors above so the numbers a plate reads
+        # without generating are the ones a full generate publishes.
+        kw = dict(
+            period_um=period_um,
+            period_mismatch_um=period_mismatch_um,
+            rotation_deg=rotation_deg,
+            extent_um=extent_um,
+        )
+        extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(
             front=front_poly,
             back=back_poly,
             extent_um=extent,
             pixel_pitch_um=cell_um,
-            min_feature_um=period_um * 0.5,
-            extra={
-                "beat_period_um_from_pitch_mismatch": beat_period_um,
-                "rotation_beat_period_um": (
-                    period_um / math.radians(rotation_deg) if rotation_deg else float("inf")
-                ),
-            },
+            min_feature_um=cls.min_feature_um(**kw),
+            extra=extra,
+            recipe_data=recipe_data,
         )

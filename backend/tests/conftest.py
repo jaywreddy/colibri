@@ -7,6 +7,28 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+# Cheapest central pattern in the catalog, for tests that only assert MANIFEST
+# SHAPE / API contracts and not geometry: the coarsest legal kanasü weave at
+# the smallest legal extent -> ~3x3 diamonds on a 20x20 px raster, a few ms
+# instead of the ~90 s the default variant costs. Every value sits inside its
+# ParamSpec bounds (service.validate_params runs before the variant hash) and
+# clears the litho floor (200 um * 0.29 = 58 um features). Same geometry
+# test_cache_integrity.py uses; tests that genuinely pin wayuu's DEFAULT
+# geometry must keep passing `{}`.
+CHEAP_SLUG = "wayuu-kanasu-moire"
+CHEAP_PARAMS: dict[str, float] = {
+    "period_um": 200.0,
+    "duty": 0.5,
+    "rotation_deg": 2.0,
+    "extent_um": 500.0,
+}
+
+
+@pytest.fixture
+def cheap_pattern() -> tuple[str, dict[str, float]]:
+    """(slug, params) of the cheapest generate the catalog allows."""
+    return CHEAP_SLUG, dict(CHEAP_PARAMS)
+
 
 @pytest.fixture(scope="session")
 def shared_pattern_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:

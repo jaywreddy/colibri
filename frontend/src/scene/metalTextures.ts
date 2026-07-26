@@ -3,15 +3,49 @@ import * as THREE from 'three';
 /**
  * Procedural microsurface maps for the copper-foil / solder metals.
  *
- * Everything here is generated once per rebuild from a small 2D canvas (256px)
- * — no external image assets, no fetches. The maps give the otherwise dead-flat
+ * Everything here is generated from a small 2D canvas (256px) — no external
+ * image assets, no fetches. The maps give the otherwise dead-flat
  * PBR metals the low-frequency variation a real hand-soldered copper-foil box
  * has: rolled-tape streaks, colour mottle, fingerprint-blotchy solder, and a
  * heat-patina darkening on the foil right next to a soldered seam.
  *
  * A tiny seeded PRNG keeps the noise deterministic so textures do not "boil"
  * between rebuilds (same finish -> same canvas).
+ *
+ * Because they ARE deterministic, every map set here is memoized at module
+ * level on its full input tuple — a hit is bit-exact, not an approximation.
+ * That matters: the maps cost ~720k CPU noise samples plus ~29 canvas uploads
+ * per BoxScene rebuild, and a finish/dimension slider drags the rebuild at
+ * frame rate. CACHED TEXTURES ARE OWNED BY THIS MODULE — callers must NOT
+ * push them into their per-rebuild disposal lists (see BoxScene's rebuild
+ * disposables). They survive a GPU context loss on their own: unlike a render
+ * target, a CanvasTexture keeps its CPU-side source and three re-uploads it.
  */
+
+/**
+ * Insert into a bounded FIFO texture cache, disposing whatever falls out.
+ *
+ * Disposing an evicted texture is safe even if some live material still points
+ * at it: dispose() only frees the GL upload, and three re-uploads from the
+ * canvas source on the next render. The cap only exists because the heat maps
+ * are seeded from plate dimensions, so a dimension sweep would otherwise grow
+ * the cache without bound.
+ */
+function cachePut<T extends THREE.Texture>(
+  cache: Map<string, T>,
+  key: string,
+  value: T,
+  cap: number
+): T {
+  cache.set(key, value);
+  while (cache.size > cap) {
+    const oldest = cache.keys().next();
+    if (oldest.done) break;
+    cache.get(oldest.value)?.dispose();
+    cache.delete(oldest.value);
+  }
+  return value;
+}
 
 /** Mulberry32 — cheap deterministic 32-bit PRNG. */
 function mulberry32(seed: number): () => number {
@@ -106,17 +140,44 @@ function hexRgb(hex: string): [number, number, number] {
   ];
 }
 
+export type FoilMaps = {
+  color: THREE.CanvasTexture;
+  rough: THREE.CanvasTexture;
+  /**
+   * `rough` with a 90deg UV rotation about its centre, for strips whose long
+   * axis is the plate Y — the brushed streaks must run along the physical
+   * strip. Shared by every vertical strip: rotation/centre are identical, so
+   * one clone replaces the 24 per-rebuild clones this used to make.
+   */
+  roughRotated: THREE.CanvasTexture;
+};
+
+/** Finish -> map set. At most one entry per FOIL_COLORS finish (6). */
+const FOIL_CACHE = new Map<string, FoilMaps>();
+const SOLDER_CACHE = new Map<string, SolderMaps>();
+/** Heat maps are seeded from plate dimensions too, so this one is bounded. */
+const HEAT_CACHE = new Map<string, THREE.CanvasTexture>();
+const HEAT_CACHE_CAP = 128;
+
 /**
  * Foil (rolled copper tape) map set.
  *  - color: base tint with subtle warm/cool mottle,
  *  - roughness: brushed streaks running along the tape length. The tape long
  *    axis is the texture U axis; callers rotate the strip UVs so the streaks
  *    always run along the physical strip (see BoxScene addFoilFrame).
+ *
+ * Memoized on (finish, tuning) — see the module docstring on ownership.
  */
-export function makeFoilMaps(
-  finish: string,
-  tuning: FinishTuning
-): { color: THREE.CanvasTexture; rough: THREE.CanvasTexture } {
+export function makeFoilMaps(finish: string, tuning: FinishTuning): FoilMaps {
+  const key = `${finish}|${tuning.oxidation}|${tuning.tint}`;
+  const hit = FOIL_CACHE.get(key);
+  if (hit) return hit;
+  const built = buildFoilMaps(finish, tuning);
+  FOIL_CACHE.set(key, built);
+  return built;
+}
+
+function buildFoilMaps(finish: string, tuning: FinishTuning): FoilMaps {
   const S = 256;
   const seedBase = hashStr(finish + ':foil');
   const [r, g, b] = hexRgb(tuning.tint);
@@ -183,24 +244,41 @@ export function makeFoilMaps(
   }
   rx.putImageData(rImg, 0, 0);
 
+  const rough = finalizeTex(rCanvas, false);
+  const roughRotated = rough.clone() as THREE.CanvasTexture;
+  roughRotated.center.set(0.5, 0.5);
+  roughRotated.rotation = Math.PI / 2;
+  roughRotated.needsUpdate = true;
+
   return {
     color: finalizeTex(cCanvas, true),
-    rough: finalizeTex(rCanvas, false),
+    rough,
+    roughRotated,
   };
 }
+
+export type SolderMaps = {
+  color: THREE.CanvasTexture;
+  rough: THREE.CanvasTexture;
+  bump: THREE.CanvasTexture;
+};
 
 /**
  * Solder map set: blotchy "fingerprint" roughness + a matching bump so the
  * frozen bead surface has real micro-relief instead of mirror-smoothness.
+ *
+ * Memoized on (finish, tuning) — see the module docstring on ownership.
  */
-export function makeSolderMaps(
-  finish: string,
-  tuning: FinishTuning
-): {
-  color: THREE.CanvasTexture;
-  rough: THREE.CanvasTexture;
-  bump: THREE.CanvasTexture;
-} {
+export function makeSolderMaps(finish: string, tuning: FinishTuning): SolderMaps {
+  const key = `${finish}|${tuning.oxidation}|${tuning.tint}`;
+  const hit = SOLDER_CACHE.get(key);
+  if (hit) return hit;
+  const built = buildSolderMaps(finish, tuning);
+  SOLDER_CACHE.set(key, built);
+  return built;
+}
+
+function buildSolderMaps(finish: string, tuning: FinishTuning): SolderMaps {
   const S = 256;
   const seedBase = hashStr(finish + ':solder');
   const [r, g, b] = hexRgb(tuning.tint);
@@ -282,8 +360,28 @@ export function makeSolderMaps(
  * Returned as an alpha map to layer over the base foil colour via a second
  * material would be heavy; instead we bake it directly into a per-strip colour
  * texture, tinting the base foil colour toward a heat-oxidised hue near seams.
+ *
+ * Memoized on (base tint, seam edges, seed) — see the module docstring on
+ * ownership. This is the hottest builder here: 24 of these (128² x 3-octave
+ * fbm each) per assembled-layout rebuild.
  */
 export function makeStripHeatColor(
+  base: [number, number, number],
+  seamEdges: { v0: boolean; v1: boolean; u0: boolean; u1: boolean },
+  seed: number
+): THREE.CanvasTexture {
+  const edgeBits =
+    (seamEdges.v0 ? 1 : 0) |
+    (seamEdges.v1 ? 2 : 0) |
+    (seamEdges.u0 ? 4 : 0) |
+    (seamEdges.u1 ? 8 : 0);
+  const key = `${base[0]},${base[1]},${base[2]}|${edgeBits}|${seed}`;
+  const hit = HEAT_CACHE.get(key);
+  if (hit) return hit;
+  return cachePut(HEAT_CACHE, key, buildStripHeatColor(base, seamEdges, seed), HEAT_CACHE_CAP);
+}
+
+function buildStripHeatColor(
   base: [number, number, number],
   seamEdges: { v0: boolean; v1: boolean; u0: boolean; u1: boolean },
   seed: number

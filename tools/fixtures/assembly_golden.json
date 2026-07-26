@@ -108,13 +108,77 @@
           "style": "tube",
           "tube_od_um": 2400.0,
           "rod_od_um": 1600.0,
-          "segments": 7,
+          "segments": 3,
           "coverage": 0.6
         }
       },
       "expected": {
-        "valid": false,
-        "backend_error": "Hinge tube segments come out 2.23 mm long \u2014 shorter than the tube OD (2.40 mm) and uncuttable. Reduce the segment count or increase hinge coverage."
+        "valid": true,
+        "overlap_um": 2131.5,
+        "keepout_um": 2431.5,
+        "back_window_um": 2131.5,
+        "cut_list": [
+          {
+            "face": "bottom",
+            "width_um": 30000.0,
+            "height_um": 20000.0,
+            "width_mm": 30.0,
+            "height_mm": 20.0
+          },
+          {
+            "face": "top",
+            "width_um": 30000.0,
+            "height_um": 20000.0,
+            "width_mm": 30.0,
+            "height_mm": 20.0
+          },
+          {
+            "face": "front",
+            "width_um": 30000.0,
+            "height_um": 24000.0,
+            "width_mm": 30.0,
+            "height_mm": 24.0
+          },
+          {
+            "face": "back",
+            "width_um": 30000.0,
+            "height_um": 24000.0,
+            "width_mm": 30.0,
+            "height_mm": 24.0
+          },
+          {
+            "face": "left",
+            "width_um": 19000.0,
+            "height_um": 24000.0,
+            "width_mm": 19.0,
+            "height_mm": 24.0
+          },
+          {
+            "face": "right",
+            "width_um": 19000.0,
+            "height_um": 24000.0,
+            "width_mm": 19.0,
+            "height_mm": 24.0
+          }
+        ],
+        "seams": {
+          "bottom-front": 30000.0,
+          "bottom-back": 30000.0,
+          "bottom-left": 20000.0,
+          "bottom-right": 20000.0,
+          "corner-front-left": 24000.0,
+          "corner-front-right": 24000.0,
+          "corner-back-left": 24000.0,
+          "corner-back-right": 24000.0
+        },
+        "hinge": {
+          "run_length_um": 18000.0,
+          "segment_length_um": 5733.333333333333,
+          "gap_um": 400.0,
+          "rod_length_um": 21200.0,
+          "body_segments": 2,
+          "lid_segments": 1
+        }
       }
     },
     {
@@ -208,6 +272,470 @@
       }
     },
     {
+      "name": "tape-narrower-than-glass-clamped",
+      "spec": {
+        "width_um": 40000.0,
+        "depth_um": 30000.0,
+        "height_um": 20000.0,
+        "glass_thickness_um": 2000.0,
+        "foil": {
+          "tape_width_um": 1000.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": true,
+        "overlap_um": 0.0,
+        "keepout_um": 500.0,
+        "back_window_um": 0.0,
+        "cut_list": [
+          {
+            "face": "bottom",
+            "width_um": 40000.0,
+            "height_um": 30000.0,
+            "width_mm": 40.0,
+            "height_mm": 30.0
+          },
+          {
+            "face": "top",
+            "width_um": 40000.0,
+            "height_um": 30000.0,
+            "width_mm": 40.0,
+            "height_mm": 30.0
+          },
+          {
+            "face": "front",
+            "width_um": 40000.0,
+            "height_um": 16000.0,
+            "width_mm": 40.0,
+            "height_mm": 16.0
+          },
+          {
+            "face": "back",
+            "width_um": 40000.0,
+            "height_um": 16000.0,
+            "width_mm": 40.0,
+            "height_mm": 16.0
+          },
+          {
+            "face": "left",
+            "width_um": 26000.0,
+            "height_um": 16000.0,
+            "width_mm": 26.0,
+            "height_mm": 16.0
+          },
+          {
+            "face": "right",
+            "width_um": 26000.0,
+            "height_um": 16000.0,
+            "width_mm": 26.0,
+            "height_mm": 16.0
+          }
+        ],
+        "seams": {
+          "bottom-front": 40000.0,
+          "bottom-back": 40000.0,
+          "bottom-left": 30000.0,
+          "bottom-right": 30000.0,
+          "corner-front-left": 16000.0,
+          "corner-front-right": 16000.0,
+          "corner-back-left": 16000.0,
+          "corner-back-right": 16000.0
+        },
+        "hinge": {
+          "run_length_um": 32000.0,
+          "segment_length_um": 6080.0,
+          "gap_um": 400.0,
+          "rod_length_um": 35200.0,
+          "body_segments": 3,
+          "lid_segments": 2
+        }
+      }
+    },
+    {
+      "name": "mm-tie-half-thousandth",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 50000.0,
+        "height_um": 25000.0,
+        "glass_thickness_um": 468.75,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": true,
+        "overlap_um": 2940.625,
+        "keepout_um": 3440.625,
+        "back_window_um": 2940.625,
+        "cut_list": [
+          {
+            "face": "bottom",
+            "width_um": 50000.0,
+            "height_um": 50000.0,
+            "width_mm": 50.0,
+            "height_mm": 50.0
+          },
+          {
+            "face": "top",
+            "width_um": 50000.0,
+            "height_um": 50000.0,
+            "width_mm": 50.0,
+            "height_mm": 50.0
+          },
+          {
+            "face": "front",
+            "width_um": 50000.0,
+            "height_um": 24062.5,
+            "width_mm": 50.0,
+            "height_mm": 24.063
+          },
+          {
+            "face": "back",
+            "width_um": 50000.0,
+            "height_um": 24062.5,
+            "width_mm": 50.0,
+            "height_mm": 24.063
+          },
+          {
+            "face": "left",
+            "width_um": 49062.5,
+            "height_um": 24062.5,
+            "width_mm": 49.063,
+            "height_mm": 24.063
+          },
+          {
+            "face": "right",
+            "width_um": 49062.5,
+            "height_um": 24062.5,
+            "width_mm": 49.063,
+            "height_mm": 24.063
+          }
+        ],
+        "seams": {
+          "bottom-front": 50000.0,
+          "bottom-back": 50000.0,
+          "bottom-left": 50000.0,
+          "bottom-right": 50000.0,
+          "corner-front-left": 24062.5,
+          "corner-front-right": 24062.5,
+          "corner-back-left": 24062.5,
+          "corner-back-right": 24062.5
+        },
+        "hinge": {
+          "run_length_um": 40000.0,
+          "segment_length_um": 7680.0,
+          "gap_um": 400.0,
+          "rod_length_um": 43200.0,
+          "body_segments": 3,
+          "lid_segments": 2
+        }
+      }
+    },
+    {
+      "name": "aperture-just-above-minimum-fractional-keepout",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 10851.0,
+        "height_um": 21000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.1,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": true,
+        "overlap_um": 2925.05,
+        "keepout_um": 3425.05,
+        "back_window_um": 2925.05,
+        "cut_list": [
+          {
+            "face": "bottom",
+            "width_um": 50000.0,
+            "height_um": 10851.0,
+            "width_mm": 50.0,
+            "height_mm": 10.851
+          },
+          {
+            "face": "top",
+            "width_um": 50000.0,
+            "height_um": 10851.0,
+            "width_mm": 50.0,
+            "height_mm": 10.851
+          },
+          {
+            "face": "front",
+            "width_um": 50000.0,
+            "height_um": 20000.0,
+            "width_mm": 50.0,
+            "height_mm": 20.0
+          },
+          {
+            "face": "back",
+            "width_um": 50000.0,
+            "height_um": 20000.0,
+            "width_mm": 50.0,
+            "height_mm": 20.0
+          },
+          {
+            "face": "left",
+            "width_um": 9851.0,
+            "height_um": 20000.0,
+            "width_mm": 9.851,
+            "height_mm": 20.0
+          },
+          {
+            "face": "right",
+            "width_um": 9851.0,
+            "height_um": 20000.0,
+            "width_mm": 9.851,
+            "height_mm": 20.0
+          }
+        ],
+        "seams": {
+          "bottom-front": 50000.0,
+          "bottom-back": 50000.0,
+          "bottom-left": 10851.0,
+          "bottom-right": 10851.0,
+          "corner-front-left": 20000.0,
+          "corner-front-right": 20000.0,
+          "corner-back-left": 20000.0,
+          "corner-back-right": 20000.0
+        },
+        "hinge": {
+          "run_length_um": 40000.0,
+          "segment_length_um": 7680.0,
+          "gap_um": 400.0,
+          "rod_length_um": 43200.0,
+          "body_segments": 3,
+          "lid_segments": 2
+        }
+      }
+    },
+    {
+      "name": "hinge-segment-just-above-tube-od",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 50000.0,
+        "height_um": 40000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2179.5,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.25
+        }
+      },
+      "expected": {
+        "valid": true,
+        "overlap_um": 2925.0,
+        "keepout_um": 3425.0,
+        "back_window_um": 2925.0,
+        "cut_list": [
+          {
+            "face": "bottom",
+            "width_um": 50000.0,
+            "height_um": 50000.0,
+            "width_mm": 50.0,
+            "height_mm": 50.0
+          },
+          {
+            "face": "top",
+            "width_um": 50000.0,
+            "height_um": 50000.0,
+            "width_mm": 50.0,
+            "height_mm": 50.0
+          },
+          {
+            "face": "front",
+            "width_um": 50000.0,
+            "height_um": 39000.0,
+            "width_mm": 50.0,
+            "height_mm": 39.0
+          },
+          {
+            "face": "back",
+            "width_um": 50000.0,
+            "height_um": 39000.0,
+            "width_mm": 50.0,
+            "height_mm": 39.0
+          },
+          {
+            "face": "left",
+            "width_um": 49000.0,
+            "height_um": 39000.0,
+            "width_mm": 49.0,
+            "height_mm": 39.0
+          },
+          {
+            "face": "right",
+            "width_um": 49000.0,
+            "height_um": 39000.0,
+            "width_mm": 49.0,
+            "height_mm": 39.0
+          }
+        ],
+        "seams": {
+          "bottom-front": 50000.0,
+          "bottom-back": 50000.0,
+          "bottom-left": 50000.0,
+          "bottom-right": 50000.0,
+          "corner-front-left": 39000.0,
+          "corner-front-right": 39000.0,
+          "corner-back-left": 39000.0,
+          "corner-back-right": 39000.0
+        },
+        "hinge": {
+          "run_length_um": 12500.0,
+          "segment_length_um": 2180.0,
+          "gap_um": 400.0,
+          "rod_length_um": 15700.0,
+          "body_segments": 3,
+          "lid_segments": 2
+        }
+      }
+    },
+    {
+      "name": "invalid-aperture-exactly-at-minimum",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 10850.0,
+        "height_um": 21000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": false,
+        "backend_error": "Foil keep-out swallows the left plate: the plate is 9.85 x 20.0 mm but the keep-out rim is 3.42 mm per edge (6.85 mm total), leaving under 3 mm of patternable aperture. Use narrower foil tape, reduce the safety margin, or enlarge the box."
+      }
+    },
+    {
+      "name": "invalid-hinge-segment-exactly-tube-od",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 50000.0,
+        "height_um": 40000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2180.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.25
+        }
+      },
+      "expected": {
+        "valid": false,
+        "backend_error": "Hinge tube segments come out 2.18 mm long \u2014 shorter than the tube OD (2.18 mm) and uncuttable. Reduce the segment count or increase hinge coverage."
+      }
+    },
+    {
+      "name": "invalid-height-equals-2t",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 50000.0,
+        "height_um": 1000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": false,
+        "backend_error": "Box height 1.0 mm leaves no room for walls: walls are H - 2t = 0.0 mm tall with 0.5 mm glass. Increase height or use thinner glass."
+      }
+    },
+    {
+      "name": "invalid-depth-equals-2t",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 1000.0,
+        "height_um": 40000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": false,
+        "backend_error": "Box depth 1.0 mm leaves no room for the left/right walls between front and back (0.0 mm). Increase depth or use thinner glass."
+      }
+    },
+    {
       "name": "invalid-tiny-box",
       "spec": {
         "width_um": 9000.0,
@@ -260,6 +788,84 @@
       }
     },
     {
+      "name": "invalid-hinge-coverage-zero",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 50000.0,
+        "height_um": 40000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.0
+        }
+      },
+      "expected": {
+        "valid": false,
+        "backend_error": "Hinge coverage must be in (0, 1] of the box width (got 0.0)."
+      }
+    },
+    {
+      "name": "invalid-hinge-coverage-above-one",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 50000.0,
+        "height_um": 40000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 1.5
+        }
+      },
+      "expected": {
+        "valid": false,
+        "backend_error": "Hinge coverage must be in (0, 1] of the box width (got 1.5)."
+      }
+    },
+    {
+      "name": "invalid-rod-od-equals-tube-od",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 50000.0,
+        "height_um": 40000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 6350.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 2400.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": false,
+        "backend_error": "Hinge rod OD (2400.0 um) must be smaller than the tube OD (2400.0 um) so the rod can pass through the tube."
+      }
+    },
+    {
       "name": "invalid-zero-glass",
       "spec": {
         "width_um": 50000.0,
@@ -283,6 +889,32 @@
       "expected": {
         "valid": false,
         "backend_error": "Glass thickness must be positive (got 0.0 um)."
+      }
+    },
+    {
+      "name": "invalid-zero-tape-width",
+      "spec": {
+        "width_um": 50000.0,
+        "depth_um": 50000.0,
+        "height_um": 40000.0,
+        "glass_thickness_um": 500.0,
+        "foil": {
+          "tape_width_um": 0.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": false,
+        "backend_error": "Foil tape width must be positive (got 0.0 um)."
       }
     },
     {

@@ -31,6 +31,7 @@ All values are micrometers unless suffixed otherwise.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -120,6 +121,30 @@ class HingeSpec:
         )
 
 
+def round_mm3(value_um: float) -> float:
+    """Micrometers -> millimeters rounded to 3 decimals, HALF AWAY FROM ZERO.
+
+    Shared contract helper: ``frontend/src/assembly.ts::roundMm3`` mirrors this
+    formula term for term. Neither side may use its language's built-in
+    rounding — Python's ``round()`` is half-to-EVEN while JavaScript's
+    ``Math.round()`` is half-UP (and asymmetric for negatives), so the two
+    disagree on every dimension whose mm value lands exactly on a
+    half-thousandth: 24062.5 um is 24.062 mm to Python and 24.063 mm to JS,
+    and the manifest cut list then contradicts the BuildPanel readout.
+
+    Because 1 um is exactly 0.001 mm we round the MICROMETER value to an
+    integer and divide once. That is deliberate: dividing first and
+    re-multiplying (``(um / 1000) * 1000``) reintroduces the quotient's
+    representation error and can floor a whole micrometer away (17.4 mm ->
+    17399.999999999998 -> 17.399). One exact-integer division also lands on
+    the nearest double to n/1000 in both languages, so the fixture's
+    ``toBe(width_mm)`` equality holds bit for bit.
+    """
+    if value_um < 0.0:
+        return -(math.floor(-value_um + 0.5) / 1000.0)
+    return math.floor(value_um + 0.5) / 1000.0
+
+
 def overlap_um(foil: FoilSpec, glass_thickness_um: float) -> float:
     """Foil fold-over width onto each plate face.
 
@@ -197,8 +222,9 @@ def cut_list(
                 "face": fid,
                 "width_um": w,
                 "height_um": h,
-                "width_mm": round(w / 1000.0, 3),
-                "height_mm": round(h / 1000.0, 3),
+                # Shared rounding rule — see round_mm3 / assembly.ts::roundMm3.
+                "width_mm": round_mm3(w),
+                "height_mm": round_mm3(h),
             }
         )
     return out
@@ -290,6 +316,15 @@ def validate_assembly(
         raise ValueError(f"Foil safety margin cannot be negative (got {foil.safety_um} um).")
 
     # Keep-out must leave a patternable aperture on every plate.
+    #
+    # The predicate below is arranged EXACTLY as assembly.ts::validateBox
+    # writes it (`min_side <= 2.0 * ko + MIN_APERTURE_UM`, never the
+    # algebraically equal `min_side - 2.0 * ko <= MIN_APERTURE_UM`). With a
+    # keep-out that is not binary-representable — any fractional tape width or
+    # glass thickness — the two arrangements differ by an ULP right at the
+    # boundary, which is exactly where a spec the frontend accepts would 400
+    # here. The mm figure quoted in the frontend's message is a separate
+    # display-only computation for that reason.
     ko = keepout_um(foil, t)
     for entry in cut_list(width_um, depth_um, height_um, t):
         min_side = min(entry["width_um"], entry["height_um"])

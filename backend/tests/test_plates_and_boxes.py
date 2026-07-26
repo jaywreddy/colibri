@@ -595,3 +595,151 @@ def test_recipe_data_keys_flow_to_box_faces(isolated_data):
     for key in ("switch_axis_deg", "carrier_period_um"):
         assert key in rd, f"reveal recipe_data missing {key!r} (lab zone UI reads it)"
     assert "frame_scene" not in rd
+
+
+# ----- capybara waterline: one resolver feeds mask + manifest + fab ----------
+
+
+def test_composed_water_band_follows_the_waterline_param(isolated_data):
+    """The capybara ``waterline`` param must move the COMPOSED MASK and the
+    ``water_waterline_y`` the shader binds together — one resolver, no drift.
+
+    Every plate-side consumer used to hardwire ``capybara_scanimation.WATERLINE_Y``
+    (0.66), so a face that dialled the param got its band, calm patch and depth
+    shear baked at the default anyway while the preview had nothing to read.
+    ``plates._water_waterline_y`` is now the single resolver behind the centerpiece
+    mask, the fab SVG bake, ``export_fine``'s fine-GDS band/wake and this manifest
+    key. This pins the preview end of that chain to exact rows.
+
+    Hand-derived geometry for the 12 mm square plate below (all µm unless px):
+        active   = 12000 - 2·600                  = 10800
+        band     = 0.12 · 10800                   =  1296
+        aperture = 10800 - 2·1296                 =  8208
+        art side = CENTERPIECE_FILL · 8208        =  7058.88
+        central cell (extent 800, n_grid 384)     =     2.0833
+        plate pitch = max(2.0833, 12000/1500)     =     8.0  → 1500 × 1500 px
+        side_px  = round(7058.88 / 8)             =   882 → y0 = 750 - 441 = 309
+        band top = y0 + ceil(waterline · side_px)
+                 = 309 + ceil(0.45 · 882 = 396.90) = 706   ← this face
+                 = 309 + ceil(0.66 · 882 = 582.12) = 892   ← the 0.66 default
+    i.e. a 0.45 waterline lifts the band 186 px (~1.5 mm) up the plate.
+    """
+    import math
+
+    import numpy as np
+    from PIL import Image
+
+    from app.plates import (
+        ART_LEVEL,
+        CENTERPIECE_FILL,
+        FrameSpec,
+        PLATES_ROOT,
+        PlateSpec,
+        materialize_plate,
+    )
+    from app.patterns.artistic.capybara_scanimation import WATERLINE_Y
+
+    waterline = 0.45
+    assert waterline != WATERLINE_Y, "the pin needs a non-default waterline"
+    spec = PlateSpec(
+        pattern_slug="capybara-scanimation",
+        # extent_um at the small end of the published slider keeps the central
+        # generate light (384² lattice); it does not touch the plate geometry —
+        # the composed centerpiece is sized by the plate aperture, not the
+        # pattern's own extent.
+        pattern_params={"waterline": waterline, "extent_um": 800.0},
+        frame=FrameSpec(seed=41),
+        width_um=12000.0,
+        height_um=12000.0,
+        weld_margin_um=600.0,
+    )
+    m = materialize_plate(spec)
+
+    # 1. The manifest advertises the EFFECTIVE waterline the mask was built at.
+    assert m["recipe_data"]["water_waterline_y"] == pytest.approx(waterline)
+
+    # 2. The composed BACK mask's water band moved with it. On the back layer
+    #    ART_LEVEL is *only* the water band (the carrier window is FRAME_LEVEL and
+    #    the foliage band is a front-layer feature), so its topmost ART row IS the
+    #    baked waterline.
+    pitch = m["pixel_pitch_um"]
+    assert pitch == pytest.approx(8.0), f"plate pitch drifted: {pitch}"
+    aperture_um = float(m["extra"]["aperture_um"])
+    assert aperture_um == pytest.approx(8208.0)
+
+    back = np.asarray(
+        Image.open(PLATES_ROOT / m["id"] / "back.png").convert("L")
+    )
+    plate_h, plate_w = back.shape
+    assert (plate_w, plate_h) == (1500, 1500)
+
+    side_px = max(8, int(round(CENTERPIECE_FILL * aperture_um / pitch)))
+    assert side_px == 882
+    y0 = plate_h // 2 - side_px // 2
+    assert y0 == 309
+
+    art_rows = np.flatnonzero((back == ART_LEVEL).any(axis=1))
+    assert art_rows.size > 0, "back mask carries no ART_LEVEL water band at all"
+    top = int(art_rows[0])
+    assert top == y0 + math.ceil(waterline * side_px) == 706, (
+        f"water band starts at row {top}, expected 706 for waterline {waterline}"
+    )
+    # ...and strictly ABOVE where the 0.66 default would have put it (row 892) —
+    # the failure mode was a band frozen at the module constant.
+    assert top < y0 + math.ceil(WATERLINE_Y * side_px)
+    assert y0 + math.ceil(WATERLINE_Y * side_px) == 892
+
+
+def test_default_waterline_resolves_to_the_module_constant(isolated_data):
+    """A face that sets no ``waterline`` — and one that sets nonsense — resolves
+    to ``capybara_scanimation.WATERLINE_Y``, in the manifest key AND in the mask.
+
+    Deliberately compose-free (the resolver + the centerpiece mask are the whole
+    contract), so the default case costs no pattern generation on the 13.7 GB
+    host. Mask rows: ``_centerpiece_masks`` builds the band as
+    ``row/n >= waterline``, so its first row is ``ceil(waterline · n)`` —
+    ceil(0.66·256) = 169 by default vs ceil(0.45·256) = 116 at 0.45.
+    """
+    import math
+
+    import numpy as np
+
+    from app.plates import (
+        FrameSpec,
+        PlateSpec,
+        _carrier_recipe_data,
+        _centerpiece_masks,
+        _water_waterline_y,
+    )
+    from app.patterns.artistic.capybara_scanimation import WATERLINE_Y
+
+    spec = PlateSpec(
+        pattern_slug="capybara-scanimation",
+        pattern_params={"extent_um": 800.0},   # no waterline key
+        frame=FrameSpec(seed=42),
+        width_um=12000.0,
+        height_um=12000.0,
+        weld_margin_um=600.0,
+    )
+    assert _carrier_recipe_data(spec)["water_waterline_y"] == pytest.approx(WATERLINE_Y)
+
+    # The resolver never raises on junk — the API validates against the ParamSpec
+    # but direct callers (fab CLIs, tests) do not, and the flow field divides by
+    # ``1 - waterline_y``.
+    assert _water_waterline_y(None) == WATERLINE_Y
+    assert _water_waterline_y({}) == WATERLINE_Y
+    for junk in (0.0, 1.0, -0.2, 1.5, "wet", None, float("nan")):
+        assert _water_waterline_y({"waterline": junk}) == WATERLINE_Y, junk
+
+    # And the composed centerpiece mask splits at the same line. masks[1] is the
+    # water band (below the line, minus the submerged body).
+    n_px = 256
+    band_default = _centerpiece_masks("capybara-scanimation", n_px, {})[1]
+    band_high = _centerpiece_masks("capybara-scanimation", n_px, {"waterline": 0.45})[1]
+    assert int(np.flatnonzero(band_default.any(axis=1))[0]) == math.ceil(
+        WATERLINE_Y * n_px
+    ) == 169
+    assert int(np.flatnonzero(band_high.any(axis=1))[0]) == math.ceil(0.45 * n_px) == 116
+    # A higher waterline means MORE water: the 0.45 band strictly contains more
+    # rows than the default one.
+    assert band_high.sum() > band_default.sum()

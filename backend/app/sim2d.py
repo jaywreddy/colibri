@@ -16,8 +16,16 @@ grayscale 0..1 where 1 = gold):
     back_shifted = back sampled at (uv - shift)   [zero outside the frame]
     transmission = (1 - front) * (1 - back_shifted)
     reflected    = max(front, 0.55 * back_shifted)
+    overlap      = front * back_shifted           [ambient darkening only]
 
-Pure functions only: no file I/O — callers hand in PIL "L" images.
+This module is a PAIRED contract with frontend/src/lab/composite2d.ts (the
+Pattern Lab's 2D compositor): any change to the shift or composite formulas
+must land in both files in the same change, and both pin the same
+hand-computed ambient values against plate.frag.
+
+Pure functions only: no file I/O — callers hand in PIL "L" images or 2D arrays
+(see _as_unit_mask; a caller that area-averages a big raster down first passes
+the reduced float grid, with pixel_pitch_um scaled by the same factor).
 """
 from __future__ import annotations
 
@@ -95,8 +103,8 @@ def _transmission(front: np.ndarray, back_shifted: np.ndarray) -> np.ndarray:
 
 
 def composite_parallax(
-    front: Image.Image,
-    back: Image.Image,
+    front: Image.Image | np.ndarray,
+    back: Image.Image | np.ndarray,
     dx_um: float,
     dy_um: float,
     pixel_pitch_um: float,
@@ -106,13 +114,24 @@ def composite_parallax(
     """Composite front + parallax-shifted back into an RGB preview image.
 
     Implements the three plate.frag illumination modes on flat masks (no
-    Lambert/specular terms — this is the head-on-light simplification):
-      ambient  : GOLD * reflected * 0.85 + 0.06 * transmission
+    Lambert/specular terms — this is the head-on-light simplification, with
+    0.85 / 0.12 / 0.25 standing in for the shader's head-on light factors):
+      ambient  : (GOLD * reflected * 0.85 + 0.04 * transmission)
+                 * (1 - 0.35 * overlap)
       laser    : laser_color * transmission + GOLD * 0.12 * reflected
       backlight: white * transmission + GOLD_BACK * reflected * 0.25
+
+    The ambient overlap darkening is the shader's ONLY back-layer dependence
+    wherever the front mask is gold (reflected saturates at 1 and transmission
+    is 0 there), so dropping it makes every ambient metric over a front-gold
+    figure tilt-blind. Laser and backlight have no overlap factor in the
+    shader; do not add one here.
+
+    Masks may be PIL 'L' images or 2D arrays (see _as_unit_mask) — callers that
+    area-average a big raster down before compositing hand in floats.
     """
-    f = _to_unit(front)
-    b = _to_unit(back)
+    f = _as_unit_mask(front)
+    b = _as_unit_mask(back)
     if f.shape != b.shape:
         raise ValueError(f"front/back size mismatch: {f.shape} vs {b.shape}")
 
@@ -125,7 +144,12 @@ def composite_parallax(
         return np.asarray(color, dtype=np.float32)[None, None, :] * field[..., None]
 
     if illum == "ambient":
-        rgb = _tint(GOLD, reflected * 0.85) + 0.06 * transmission[..., None]
+        # plate.frag darkens the whole ambient color (gold shade AND the
+        # transmission floor) where both layers are gold.
+        overlap_dark = 1.0 - 0.35 * f * b_shifted
+        rgb = (
+            _tint(GOLD, reflected * 0.85) + 0.04 * transmission[..., None]
+        ) * overlap_dark[..., None]
     elif illum == "laser":
         rgb = _tint(laser_color, transmission) + _tint(GOLD, 0.12 * reflected)
     elif illum == "backlight":
@@ -140,8 +164,8 @@ def composite_parallax(
 
 
 def transmission_contrast(
-    front: Image.Image,
-    back: Image.Image,
+    front: Image.Image | np.ndarray,
+    back: Image.Image | np.ndarray,
     dx_um: float,
     dy_um: float,
     pixel_pitch_um: float,
@@ -151,8 +175,8 @@ def transmission_contrast(
     This is the brightness a backlit viewer sees; sweeping it against tilt is
     the pattern-development metric (see contrast_curve).
     """
-    f = _to_unit(front)
-    b = _to_unit(back)
+    f = _as_unit_mask(front)
+    b = _as_unit_mask(back)
     if f.shape != b.shape:
         raise ValueError(f"front/back size mismatch: {f.shape} vs {b.shape}")
     dx_px, dy_px = _shift_px(dx_um, dy_um, pixel_pitch_um)
@@ -160,8 +184,8 @@ def transmission_contrast(
 
 
 def contrast_curve(
-    front: Image.Image,
-    back: Image.Image,
+    front: Image.Image | np.ndarray,
+    back: Image.Image | np.ndarray,
     tilts_deg: list[float],
     thickness_um: float,
     n: float,
@@ -174,11 +198,14 @@ def contrast_curve(
     the frame as the back layer slides); a blank or degenerate pair shows a
     flat curve. Each row is {tilt_deg, dx_um, transmission} where dx_um is
     the shift along the swept axis.
+
+    The sweep is one full-frame composite per tilt, so it scales with the mask
+    area: bound the grid (area-average) before calling on a plate-sized raster.
     """
     if axis not in ("x", "y"):
         raise ValueError(f"Unknown axis {axis!r}; expected 'x' or 'y'")
-    f = _to_unit(front)
-    b = _to_unit(back)
+    f = _as_unit_mask(front)
+    b = _as_unit_mask(back)
     if f.shape != b.shape:
         raise ValueError(f"front/back size mismatch: {f.shape} vs {b.shape}")
 
@@ -297,18 +324,39 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
     return float((av * bv).sum() / (norm_a * norm_b))
 
 
+def _box_blur_axis(field: np.ndarray, k: int, axis: int) -> np.ndarray:
+    """One axis of the separable box filter, as a prefix-sum difference.
+
+    Reproduces ``np.convolve(v, np.ones(k) / k, mode='same')`` term for term:
+    that trims the length-(n + k - 1) full convolution to its middle n samples,
+    so output i is the sum over the input window ``[i + off - k + 1, i + off]``
+    with ``off = (k - 1) // 2`` and every out-of-frame tap counted as ZERO (not
+    edge-replicated). Clamping the window ENDS (not the sampled values) against
+    a prefix sum sums exactly those taps, one vectorized pass instead of
+    ``np.apply_along_axis``'s per-row Python ``np.convolve`` call.
+
+    Accumulated in float64 because a prefix sum runs the length of the axis
+    while the window sum it replaces was only k terms long.
+    """
+    n = field.shape[axis]
+    a = np.moveaxis(field, axis, 0)
+    cs = np.empty((n + 1, *a.shape[1:]), dtype=np.float64)
+    cs[0] = 0.0
+    np.cumsum(a, axis=0, dtype=np.float64, out=cs[1:])
+    off = (k - 1) // 2
+    ends = np.arange(n) + off + 1
+    out = cs[np.clip(ends, 0, n)]
+    out -= cs[np.clip(ends - k, 0, n)]
+    out /= float(k)
+    return np.moveaxis(out, 0, axis)
+
+
 def _box_blur(field: np.ndarray, k: int) -> np.ndarray:
     """Separable k-pixel box filter ('same' edges — crop >= k/2 margins
     before using the result quantitatively)."""
     if k <= 1:
         return field.astype(np.float32)
-    kernel = np.ones(k, dtype=np.float32) / float(k)
-    out = np.apply_along_axis(
-        lambda v: np.convolve(v, kernel, mode="same"), 1, field
-    )
-    return np.apply_along_axis(
-        lambda v: np.convolve(v, kernel, mode="same"), 0, out
-    )
+    return _box_blur_axis(_box_blur_axis(field, k, 1), k, 0).astype(np.float32)
 
 
 def sweep_transmission(

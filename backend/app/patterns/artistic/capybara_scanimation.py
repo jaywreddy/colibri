@@ -403,6 +403,19 @@ def _build(
         want = int(extent_um / max(1.0, slot_um / 6.0))
         n_cap = int((MAX_LATTICE_CELLS) ** 0.5)
         n_grid = max(384, min(want, n_cap))
+        # ...and never finer than the litho floor. cell_um is the shortest run
+        # the emitted masks can contain (`_floor_crest_thickness`' min_run
+        # collapses to 1 cell once cell_um ≥ the floor), so a sub-floor cell
+        # makes `_measure_min_gold_um` report sub-floor gold and the
+        # GeneratedPattern floor check 400s a legal slider position: the 384-row
+        # target alone put extent 500 µm at 1.30 µm cells. The floor WINS over
+        # the row target because it is a fab constraint, and it costs nothing
+        # real — 500 µm of quartz simply holds 250 printable cells, so a finer
+        # raster was only ever describing features the process cannot make.
+        # (Callers that pass n_grid explicitly — the plate compositor, which
+        # rasters at the plate's own budget pitch — are left alone; their
+        # geometry goes through export_fine's DRC heal.)
+        n_grid = max(2, min(n_grid, int(extent_um / LITHO_FLOOR_UM)))
     cell_um = extent_um / n_grid
     # Water band width: full aperture (WATER FULL WIDTH) or the body square.
     if water_extent_um is not None and water_extent_um > extent_um:
@@ -515,6 +528,14 @@ class CapybaraScanimation(Pattern):
         ParamSpec("waterline", "Waterline (0=top,1=bottom)", "float", WATERLINE_Y, 0.4, 0.85, 0.01),
         ParamSpec("extent_um", "Extent", "float", 1600.0, 500.0, 5000.0, 100.0, "μm"),
     ]
+
+    # NOTE (metadata, see Pattern.metadata): this generator deliberately does NOT
+    # override the metadata accessors, so the plate compositor's metadata read
+    # still runs a full generate for this slug. ``min_feature_um`` and half of
+    # ``extra`` are MEASURED off the emitted masks (``_measure_min_gold_um`` after
+    # the sliver clips), and a formula standing in for them is exactly the drift
+    # F7 removed. The measured fields are memoized per (slug, params), so the
+    # compose pays one generate, not one per accessor.
 
     @classmethod
     def generate(

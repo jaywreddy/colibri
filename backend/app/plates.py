@@ -41,6 +41,7 @@ from .export_svg import to_svg
 from .patterns.base import GeneratedPattern, Substrate, ensure_multipolygon, registry
 from .patterns.frames import (
     RectFrame,
+    Scene,
     generate_frame,
     render_scene_to_image,
     render_scene_to_svg,
@@ -48,7 +49,18 @@ from .patterns.frames import (
 )
 from .patterns.frames.api import FrameParams
 from .rasterize import make_thumbnail
-from .service import DATA_ROOT, materialize as materialize_pattern
+from .service import (
+    DATA_ROOT,
+    cache_lock,
+    extra_layer_url,
+    heavy_compute_gate,
+    read_json_cache,
+    save_png_atomic,
+    validate_params,
+    variant_key,
+    write_json_atomic,
+    write_text_atomic,
+)
 
 
 def _concat_polygons(*sources: MultiPolygon) -> MultiPolygon:
@@ -409,19 +421,17 @@ WATER_SCAN_N_PHASES = 4
 # 0.14 → ~7 legible streamlines across the band (the r3 vision default; keep in
 # lock-step with capybara_scanimation.RIPPLE_WAVELENGTH_NORM).
 WATER_RIPPLE_WAVELENGTH_FRAC = 0.14
-# PREVIEW phase-advance pitch (μm). The shader walks one ripple phase per this
-# many μm of substrate parallax. It is DELIBERATELY decoupled from both the fab
-# slit pitch (60 μm, litho-verified) and the mm-scale crest spacing
-# (WATER_RIPPLE_WAVELENGTH_FRAC · art_side ≈ 3 mm): dividing the phase walk by the
-# crest wavelength made the water freeze (phase advanced ~0.13 of one step across
-# a whole hand rock, because a realistic 3-20° tilt only shifts the substrate
-# ~30-180 μm). At ~97 μm a ~4° tilt advances ~one full phase, so the current
-# visibly streams as the box rocks while the crest SPACING stays fab-accurate.
-# This is the water twin of the frame preview/fab period split (PREVIEW_BACK_
-# PERIOD_UM vs BACK_CARRIER_PERIOD_UM) — preview timing only, no effect on the
-# baked SVG/GDS scanimation. Verified: phaseStep sweeps multiple full phases and
-# per-frame water coverage diff rises ~15-25× vs the frozen wavelength divisor.
-WATER_PHASE_PITCH_PREVIEW_UM = 97.0
+# There is deliberately NO preview-only phase-advance pitch here. A
+# WATER_PHASE_PITCH_PREVIEW_UM = 97 µm constant used to be published as
+# ``water_phase_pitch_preview_um`` and documented (with a "Verified:" claim) as
+# the divisor that walks the ripple phase in the shader — but the two-plane
+# rewrite had already made the phase emerge GEOMETRICALLY, no line of GLSL ever
+# read the uniform, and the shader has since dropped it (see plate.frag's
+# water-scanimation FLOW RATE note). The flow rate is set by geometry: the outer
+# comb reveals the next 1/N lane after center_period/N µm of substrate parallax
+# (15 µm at the fab 60 µm pitch, N=4 → ~2.5°/phase through the T/n gap), which is
+# also the fab timing. Retune it via the barrier pitch or N — a preview-only
+# timing constant is exactly the procedural fake the renderer-honesty rule bans.
 WATER_SCAN_SLUG = "capybara-scanimation"
 # Barrier-interlace tilt-switch slugs (Task 3). These faces abandon the
 # phase-offset construction (A on front, B on back, half-period shift) for a TRUE
@@ -445,6 +455,33 @@ SWITCH_INTERLACE_SLUGS = frozenset(
 # the REAL slit barrier + interleaved ripple frames into the box back plate.
 WATER_SCAN_FAB_PITCH_UM = 60.0
 WATER_SCAN_FAB_CARRIER_UM = 24.0
+
+
+def _water_waterline_y(params: dict[str, Any] | None) -> float:
+    """Effective capybara waterline for a face — art-box normalized y, 0 = top.
+
+    The generator exposes it as the tunable ``waterline`` ParamSpec (0.4–0.85,
+    default ``WATERLINE_Y``); every plate-side consumer used to hardwire the
+    constant instead, so a face that set the param got its water band, calm patch
+    and depth shear baked at 0.66 anyway — and the preview shader, freezing the
+    same constant, had nothing to read. ONE resolver now feeds all three (the
+    centerpiece mask, the fab SVG bake, and the ``water_waterline_y`` the shader
+    binds), so mask and preview cannot drift.
+
+    Out-of-range/non-numeric values fall back to the default rather than raising:
+    the API validates against the ParamSpec (``service.validate_params``) but
+    direct callers do not, and the flow field divides by ``1 - waterline_y``.
+    """
+    from .patterns.artistic.capybara_scanimation import WATERLINE_Y
+
+    try:
+        value = float((params or {}).get("waterline", WATERLINE_Y))
+    except (TypeError, ValueError):
+        return WATERLINE_Y
+    # NaN-safe by construction (every comparison against NaN is False).
+    if not 0.0 < value < 1.0:
+        return WATERLINE_Y
+    return value
 
 
 def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
@@ -495,6 +532,7 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     art_half_w_uv = (0.5 * art_side_um / spec.width_um) if spec.width_um > 0 else 0.0
     art_half_h_uv = (0.5 * art_side_um / spec.height_um) if spec.height_um > 0 else 0.0
     water_ripple_um = WATER_RIPPLE_WAVELENGTH_FRAC * art_side_um if is_water else 0.0
+    waterline_y = _water_waterline_y(spec.pattern_params)
     return {
         # Frame shader gratings — the REAL fabricated pitch (the preview shader
         # draws these exact μm values × uPatternScale; see BoxScene binding and
@@ -528,18 +566,58 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         # (SWITCH_INTERLACE_SLUGS); every other face keeps the legacy 2-phase
         # centerpiece (which post-rebuild means the front-only shimmer faces).
         "switch_interlace": spec.pattern_slug in SWITCH_INTERLACE_SLUGS,
+        # Solved barrier REGISTRATION, published rather than rediscovered. One
+        # convention for all three consumers — the fab SVG bake
+        # (``_barrier_masks``), the preview shader, and the six standalone
+        # generators (``patterns/_helpers.barrier_lattice``): x in µm from the
+        # FACE CENTRE, open-slit centres at ``k·switch_interlace_period_um +
+        # switch_barrier_phase_um``, back channel A starting at that same
+        # boundary on its +x side — so a +x back shift (+tilt) reveals channel
+        # B, and the slit STRADDLES an A|B boundary (sharp at ±p/4, mud at
+        # ±p/2). The comb and the interlace share ONE period by construction,
+        # which is the whole registration.
+        #
+        # The phase is 0 because both lattices are anchored on the face centre,
+        # which is also the centerpiece art-box centre at every aperture — the
+        # extent-dependent phase ``barrier_lattice`` has to solve (its raster
+        # starts at the tile EDGE) does not arise on this path. Emitted anyway,
+        # unconditionally: a consumer that reads the number cannot drift from it,
+        # and a hardcoded phase constant in a shader is exactly how the generator
+        # side lost its registration. ``svg_bake_barrier_*`` carries the ACHIEVED
+        # lattice when the budget raster forces a coarser one.
+        "switch_interlace_period_um": FAB_CENTER_PERIOD_UM,
+        "switch_barrier_phase_um": 0.0,
         # Water scanimation (capybara back face). N>0 makes the shader render an
         # N-phase travelling-ripple flow over the back-art (water) region of the
         # centerpiece; N=0 leaves the 2-phase colibrí/globe switch untouched.
         "water_scan_n": water_n,
         "water_ripple_wavelength_um": water_ripple_um,
-        # Coarse PREVIEW phase-advance pitch (μm) — drives how fast the shader
-        # walks the ripple phase with tilt, decoupled from the mm-scale crest
-        # spacing so the preview water actually flows. 0 on non-water faces (the
-        # branch is off there anyway). Fab timing is unaffected. See constant.
-        "water_phase_pitch_preview_um": (
-            WATER_PHASE_PITCH_PREVIEW_UM if is_water else 0.0
+        # (No ``water_phase_pitch_preview_um``: the preview-only phase-advance
+        # pitch it carried was never read by any shader line and the uniform is
+        # gone — the ripple phase advances geometrically off center_period/N. See
+        # the note where WATER_PHASE_PITCH_PREVIEW_UM used to be defined.)
+        #
+        # Capybara BODY shimmer carrier: the period the fab path actually bakes
+        # over the dry animal (WATER_SCAN_FAB_CARRIER_UM, 24 µm) — its own field
+        # because it is NOT the frame carrier the preview had been reusing
+        # (carrier_period_um / its magnified twin), so the two disagreed by the
+        # 22-vs-24 µm gap on the one region the user looks at. True period plus a
+        # magnified preview twin, same split as the frame pair. 0 elsewhere.
+        "water_body_carrier_period_um": WATER_SCAN_FAB_CARRIER_UM if is_water else 0.0,
+        "water_body_carrier_preview_um": (
+            WATER_SCAN_FAB_CARRIER_UM * PREVIEW_PITCH_MAGNIFY if is_water else 0.0
         ),
+        # EFFECTIVE waterline (art-box normalized y, 0 = top) — the split the
+        # composed mask and the fab bake actually use, resolved from the face's
+        # ``waterline`` pattern param (see _water_waterline_y). The shader had
+        # frozen it as a const (FLOW_WATERLINE 0.66) while the param moved the
+        # baked band, calm patch and depth shear, so the preview stopped
+        # depicting its own litho mask at the range ends. Emitted
+        # UNCONDITIONALLY, like switch_barrier_phase_um: it is a pure number, a
+        # consumer that reads it cannot drift from it, and 0.0 on a non-water
+        # face would be a division trap for anything reading it before the
+        # uWaterScanN>0 gate.
+        "water_waterline_y": waterline_y,
         # Art-box uv rect (see above): the shader maps face-uv → art-box uv so the
         # flow wake registers to the capybara, and sizes the crest wavelength off
         # the art-box width. (halfW, halfH, centerX, centerY); center is the plate
@@ -734,13 +812,14 @@ def _centerpiece_masks(
         #     barrier + interleaved ripple frames from the standalone builder.
         import numpy as np
 
-        from .patterns.artistic.capybara_scanimation import WATERLINE_Y
         from .patterns.motifs.lab import capybara
 
         n = max(64, int(n_px))
         capy = capybara.capybara_silhouette((1.0, 1.0), n_grid=n)
         rows = (np.arange(n)[:, None] / n)  # y in 0..1, y-down (Pillow order)
-        below = np.broadcast_to(rows >= WATERLINE_Y, capy.shape)
+        # Honour the face's tunable waterline — the mask, the fab bake and the
+        # recipe_data the shader reads all resolve it here (_water_waterline_y).
+        below = np.broadcast_to(rows >= _water_waterline_y(params), capy.shape)
         # Dry capybara (above waterline) on the FRONT; water band (below the
         # line, not covered by the submerged body) on the BACK.
         front = capy & ~below
@@ -815,10 +894,22 @@ def _centerpiece_masks(
 #
 # Returns (side, side) bool for the FRONT centerpiece art or None if the slug
 # has no designed accent (so pre-accent behaviour is byte-identical). Kept
-# front-only: every plan accent lives on the front silhouette.
+# front-only: every plan accent lives on the front silhouette — which is exactly
+# why the barrier-interlace faces get NO accent at all (see the guard below).
 def _front_accent_zone(slug: str, art: "np.ndarray") -> "np.ndarray | None":
     import numpy as np
 
+    if slug in SWITCH_INTERLACE_SLUGS:
+        # Diffraction accents are incompatible with a barrier-interlace face by
+        # construction. The accent is cut from the FRONT art, and on these faces
+        # the front art is switch channel A (gear-quill-switch's hub ellipse is
+        # a piece of the gear); the front mask does NOT move with tilt, so any
+        # feature shaped from A is a static residual of image A visible at every
+        # angle — so A could never fully vanish when B is gated in. That is the
+        # precise residual SWITCH_INTERLACE_SLUGS and CLAUDE.md's image-switch
+        # rule exist to eliminate. One guard for every consumer: the preview
+        # stamp, ensure_plate_svg, and export_fine all read this helper.
+        return None
     h, w = art.shape
     ys = (np.arange(h)[:, None] + 0.5) / h  # 0..1, y-down
     xs = (np.arange(w)[None, :] + 0.5) / w
@@ -908,7 +999,16 @@ def _paste_centerpiece(
         pmask = Image.fromarray((a.astype(np.uint8) * 255), "L")
         dst.paste(stamp, box=(box if box is not None else (x0, y0)), mask=pmask)
 
-    _paste(front, front_art, with_accent=True)
+    # Accent stamp only on the non-interlace faces: on a barrier-switch face the
+    # FRONT plane must carry no image-shaped feature at all, so the preview must
+    # not paint RAINBOW_LEVEL over channel-A geometry either (the shader reads
+    # that level as gold + spectral sheen on the front plane). _front_accent_zone
+    # refuses these slugs too — this makes the intent visible at the paste.
+    _paste(
+        front,
+        front_art,
+        with_accent=spec.pattern_slug not in SWITCH_INTERLACE_SLUGS,
+    )
 
     if spec.pattern_slug == WATER_SCAN_SLUG:
         # WATER FULL WIDTH: the capybara body stays in the centered art square,
@@ -924,8 +1024,8 @@ def _paste_centerpiece(
         aperture_px = max(side_px, int(round(_aperture_width_um(spec) / pitch_um)))
         col_off = (aperture_px - side_px) // 2
         rows = np.arange(side_px)[:, None] / side_px  # 0..1 y-down over the square
-        from .patterns.artistic.capybara_scanimation import WATERLINE_Y as _WL
-        below = np.broadcast_to(rows >= _WL, (side_px, aperture_px))
+        _wl = _water_waterline_y(spec.pattern_params)
+        below = np.broadcast_to(rows >= _wl, (side_px, aperture_px))
         water_full = np.array(below, dtype=bool)  # open water everywhere below line
         # Carve the submerged body out of the central square columns (reuse the
         # square back-art, which is already `below & ~capy`).
@@ -1031,9 +1131,24 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     """
     central_cls = registry[spec.pattern_slug]
     merged_params = {**central_cls.defaults(), **spec.pattern_params}
+    # The ParamSpec bounds check used to ride in for free on the materialize call
+    # this replaced; keep it explicit so an out-of-range face param still raises
+    # (the /plates and /boxes routes surface it as a 400/422) instead of sizing a
+    # lattice off it.
+    validate_params(spec.pattern_slug, merged_params)
 
-    central_manifest = materialize_pattern(spec.pattern_slug, merged_params)
-    central_pitch = central_manifest["pixel_pitch_um"]
+    # METADATA ONLY. The centerpiece is drawn from the motif silhouettes
+    # (_paste_centerpiece / _centerpiece_masks) and the frame from generate_frame,
+    # so the central pattern's POLYGONS are never used on this path — the compose
+    # consumes exactly four things: the pitch below, the min feature, and the
+    # ``extra`` / ``recipe_data`` blocks the plate manifest carries through.
+    # Materializing the whole variant for those cost 1-4 s per face (8-20 s per
+    # cold six-face box). Each generator overrides the metadata accessors with the
+    # same arithmetic its generate() uses; the two that MEASURE a field off their
+    # own emitted raster (capybara-scanimation, bitmap-halftone) still fall back
+    # to generate() there. See Pattern.metadata.
+    central_meta = central_cls.metadata(**merged_params)
+    central_pitch = central_meta.pixel_pitch_um
 
     # Plate canvas — pitch chosen so the longest plate side caps at ~1500 px.
     # We deliberately stay below the rasterize cap (16M px) by a wide margin
@@ -1117,99 +1232,210 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     back_margin = spec.weld_margin_um if spec.back_margin_um is None else spec.back_margin_um
     _zero_rim(back, back_margin)
 
-    front.save(out_dir / "front.png")
-    back.save(out_dir / "back.png")
+    save_png_atomic(front, out_dir / "front.png")
+    save_png_atomic(back, out_dir / "back.png")
     thumb = make_thumbnail(front, back, size=320)
-    thumb.save(out_dir / "thumbnail.png")
+    save_png_atomic(thumb, out_dir / "thumbnail.png")
 
     # The frame scene (potentially MBs of segment dicts) goes to a sidecar,
     # NOT into manifest.json: embedding it made every plate manifest 0.4-2.3
     # MB and dominated both the warm box regen (6 × json decode) and the cold
-    # compose's manifest encode. Nothing at runtime consumes it — the
-    # frontend never reads it, export strips it, and ensure_plate_svg
-    # regenerates the scene deterministically from the spec — so the sidecar
-    # is purely for debugging/inspection.
+    # compose's manifest encode. The frontend never reads it and export strips
+    # it from the fab bundle, but it is NOT debug-only: the fab SVG bake and
+    # export_fine's zone masks load it back (``frame_scene_for_plate``) instead
+    # of regrowing the band, which is what keeps all three renders of a face
+    # pinned to one scene. Keyed to PLATE_COMPOSE_VERSION by that reader.
     frame_scene = scene.to_dict() if scene is not None else {"segments": [], "flowers": [], "leaves": [], "max_t": 0.0}
-    (out_dir / "scene.json").write_text(json.dumps(frame_scene))
+    write_json_atomic(out_dir / "scene.json", frame_scene, indent=None)
+
+    # The standalone variant's recipe_data, reproduced without materializing it:
+    # ``_materialize_locked`` stamps one ``<name>_png`` URL per extra layer after
+    # the generator's own keys, and the plate manifest carries the merged block
+    # through. Same variant id and same URL builder as that path, so the strings
+    # are identical — the layer PNGs themselves only exist once someone actually
+    # materializes the standalone variant (nothing on the plate path reads them;
+    # the composed plate binds foliage_moire against its own front/back masks).
+    central_variant = variant_key(merged_params)
+    central_recipe_data = {
+        **central_meta.recipe_data,
+        **{
+            f"{name}_png": extra_layer_url(spec.pattern_slug, central_variant, name)
+            for name in central_meta.extra_layer_names
+        },
+    }
 
     return {
-        "central_manifest": central_manifest,
         "pixel_pitch_um": plate_pitch,
-        "min_feature_um": central_manifest["min_feature_um"],
+        "min_feature_um": central_meta.min_feature_um,
+        "central_extra": central_meta.extra,
+        "central_recipe_data": central_recipe_data,
     }
+
+
+# Bump when the composed-plate output changes under an unchanged spec hash:
+# ``_raster_compose_plate``, ``_paste_centerpiece``, ``_centerpiece_masks``, the
+# mask level palette (FRAME_LEVEL / ART_LEVEL / FRAME_BUCKET* / RAINBOW_LEVEL),
+# or ``_carrier_recipe_data`` (including the render_recipe the manifest forces
+# and every shader knob it emits). ``plate_hash`` covers spec fields only, so a
+# cached manifest+PNG pair is otherwise served forever after a code or constant
+# change — the same trap PLATE_SVG_VERSION already closes on the fab SVGs. See
+# CLAUDE.md; a mismatch on the hit path is treated as a miss.
+# v2: first versioned compose — wave 1 changed compose geometry and recipe_data
+#     (front water band, barrier registration, litho floor) with no key to
+#     invalidate the caches it had already written.
+# v3: recipe_data publishes the solved barrier registration
+#     (switch_interlace_period_um / switch_barrier_phase_um) for the preview
+#     shader; the mask PNGs are unchanged (the barrier lives in the fab bake, see
+#     PLATE_SVG_VERSION v6).
+# v4: recipe_data publishes the EFFECTIVE capybara waterline
+#     (``water_waterline_y``) and the composed centerpiece mask honours the
+#     ``waterline`` pattern param instead of the module constant, so the shader's
+#     water/body split follows the mask it is drawing. Mask PNGs move only on a
+#     face that actually sets the param (default-param output is unchanged).
+# v5: recipe_data drops the dead ``water_phase_pitch_preview_um`` key (and its
+#     WATER_PHASE_PITCH_PREVIEW_UM constant) — no shader line ever read it and the
+#     uniform is gone. recipe_data is part of the cached manifest, so a warm cache
+#     would otherwise keep serving the key forever; a consumer added later against
+#     a stale manifest would find it on some faces and not others. Mask PNGs are
+#     unchanged by this bump.
+PLATE_COMPOSE_VERSION = 5
+
+
+def frame_scene_for_plate(
+    plate_dir: Path,
+    manifest: dict[str, Any] | None,
+    rect: RectFrame,
+    frame_params: FrameParams,
+) -> Scene:
+    """The composed plate's frame scene: ``scene.json`` sidecar first, regrow on miss.
+
+    ``_raster_compose_plate`` writes the sidecar from exactly this
+    ``(rect, frame_params)`` pair, and the grower is seed-deterministic, so
+    reusing it is not merely equivalent — it is the SAME scene the cached
+    preview PNG was painted from, which is what the "fab SVG = preview PNG"
+    contract wants. Regrowing instead costs 1-3 s per face and would silently
+    diverge from a cached PNG whenever the grower code changed without a
+    version bump.
+
+    Gated on the manifest's ``compose_version`` so a sidecar left by an older
+    compose cannot leak into a plate that the current compose would rebuild.
+    """
+    if manifest is not None and manifest.get("compose_version") == PLATE_COMPOSE_VERSION:
+        data = read_json_cache(plate_dir / "scene.json")
+        if data is not None and "segments" in data:
+            return Scene.from_dict(data)
+    return generate_frame(rect, frame_params)
 
 
 def materialize_plate(spec: PlateSpec, force: bool = False) -> dict[str, Any]:
-    """Compose the plate, cache PNG/SVG/manifest under ``data/plates/<hash>/``."""
+    """Compose the plate, cache PNG/SVG/manifest under ``data/plates/<hash>/``.
+
+    Serialized per plate hash (see ``service.cache_lock``): a box regen fans six
+    faces out sequentially, and two overlapping regens of the same face would
+    otherwise both compose into the same directory. A manifest that is
+    unreadable or carries a stale ``compose_version`` counts as a miss.
+    """
     PLATES_ROOT.mkdir(parents=True, exist_ok=True)
     pid = plate_hash(spec)
+    with cache_lock(f"plate:{pid}"):
+        return _materialize_plate_locked(spec, pid, force)
+
+
+def _materialize_plate_locked(spec: PlateSpec, pid: str, force: bool) -> dict[str, Any]:
     out = PLATES_ROOT / pid
     manifest_path = out / "manifest.json"
-    if manifest_path.exists() and not force:
-        cached = json.loads(manifest_path.read_text())
-        _log.info("materialize_plate cache_hit id=%s slug=%s", pid, spec.pattern_slug)
-        return cached
+    if not force:
+        cached = read_json_cache(manifest_path)
+        if cached is not None and cached.get("compose_version") == PLATE_COMPOSE_VERSION:
+            _log.info("materialize_plate cache_hit id=%s slug=%s", pid, spec.pattern_slug)
+            return cached
+        if manifest_path.exists():
+            _log.info(
+                "materialize_plate regenerate id=%s slug=%s reason=%s",
+                pid,
+                spec.pattern_slug,
+                "unreadable_manifest"
+                if cached is None
+                else f"compose_version {cached.get('compose_version')!r} != {PLATE_COMPOSE_VERSION}",
+            )
 
-    t0 = time.perf_counter()
-    out.mkdir(parents=True, exist_ok=True)
-    raster_result = _raster_compose_plate(spec, out)
-    central_manifest = raster_result["central_manifest"]
-    pitch = raster_result["pixel_pitch_um"]
+    # Everything below is the heavy path, so it runs under the process-wide
+    # compute gate (CLAUDE.md machine constraint; see service.heavy_compute_gate).
+    # Taken HERE rather than around the whole function so the cache-hit return
+    # above — six of them on a warm box regen — never queues behind an unrelated
+    # cold compose.
+    with heavy_compute_gate:
+        t0 = time.perf_counter()
+        out.mkdir(parents=True, exist_ok=True)
+        raster_result = _raster_compose_plate(spec, out)
+        pitch = raster_result["pixel_pitch_um"]
 
-    # SVG is built on demand by the /export endpoint (see ensure_plate_svg)
-    # — the polygon path is ~40× slower than raster and the interactive UI
-    # never needs it. Manifest carries empty svg paths until requested.
-    svg_ok = (out / "front.svg").exists() and (out / "back.svg").exists()
+        # SVG is built on demand by the /export endpoint (see ensure_plate_svg)
+        # — the polygon path is ~40× slower than raster and the interactive UI
+        # never needs it. Manifest carries empty svg paths until requested.
+        # Any pair already in this slot was baked from the geometry we just
+        # replaced (force, or a PLATE_COMPOSE_VERSION bump), and it still carries
+        # the current PLATE_SVG_VERSION marker — so ensure_plate_svg would happily
+        # serve it and break the fab-SVG = preview-PNG contract. Drop it.
+        for stale_svg in (out / "front.svg", out / "back.svg"):
+            stale_svg.unlink(missing_ok=True)
 
-    central_cls = registry[spec.pattern_slug]
-    manifest = {
-        "kind": "plate",
-        "id": pid,
-        "spec": spec.to_dict(),
-        "name": spec.label or central_cls.name,
-        "description": central_cls.description,
-        "tags": central_cls.tags,
-        "substrate": {
-            "thickness_um": spec.glass.thickness_um,
-            "material": spec.glass.material,
-            "n": spec.glass.n,
-        },
-        "extent_um": [spec.width_um, spec.height_um],
-        "pixel_pitch_um": pitch,
-        "min_feature_um": raster_result["min_feature_um"],
-        "extra": {
-            **central_manifest.get("extra", {}),
-            "central_pattern": spec.pattern_slug,
-            "aperture_um": _aperture(spec),
-        },
-        # The plate is a box-first moiré carrier: front foliage grating vs
-        # back uniform grating, beat procedurally in the shader — NOT the
-        # central pattern's own recipe. Force the foliage_moire recipe and
-        # carry the grating knobs regardless of which central pattern seeded
-        # the metadata.
-        "render_recipe": "foliage_moire",
-        # frame_scene deliberately NOT embedded — see _raster_compose_plate
-        # (scene.json sidecar keeps the manifest ~20 KB instead of ~MBs).
-        "recipe_data": {**central_manifest.get("recipe_data", {}), **_carrier_recipe_data(spec)},
-        "files": {
-            "front_png": f"/data/plates/{pid}/front.png",
-            "back_png": f"/data/plates/{pid}/back.png",
-            "front_svg": f"/data/plates/{pid}/front.svg" if svg_ok else "",
-            "back_svg": f"/data/plates/{pid}/back.svg" if svg_ok else "",
-            "thumbnail": f"/data/plates/{pid}/thumbnail.png",
-        },
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    dt_ms = int((time.perf_counter() - t0) * 1000)
-    _log.info(
-        "materialize_plate done id=%s slug=%s %dms pitch=%.3f svg=%s",
-        pid,
-        spec.pattern_slug,
-        dt_ms,
-        pitch,
-        svg_ok,
-    )
-    return manifest
+        central_cls = registry[spec.pattern_slug]
+        manifest = {
+            "kind": "plate",
+            "id": pid,
+            # Compose-code marker; a mismatch on the hit path is a miss (plate_hash
+            # covers spec fields only). See PLATE_COMPOSE_VERSION.
+            "compose_version": PLATE_COMPOSE_VERSION,
+            "spec": spec.to_dict(),
+            "name": spec.label or central_cls.name,
+            "description": central_cls.description,
+            "tags": central_cls.tags,
+            "substrate": {
+                "thickness_um": spec.glass.thickness_um,
+                "material": spec.glass.material,
+                "n": spec.glass.n,
+            },
+            "extent_um": [spec.width_um, spec.height_um],
+            "pixel_pitch_um": pitch,
+            "min_feature_um": raster_result["min_feature_um"],
+            "extra": {
+                **raster_result["central_extra"],
+                "central_pattern": spec.pattern_slug,
+                "aperture_um": _aperture(spec),
+            },
+            # The plate is a box-first moiré carrier: front foliage grating vs
+            # back uniform grating, beat procedurally in the shader — NOT the
+            # central pattern's own recipe. Force the foliage_moire recipe and
+            # carry the grating knobs regardless of which central pattern seeded
+            # the metadata.
+            "render_recipe": "foliage_moire",
+            # frame_scene deliberately NOT embedded — see _raster_compose_plate
+            # (scene.json sidecar keeps the manifest ~20 KB instead of ~MBs).
+            "recipe_data": {
+                **raster_result["central_recipe_data"],
+                **_carrier_recipe_data(spec),
+            },
+            "files": {
+                "front_png": f"/data/plates/{pid}/front.png",
+                "back_png": f"/data/plates/{pid}/back.png",
+                "front_svg": "",
+                "back_svg": "",
+                "thumbnail": f"/data/plates/{pid}/thumbnail.png",
+            },
+        }
+        # Published last and by rename — the PNGs above are already in place, so a
+        # readable manifest implies a complete slot.
+        write_json_atomic(manifest_path, manifest)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        _log.info(
+            "materialize_plate done id=%s slug=%s %dms pitch=%.3f",
+            pid,
+            spec.pattern_slug,
+            dt_ms,
+            pitch,
+        )
+        return manifest
 
 
 def _mask_rim(grid: "np.ndarray", margin_um: float, pitch_um: float) -> None:
@@ -1264,6 +1490,115 @@ def _grating_grid(
     return frac < duty
 
 
+# Cells per barrier period, floor and quantum: the interlace channel is p/2 and
+# each half of the open slit is p/4, so only a MULTIPLE OF FOUR cells puts the
+# A|B boundary and both slit edges on cell boundaries. Four is the coarsest
+# lattice that still has a switch (2-cell channel, 2-cell slit).
+BARRIER_COLS_QUANTUM = 4
+# Relative period deviation the raster snap is allowed to introduce silently.
+# Above it the baked switch crosses at a visibly different tilt angle than the
+# stamped one, so it is logged at WARNING next to the coarse-bake record.
+BARRIER_SNAP_TOL = 0.02
+
+
+def _barrier_plate_lattice(period_um: float, pitch_um: float) -> tuple[int, float]:
+    """Snap a barrier period onto the plate raster: ``(cols_per_period, period_um)``.
+
+    The plate compositor cannot call ``_helpers.barrier_lattice`` verbatim — that
+    solver derives the back RASTER from the slit lattice, whereas here the raster
+    pitch is already fixed by the plate's lattice budget — but the constraint that
+    matters is the same one: the front comb and the back A|B interlace must live on
+    ONE lattice, so their periods are equal by construction instead of by two float
+    phases agreeing. See its docstring for the physics, and for why the straddle
+    class (channel A on the +x side of every slit) is the class both paths owe the
+    manifest's ``switch_half_angle_deg``.
+
+    On a raster that means a whole number of cells per period, and a multiple of
+    ``BARRIER_COLS_QUANTUM`` of them. A fractional cell count is what the two
+    analytic phases used to produce: the printed slit centre lands up to half a
+    cell off the printed channel boundary and the printed slit width alternates
+    between floor and ceil cells — at the ~11 cells per period the default box
+    bakes at, ~18 % of the ±p/4 shift that only has ~2.7 cells of margin.
+
+    When the requested period is under four cells the raster simply cannot carry
+    it; the returned period is then COARSER than asked (the caller reports the
+    deviation, which scales the switch tilt angle by the same factor).
+    """
+    q = BARRIER_COLS_QUANTUM
+    cols = max(q, q * int(round(period_um / (q * pitch_um))))
+    return cols, cols * pitch_um
+
+
+def _barrier_masks(
+    w_px: int, cols_per_period: int, anchor_col: int
+) -> tuple["np.ndarray", "np.ndarray"]:
+    """1-D column masks of an exactly registered barrier: ``(comb_bar, lane_a)``.
+
+    ``comb_bar`` is the opaque FRONT bar (its complement is the open slit),
+    ``lane_a`` the BACK channel-A lane. Both are pure column-index arithmetic on
+    one shared lattice, which is what makes the registration exact: with ``c``
+    cells per period the A|B boundary sits on the cell edge at ``anchor_col`` and
+    the open slit is the ``c/2`` cells centred on that SAME edge, so every
+    open-slit centre is a B→A boundary with channel A on its +x side. That is the
+    straddle class and the "+tilt reveals B" parity the six generators solve for.
+
+    Vertical bars only (``CENTER_SWITCH_AXIS_DEG`` = 0, the same assumption
+    ``_check_front_comb_pure`` makes); a rotated barrier would have to go back
+    through ``_grating_grid`` and give up cell-exact registration.
+    """
+    import numpy as np
+
+    c = cols_per_period
+    half = c // 2
+    quarter = c // 4
+    rel = (np.arange(w_px) - anchor_col) % c
+    lane_a = rel < half
+    comb_bar = ((rel + quarter) % c) >= half
+    return comb_bar, lane_a
+
+
+def _check_front_comb_pure(
+    comb: "np.ndarray",
+    box: tuple[int, int, int, int],
+    plate_id: str,
+    slug: str,
+) -> None:
+    """Contract check: a barrier-interlace front comb carries NO image feature.
+
+    On SWITCH_INTERLACE_SLUGS the front (outer) layer must be a pure period-p
+    comb across the art box. The front mask does not move with tilt, so any
+    row-to-row variation in its column support is a static silhouette residual
+    that no tilt angle can gate out — the banned front-image construction. The
+    comb axis is CENTER_SWITCH_AXIS_DEG = 0 (vertical bars), so "pure" is
+    exactly "every non-empty art-box row has identical column support"; rows the
+    keep-out rim cleared entirely are skipped. Cheap: one row-broadcast compare
+    over the art-box slice, no GEOS.
+
+    Logged, not raised — a residual is an upstream design defect to fix, not a
+    reason to refuse to serve an otherwise valid fab pair.
+    """
+    import numpy as np
+
+    y0, y1, x0, x1 = box
+    sub = comb[y0:y1, x0:x1]
+    if sub.size == 0:
+        return
+    rows = sub[sub.any(axis=1)]
+    if rows.shape[0] == 0:
+        return
+    differs = (rows != rows[0]).any(axis=1)
+    if bool(differs.any()):
+        _log.error(
+            "barrier-interlace FRONT comb is not a pure period-p comb: %d of %d "
+            "art-box rows differ in column support, so the front plane carries an "
+            "image-shaped feature that cannot vanish under tilt (plate=%s slug=%s)",
+            int(differs.sum()),
+            int(rows.shape[0]),
+            plate_id,
+            slug,
+        )
+
+
 def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     """Lazily build the SVG fab pair for an existing plate (box-first moiré).
 
@@ -1279,12 +1614,17 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     real gold lines the fab can write. Respects the 400k lattice budget by
     rasterizing at a bounded pitch, so line count stays in the thousands.
 
-    Returns (front, back) paths or None if the plate is unknown.
+    On a real (tens-of-mm) plate that budget pitch is far coarser than the
+    design periods, so the baked geometry is COARSENED (see the bake_scale block
+    below) — a preview-grade mask, not a production one. When that happens the
+    EFFECTIVE baked periods are stamped into the manifest's ``recipe_data``
+    (``svg_bake_*`` + ``svg_bake_coarsened``) and logged at WARNING, so nothing
+    downstream can mistake these files for true-pitch masks; true-pitch geometry
+    comes from ``export_fine.build_plate_fine`` / a tiled GDS export.
+
+    Returns (front, back) paths or None if the plate is unknown (or its manifest
+    is unreadable — the spec to bake from lives in it).
     """
-    import numpy as np
-
-    from .patterns._helpers import MAX_LATTICE_CELLS, check_lattice_budget, raster_to_polygons
-
     plate_dir = PLATES_ROOT / plate_id
     manifest_path = plate_dir / "manifest.json"
     if not manifest_path.exists():
@@ -1293,8 +1633,29 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     back_svg = plate_dir / "back.svg"
     if front_svg.exists() and back_svg.exists() and _svg_is_current(front_svg):
         return front_svg, back_svg
+    # Same lock key as materialize_plate: the bake is heavy AND rewrites the
+    # shared manifest (svg_bake_* keys), so it must not interleave with a
+    # recompose of the same slot or with a second export of the same plate.
+    with cache_lock(f"plate:{plate_id}"):
+        if front_svg.exists() and back_svg.exists() and _svg_is_current(front_svg):
+            return front_svg, back_svg
+        return _bake_plate_svg(plate_id)
 
-    manifest = json.loads(manifest_path.read_text())
+
+def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
+    """Raster + write the fab SVG pair. Caller holds the plate cache lock."""
+    import numpy as np
+
+    from .patterns._helpers import MAX_LATTICE_CELLS, check_lattice_budget, raster_to_polygons
+
+    plate_dir = PLATES_ROOT / plate_id
+    manifest_path = plate_dir / "manifest.json"
+    front_svg = plate_dir / "front.svg"
+    back_svg = plate_dir / "back.svg"
+
+    manifest = read_json_cache(manifest_path)
+    if manifest is None or "spec" not in manifest:
+        return None
     spec = PlateSpec.from_dict(manifest["spec"])
     rd = _carrier_recipe_data(spec)
     back_period = float(rd["fab_back_period_um"])
@@ -1317,13 +1678,19 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     # is scale-free, so a coarser-but-legal grating carries the identical beat;
     # a genuinely sub-30 µm production mask would come from a tiled/streamed
     # GDS export, not this single-shot lazy SVG path.
+    #
+    # The coarsening is a real substitution (order-of-magnitude on a 50 mm face),
+    # so it is NOT silent: ``bake_scale`` is logged at WARNING and the effective
+    # periods land in the manifest as ``svg_bake_*`` below. The design periods in
+    # ``fab_*`` stay untouched — the pair of numbers is what tells a reader these
+    # SVGs are preview-grade.
     ideal_pitch = min(back_period, front_period) / 4.0
     budget_pitch = math.sqrt(W * H / (0.92 * MAX_LATTICE_CELLS))
     pitch = max(ideal_pitch, budget_pitch)
-    if pitch > ideal_pitch:
-        scale = pitch / ideal_pitch
-        back_period *= scale
-        front_period *= scale
+    bake_scale = (pitch / ideal_pitch) if ideal_pitch > 0 else 1.0
+    if bake_scale > 1.0:
+        back_period *= bake_scale
+        front_period *= bake_scale
     fw = max(1, int(round(W / pitch)))
     fh = max(1, int(round(H / pitch)))
     check_lattice_budget(fw * fh, "plate grating raster", pitch_um=pitch, w=fw, h=fh)
@@ -1332,14 +1699,124 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     # offset baked into the back globe. Coarsen with the frame grating if the
     # budget forced a coarser pitch (same scale factor keeps the beat).
     center_period = float(rd.get("fab_center_period_um", rd["center_period_um"]))
-    if pitch > ideal_pitch:
-        center_period *= pitch / ideal_pitch
+    if bake_scale > 1.0:
+        center_period *= bake_scale
     center_axis = float(rd["switch_axis_deg"])
+
+    # Effective-bake record. Written into the manifest's recipe_data next to the
+    # (unchanged) design ``fab_*`` fields so the export bundle is self-consistent:
+    # a consumer reading fab_back_period_um==22 alongside svg_bake_back_period_um
+    # ==330 knows exactly what these SVGs are. Empty dict when the bake is
+    # period-exact AND the face is not a barrier interlace (whose lattice snap is
+    # recorded even at a period-exact pitch); the keys are STRIPPED from a stale
+    # manifest below either way (a finer plate must not inherit a coarse record).
+    svg_bake: dict[str, Any] = {}
+    if bake_scale > 1.0:
+        svg_bake = {
+            "svg_bake_coarsened": True,
+            "svg_bake_scale": bake_scale,
+            "svg_bake_pitch_um": pitch,
+            "svg_bake_back_period_um": back_period,
+            "svg_bake_front_period_um": front_period,
+            "svg_bake_center_period_um": center_period,
+        }
+        _log.warning(
+            "plate SVG bake COARSENED %.2f× to fit the lattice budget "
+            "(raster pitch %.3g µm): back %.4g→%.4g µm, front %.4g→%.4g µm, "
+            "center %.4g→%.4g µm. front.svg/back.svg are PREVIEW-grade, not fab "
+            "masks — use export_fine/tiled GDS for true-pitch geometry "
+            "(plate=%s slug=%s)",
+            bake_scale,
+            pitch,
+            back_period / bake_scale,
+            back_period,
+            front_period / bake_scale,
+            front_period,
+            center_period / bake_scale,
+            center_period,
+            plate_id,
+            spec.pattern_slug,
+        )
     is_interlace = spec.pattern_slug in SWITCH_INTERLACE_SLUGS
     aperture = _aperture(spec)
     side_px = max(8, int(round(CENTERPIECE_FILL * aperture / pitch))) if aperture > 0 else 0
     cxg = fw // 2
     cyg = fh // 2
+
+    # Barrier REGISTRATION on the plate raster. The front comb and the back A|B
+    # lanes used to be two independent analytic gratings agreeing only through a
+    # pair of float phase constants (-0.25 and 0.0) written 60 lines apart in two
+    # different blocks; at a raster pitch that does not divide the period a whole
+    # number of times that agreement does not survive sampling. Solve ONE lattice
+    # here — cell-exact period, cell-exact phase, both layers built from it below.
+    #
+    # Anchored on ``cxg`` — the grid centre column, which is also the centerpiece
+    # art-box centre column — so the registration is independent of the aperture:
+    # the extent-dependent class flip ``_helpers.barrier_lattice`` has to solve for
+    # (its raster starts at the tile EDGE) cannot arise here, and the published
+    # ``switch_barrier_phase_um`` = 0 stays true at every plate size.
+    barrier_cols = 0
+    barrier_anchor = cxg
+    barrier_comb: "np.ndarray | None" = None
+    barrier_lane_a: "np.ndarray | None" = None
+    if is_interlace:
+        if abs(center_axis % 180.0) > 1e-9:
+            # Cell-exact registration is column arithmetic, so it only exists for
+            # vertical bars. A rotated switch axis would have to go back through
+            # _grating_grid and give the registration up — and _check_front_comb_pure
+            # would stop meaning anything either. Loud, but keep baking.
+            _log.error(
+                "barrier-interlace face has a non-vertical switch axis (%.3f°); the "
+                "cell-exact barrier lattice below assumes vertical bars, so the "
+                "baked comb ignores the rotation (plate=%s slug=%s)",
+                center_axis,
+                plate_id,
+                spec.pattern_slug,
+            )
+        want_period = center_period
+        barrier_cols, center_period = _barrier_plate_lattice(want_period, pitch)
+        barrier_comb, barrier_lane_a = _barrier_masks(fw, barrier_cols, barrier_anchor)
+        # The A|B boundary is the LEFT EDGE of column ``barrier_anchor``; x = 0 is
+        # the centre of column (fw-1)/2 (see ``_grating_grid``). Zero on an even
+        # grid, half a cell on an odd one — reported, not hidden, because it is the
+        # number a shader would need to draw the same lattice.
+        barrier_phase_um = (barrier_anchor - (fw - 1) / 2.0 - 0.5) * pitch
+        period_err = center_period - want_period
+        svg_bake.update(
+            {
+                # Achieved comb == interlace period, and the witnesses that say so
+                # (the generator side publishes the same three in ``extra``).
+                "svg_bake_barrier_period_um": center_period,
+                "svg_bake_barrier_cell_um": pitch,
+                "svg_bake_barrier_cols_per_period": barrier_cols,
+                "svg_bake_barrier_phase_um": barrier_phase_um,
+                "svg_bake_barrier_period_err_um": period_err,
+            }
+        )
+        if svg_bake.get("svg_bake_coarsened"):
+            # The coarse-bake record above was stamped from the pre-snap period.
+            svg_bake["svg_bake_center_period_um"] = center_period
+        if abs(period_err) > BARRIER_SNAP_TOL * want_period:
+            _log.warning(
+                "barrier lattice SNAPPED to the plate raster: %d cells × %.4g µm "
+                "= %.4g µm comb+interlace period against the requested %.4g µm "
+                "(%+.1f %%, so the baked switch crosses at %.2f× the tilt angle "
+                "the manifest stamps). Registration itself is EXACT at the snapped "
+                "period — every open-slit centre sits on an A|B channel boundary — "
+                "but the raster pitch is set by the lattice budget and only a whole "
+                "multiple-of-%d cell count can hold that. front.svg/back.svg are "
+                "preview-grade here; true-pitch barrier geometry comes from "
+                "export_fine (plate=%s slug=%s)",
+                barrier_cols,
+                pitch,
+                center_period,
+                want_period,
+                100.0 * period_err / want_period,
+                center_period / want_period,
+                BARRIER_COLS_QUANTUM,
+                plate_id,
+                spec.pattern_slug,
+            )
 
     def _center_masks() -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
         """Full-grid (front_art, back_art, front_accent) bools for the aperture.
@@ -1391,12 +1868,20 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     # it is a barrier-grid water scanimation. Bake the STANDALONE builder's real
     # geometry into the aperture so front.svg/back.svg carry (a) the capybara
     # shimmer + a slit barrier over the water, and (b) the N interleaved ripple
-    # frames — the genuine scanimation the box back plate actually serves. Both
-    # are full-grid bool overrides consumed below (None for every other slug, so
-    # their fab output is byte-identical).
+    # frames. Both are full-grid bool overrides consumed below (None for every
+    # other slug, so their fab output is byte-identical).
+    # CAVEAT: the builder is sampled at the plate's coarse budget pitch, so the
+    # 60/15/45 µm barrier geometry ALIASES here and the interleave can degenerate
+    # to empty (see `water_scan_empty`). This path is preview-grade like the rest
+    # of the coarse bake; the period-exact scanimation rects live in export_fine.
     water_front_extra: "np.ndarray | None" = None
     water_back: "np.ndarray | None" = None
     water_band_placed: "np.ndarray | None" = None
+    # True when the interleave returned NOTHING at this raster pitch (the coarse
+    # budget pitch leaves <1 cell per 15 µm slot, so `_interleave_phases`'
+    # atomic-slot floor rejects every slot). Consumed by the BACK block, which
+    # then keeps the plain carrier across the band instead of clearing it.
+    water_scan_empty = False
     if spec.pattern_slug == WATER_SCAN_SLUG and side_px > 0:
         from .patterns.artistic import capybara_scanimation as _capyscan
 
@@ -1409,7 +1894,7 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             frame_pitch_um=WATER_SCAN_FAB_PITCH_UM,
             n_phases=WATER_SCAN_N_PHASES,
             carrier_period_um=WATER_SCAN_FAB_CARRIER_UM,
-            waterline_y=_capyscan.WATERLINE_Y,
+            waterline_y=_water_waterline_y(spec.pattern_params),
             n_grid=side_px,
             water_extent_um=_aperture_width_um(spec),
         )
@@ -1418,6 +1903,25 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         front_side = b["capy_shimmer"] | barrier_bars
         # BACK: interleaved ripple frames (all N phases packed into 1/N slots).
         back_side = b["back_water"]
+        if not back_side.any():
+            # 60 µm frame pitch / 4 phases = a 15 µm slot, i.e. ~0.2 cells at the
+            # coarse budget pitch: `_interleave_phases`' litho-floor coverage test
+            # fails for every slot and the mask comes back all-False. Do NOT clear
+            # the carrier for it — an empty "animated region" would print as bare
+            # glass across the full-width water band (~30 mm on the default box).
+            water_scan_empty = True
+            _log.warning(
+                "water scanimation interleave EMPTY at raster pitch %.3g µm "
+                "(frame pitch %.3g µm / %d phases = %.3g µm slot); back.svg keeps "
+                "the plain carrier across the water band and carries NO "
+                "scanimation — true-pitch geometry comes from export_fine "
+                "(plate=%s)",
+                pitch,
+                WATER_SCAN_FAB_PITCH_UM,
+                WATER_SCAN_N_PHASES,
+                WATER_SCAN_FAB_PITCH_UM / WATER_SCAN_N_PHASES,
+                plate_id,
+            )
 
         def _place_side(side_mask: "np.ndarray") -> "np.ndarray":
             w_px = side_mask.shape[1]
@@ -1443,7 +1947,7 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         rect = RectFrame(width_um=active_w, height_um=active_h)
         frame_params = spec.frame.to_frame_params()
         frame_params.fill_interior = False  # perimeter band, center open for art
-        scene = generate_frame(rect, frame_params)
+        scene = frame_scene_for_plate(plate_dir, manifest, rect, frame_params)
         # Per-motif graylevel silhouette — the same angle-bucket encoding the
         # preview uses, so the fab lines match the shimmer the user sees.
         sil_img = render_scene_to_image(
@@ -1484,28 +1988,68 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         #     cover every column any back lane can slide under within the first
         #     zone (≥ p/2 beyond the union), so the full art-box square is the
         #     clean choice — same treatment the capybara water band gets (bars
-        #     across the whole band). Phase −0.25 aligns the open slot to
-        #     straddle an A|B lane boundary head-on (matches the preview
-        #     shader's slitBarCoverage phase 0.25 bar), so ± tilt reveals A or
-        #     B cleanly.
+        #     across the whole band). Comb AND lanes come from the one lattice
+        #     solved above (``_barrier_plate_lattice`` / ``_barrier_masks``), so
+        #     every open slit straddles an A|B lane boundary head-on to the cell
+        #     and ± tilt reveals A or B cleanly; the solved phase is published as
+        #     ``switch_barrier_phase_um`` for the preview shader to draw the same
+        #     lattice instead of its own constant.
+        #   * water scanimation (capybara): NOTHING here — the dry body's only
+        #     grating is the 24 µm shimmer OR-ed in with `water_front_extra`
+        #     below. Filling `front_art` with the centerpiece carrier as well
+        #     would superimpose two 50 %-duty gratings at different periods over
+        #     the same body (~75 % gold), destroying both the duty and the
+        #     shimmer contrast.
         #   * legacy phase-switch (front-only shimmer faces): the FRONT
         #     silhouette filled with the vertical switch carrier (phase 0).
-        # Both exclude the accent zone, which gets the sub-5 µm diffraction grating.
+        # Will the sub-5 µm diffraction accent actually be baked further down? The
+        # physics needs pitch ≤ period/4, which the coarse budget pitch almost
+        # never allows. Decided HERE because the constructions below carve the
+        # accent zone out of their comb/carrier on the premise that the fine
+        # grating fills it back in — when the fine bake is skipped, that carve-out
+        # is BARE GLASS (a ~7 mm hole through the gear hub, ellipses through the
+        # monogram flourishes) where the preview PNG paints gold. So the carve-out
+        # happens only when the grating that replaces it really follows.
+        from .patterns.effects.gratings import (
+            DIFFRACTION_ACCENT_PERIOD_UM,
+            diffraction_accent_grating,
+        )
+
+        accent_max_pitch = DIFFRACTION_ACCENT_PERIOD_UM / 4.0
+        accent_fine_ok = pitch <= accent_max_pitch
         if is_interlace:
             art_box = np.zeros((fh, fw), dtype=bool)
+            bx0 = by0 = bx1 = by1 = 0
             if side_px > 0:
                 bx0 = max(0, cxg - side_px // 2)
                 by0 = max(0, cyg - side_px // 2)
-                art_box[by0 : min(fh, by0 + side_px), bx0 : min(fw, bx0 + side_px)] = True
+                bx1 = min(fw, bx0 + side_px)
+                by1 = min(fh, by0 + side_px)
+                art_box[by0:by1, bx0:bx1] = True
                 _mask_rim(art_box, spec.weld_margin_um, pitch)
-            barrier_bar = _grating_grid(fw, fh, pitch, center_period, 0.5, center_axis, phase=-0.25)
-            art_carrier = art_box & barrier_bar & ~front_accent
+            # Opaque bars of the solved lattice (``barrier_comb`` is a column
+            # mask; its complement is the open slit, centred on an A|B boundary).
+            art_carrier = art_box & barrier_comb[None, :]
+        elif water_front_extra is not None:
+            art_carrier = np.zeros((fh, fw), dtype=bool)
         else:
             center_grating = _grating_grid(fw, fh, pitch, center_period, duty, center_axis)
-            art_carrier = front_art & center_grating & ~front_accent
+            art_carrier = front_art & center_grating
+        if accent_fine_ok:
+            art_carrier &= ~front_accent
+        if is_interlace:
+            # Front plane of a barrier switch: image-free comb or nothing. Checked
+            # AFTER the accent carve-out so a future accent regression (or any
+            # other silhouette leaking into the comb) is caught, not just the
+            # construction above. front_accent is empty here by _front_accent_zone.
+            _check_front_comb_pure(
+                art_carrier, (by0, by1, bx0, bx1), plate_id, spec.pattern_slug
+            )
         front_grid = (sil & frame_grating) | art_carrier
         # Water scanimation: OR-in the capybara body shimmer + slit-barrier bars
         # over the water band (real barrier-grid geometry, not the stripe carrier).
+        # This is the body's ONLY grating — the centerpiece-carrier branch above
+        # deliberately contributes nothing on this face.
         if water_front_extra is not None:
             front_grid |= water_front_extra
         # Diffraction rainbow accent: OR-in a true 4.4 µm 45° grating clipped to
@@ -1516,21 +2060,18 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         # SKIP the accent group here rather than write garbage — the accent zones
         # still live in the PNG masks (RAINBOW_LEVEL 200) for preview and are
         # emitted by the fine-pitch writer at the native period. See
-        # effects.gratings.diffraction_accent_grating's integrator note.
+        # effects.gratings.diffraction_accent_grating's integrator note. When it is
+        # skipped the zone keeps the surrounding comb/carrier (accent_fine_ok
+        # above): a missing spectral sheen is cosmetic, a hole is a scrapped plate.
         if front_accent.any():
-            from .patterns.effects.gratings import (
-                DIFFRACTION_ACCENT_PERIOD_UM,
-                diffraction_accent_grating,
-            )
-
-            accent_max_pitch = DIFFRACTION_ACCENT_PERIOD_UM / 4.0
-            if pitch <= accent_max_pitch:
+            if accent_fine_ok:
                 front_grid |= diffraction_accent_grating(front_accent, pitch)
             else:
                 _log.info(
                     "skipping diffraction accent bake: raster pitch %.3g µm > "
                     "period/4 = %.3g µm (period %.3g µm would alias); accent "
-                    "zones remain in PNG masks + fine-pitch export only",
+                    "zones keep the surrounding carrier here and remain in the "
+                    "PNG masks + fine-pitch export",
                     pitch,
                     accent_max_pitch,
                     DIFFRACTION_ACCENT_PERIOD_UM,
@@ -1554,13 +2095,15 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         if is_interlace:
             # Barrier-interlace back layer: BOTH silhouettes interleaved in
             # alternating lanes (lane pitch = half the barrier pitch). A (front
-            # silhouette) fills the even lanes, B (back silhouette) the odd. The
-            # even-lane mask is a 0.5-duty grating at the barrier period (one lane
-            # of the pair = gold half); its complement is the odd lane. This is
-            # the whole moving image — the front barrier reveals one lane class per
-            # tilt. The plain carrier is cleared across the union so the lanes read.
+            # silhouette) fills the channel-A lanes, B (back silhouette) the
+            # channel-B lanes. ``barrier_lane_a`` is the SAME solved lattice the
+            # front comb above is cut from — that shared lattice IS the
+            # registration, so the two periods cannot drift and each open slit
+            # sits on a lane boundary to the cell. This is the whole moving image
+            # — the front barrier reveals one lane class per tilt. The plain
+            # carrier is cleared across the union so the lanes read.
             union_art = front_art | back_art
-            even_lane = _grating_grid(fw, fh, pitch, center_period, 0.5, center_axis, phase=0.0)
+            even_lane = barrier_lane_a[None, :]
             interleave = (front_art & even_lane) | (back_art & ~even_lane)
             back_grid = (win & carrier_grating & ~union_art) | (win & interleave)
         else:
@@ -1576,27 +2119,85 @@ def ensure_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         # Water scanimation: the back-art region is the WATER BAND, filled with
         # the N interleaved ripple frames (a genuine scanimation) rather than the
         # phase-π stripe globe. Clear the plain-carrier fill inside the water band
-        # and OR-in the real ripple geometry (clipped to the back window rim).
-        if water_back is not None:
+        # and OR-in the real ripple geometry (clipped to the back window rim) —
+        # unless the interleave came back empty at this raster pitch, in which case
+        # the band keeps the carrier (clearing it would erase gold for nothing).
+        if water_back is not None and not water_scan_empty:
             band = water_band_placed if water_band_placed is not None else back_art
             back_grid = (win & carrier_grating & ~band) | (win & water_back)
+        elif water_scan_empty:
+            # Degenerate interleave at this raster pitch (warned above). Keep the
+            # plain carrier across the WHOLE back window — including the band —
+            # rather than clearing ~30 mm of gold for an empty mask, and skip the
+            # phase-π stripe fill the generic else-branch would have put in the
+            # band square (that architecture was never the capybara's).
+            back_grid = win & carrier_grating
         back_polys = raster_to_polygons(back_grid, pitch, (W, H))
         back_group = _group("carrier+centerpiece", _strip_svg_body(to_svg(back_polys, (W, H), background=None)))
 
-    front_svg.write_text(_wrap_svg(W, H, [front_group]), encoding="utf-8")
-    back_svg.write_text(_wrap_svg(W, H, [back_group]), encoding="utf-8")
+    # SVGs first, manifest last — the manifest's svg_bake_* record must never
+    # describe geometry that is not on disk yet.
+    write_text_atomic(front_svg, _wrap_svg(W, H, [front_group]))
+    write_text_atomic(back_svg, _wrap_svg(W, H, [back_group]))
 
-    manifest["files"]["front_svg"] = f"/data/plates/{plate_id}/front.svg"
-    manifest["files"]["back_svg"] = f"/data/plates/{plate_id}/back.svg"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    files = manifest.setdefault("files", {})
+    files["front_svg"] = f"/data/plates/{plate_id}/front.svg"
+    files["back_svg"] = f"/data/plates/{plate_id}/back.svg"
+    # Stamp (or clear) the effective-bake record so the manifest that ships next
+    # to these SVGs describes the geometry they actually contain. The design
+    # ``fab_*`` fields are left alone — the export bundle needs BOTH numbers.
+    rd_out = manifest.setdefault("recipe_data", {})
+    for key in _SVG_BAKE_KEYS:
+        rd_out.pop(key, None)
+    rd_out.update(svg_bake)
+    write_json_atomic(manifest_path, manifest)
     return front_svg, back_svg
+
+
+# recipe_data keys ensure_plate_svg writes to describe the EFFECTIVE baked
+# geometry when the lattice budget forced a coarser period (see the bake_scale
+# block) or a coarser barrier lattice (the barrier snap). Listed here so a re-bake
+# at a finer pitch can strip a stale record instead of leaving a manifest that
+# claims a coarsening that no longer applies.
+_SVG_BAKE_KEYS = (
+    "svg_bake_coarsened",
+    "svg_bake_scale",
+    "svg_bake_pitch_um",
+    "svg_bake_back_period_um",
+    "svg_bake_front_period_um",
+    "svg_bake_center_period_um",
+    "svg_bake_barrier_period_um",
+    "svg_bake_barrier_cell_um",
+    "svg_bake_barrier_cols_per_period",
+    "svg_bake_barrier_phase_um",
+    "svg_bake_barrier_period_err_um",
+)
 
 
 # Bump when the SVG compose geometry changes: cached plate SVGs are only
 # reused if they carry the current marker, so a formula fix (e.g. the
 # aperture-scaling fix) invalidates stale files under unchanged spec hashes.
 # v4: barrier-interlace front comb spans the full art box (was union-gated).
-PLATE_SVG_VERSION = "plate-svg-v4"
+# v5: coarse-bake honesty — effective periods stamped in the manifest, skipped
+#     diffraction-accent zones keep the surrounding carrier instead of becoming
+#     bare-glass holes, the capybara body carries only its 24 µm shimmer (no
+#     superimposed centerpiece carrier), and a degenerate water interleave keeps
+#     the plain carrier across the band instead of erasing it. Also in v5:
+#     barrier-interlace faces emit NO front diffraction accent at all (a
+#     silhouette-shaped front feature can never vanish under tilt), so the
+#     gear-quill-switch hub grating is gone from front.svg.
+# v6: barrier registration carried onto the plate path — the front comb and the
+#     back A|B lanes are cut from ONE cell-exact lattice (_barrier_plate_lattice /
+#     _barrier_masks) instead of two float-phased gratings that lose registration
+#     to sampling, so the baked comb period equals the baked interlace period and
+#     every open-slit centre lands on a channel boundary. Interlace face geometry
+#     shifts by up to a cell and the baked barrier period snaps to a multiple of
+#     four raster cells (recorded in svg_bake_barrier_*).
+# v7: the water scanimation bakes at the face's EFFECTIVE waterline
+#     (_water_waterline_y) instead of the module constant, so a face that sets
+#     the ``waterline`` param gets a band/wake matching its preview mask. Only
+#     such faces change; default-param geometry is byte-identical.
+PLATE_SVG_VERSION = "plate-svg-v7"
 
 
 def _svg_is_current(svg_path: Path) -> bool:
@@ -1655,15 +2256,16 @@ def list_plates() -> list[dict[str, Any]]:
     for d in sorted(PLATES_ROOT.iterdir()):
         m = d / "manifest.json"
         if m.exists():
-            try:
-                out.append(json.loads(m.read_text()))
-            except Exception:  # noqa: BLE001 — skip corrupt manifests
-                continue
+            cached = read_json_cache(m)  # None = corrupt slot, skip it
+            if cached is not None:
+                out.append(cached)
     return out
 
 
 def get_plate(plate_id: str) -> dict[str, Any] | None:
-    m = PLATES_ROOT / plate_id / "manifest.json"
-    if not m.exists():
-        return None
-    return json.loads(m.read_text())
+    """The cached plate manifest, or None if absent OR unreadable.
+
+    A truncated manifest reads as 'missing' (a 404 the caller can recover from
+    by regenerating) rather than raising a 500 out of the route.
+    """
+    return read_json_cache(PLATES_ROOT / plate_id / "manifest.json")

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from PIL import ImageDraw
-from ._pillow import render_silhouette
+from ._pillow import check_silhouette_budget, render_silhouette
 
 # ---------------------------------------------------------------------------
 # Cursive J+P interlocked wedding monogram.
@@ -255,6 +255,9 @@ def monogram_silhouette(
     del extent_um  # scale-free; caller controls cell pitch to hit the extent
 
     n = max(64, int(n_grid))
+    # Own raster path (not render_silhouette), so gate n here too — callers size
+    # n_grid straight off unvalidated extent_um/period params.
+    check_silhouette_budget(n, "Cursive monogram silhouette")
     # Work at a generous supersample so LANCZOS scaling keeps the script crisp;
     # downsample to n at the end. Cap the working grid to stay light on the box.
     work = min(1024, max(384, n * 2))

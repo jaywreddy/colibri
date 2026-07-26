@@ -177,6 +177,14 @@ def render_globe(
     scale with 1/n, so a 256-px composed raster gets crisp, de-noised coastlines
     while a 1024-px preview keeps fine detail. Feature floor is kept >= ~2 px.
     """
+    # Every caller derives ``n`` from request params that nothing validates
+    # against their ParamSpec bounds, so gate the raster before allocating it.
+    # Function-local import keeps app.patterns.motifs (which imports THIS
+    # module via motifs.globe) out of geo's import-time graph, and keeps geo
+    # shapely-free as its package docstring promises.
+    from ..motifs._pillow import check_silhouette_budget
+
+    check_silhouette_budget(n, "Cartographic globe raster")
     img = Image.new("L", (n, n), 0)
     draw = ImageDraw.Draw(img)
     s = float(n)

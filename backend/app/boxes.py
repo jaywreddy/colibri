@@ -79,24 +79,37 @@ _FACE_FRAME_PROFILE: dict[str, dict[str, float]] = {
 }
 
 # Anonymous (live-preview) generates all land in this single scratch slot so
-# debounced edits never pile up saved boxes. The leading underscores keep it
-# out of reach of UI-generated preset slugs (those are [a-z0-9-] only).
+# debounced edits never pile up saved boxes.
 SCRATCH_BOX_ID = "__scratch"
 
 # Filesystem-safe box ids: 1-64 chars, letters/digits/._- with a first char
-# that can't start a traversal ('..' and absolute/illegal paths are rejected).
-_BOX_ID_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}")
+# that can't start a traversal ('..' and absolute/illegal paths are rejected)
+# and can't be '_' — that namespace is RESERVED for internal slots. Without
+# that last rule a client could POST box_id="__scratch" and land a named
+# preset in the slot the next live-preview regen overwrites, silently losing
+# it from the dropdown; nothing but UI convention kept it out of reach.
+_BOX_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+# Internal slots: same charset behind the reserved leading underscore. Only
+# READ paths accept these — the scratch box has to stay addressable because the
+# live-preview export link is /export/box/<manifest id>/fab.zip.
+_INTERNAL_BOX_ID_RE = re.compile(r"_[A-Za-z0-9_][A-Za-z0-9._-]{0,62}")
 
 
-def _box_dir(box_id: str) -> Path | None:
+def _box_dir(box_id: str, *, internal: bool = False) -> Path | None:
     """``BOXES_ROOT/<box_id>`` if the id is filesystem-safe, else ``None``.
 
     ``box_id`` arrives verbatim from the API; without this check a name like
-    ``'../../evil'`` would read/write outside ``data/boxes``.
+    ``'../../evil'`` would read/write outside ``data/boxes``. ``internal=True``
+    additionally admits the reserved ``_``-prefixed slots (see
+    ``SCRATCH_BOX_ID``) — read-only callers pass it, write/delete callers must
+    not.
     """
-    if not _BOX_ID_RE.fullmatch(box_id):
-        return None
-    return BOXES_ROOT / box_id
+    if _BOX_ID_RE.fullmatch(box_id):
+        return BOXES_ROOT / box_id
+    if internal and _INTERNAL_BOX_ID_RE.fullmatch(box_id):
+        return BOXES_ROOT / box_id
+    return None
 
 
 @dataclass
@@ -256,16 +269,25 @@ def materialize_box(spec: BoxSpec, *, box_id: str | None = None, force: bool = F
     ``box_id`` is the persistent identifier for the *saved preset* (user-named
     box). Anonymous generates (live-preview regens with no id) all reuse the
     single ``SCRATCH_BOX_ID`` slot — they overwrite each other, never appear
-    in ``list_boxes``, and can't grow ``data/boxes`` without bound. Per-face
-    plates are cached by their content hash under ``data/plates/`` and shared
-    across boxes — so swapping one face's frame seed re-renders only that face.
+    in ``list_boxes``, and can't grow ``data/boxes`` without bound. A caller
+    may NOT name that slot (or any other reserved ``_`` id) explicitly: the
+    next anonymous regen would overwrite the preset with ``saved: false``.
+    Per-face plates are cached by their content hash under ``data/plates/`` and
+    shared across boxes — so swapping one face's frame seed re-renders only
+    that face.
     """
     box_id = box_id or None  # treat "" like absent
     saved = box_id is not None
     if box_id is not None and _box_dir(box_id) is None:
+        if box_id.startswith("_"):
+            raise ValueError(
+                f"Reserved box_id {box_id!r}: ids starting with '_' belong to internal "
+                "slots (the live-preview scratch box, which every anonymous regenerate "
+                "overwrites). Save the preset under another name."
+            )
         raise ValueError(
             f"Invalid box_id {box_id!r}: use 1-64 letters, digits, '.', '_' or '-' "
-            "(must not start with '.' or '-')."
+            "(must not start with '.', '-' or '_')."
         )
 
     spec.normalize_face_dims()
@@ -341,7 +363,9 @@ def list_boxes() -> list[dict[str, Any]]:
 
 
 def get_box(box_id: str) -> dict[str, Any] | None:
-    d = _box_dir(box_id)
+    """Read one box manifest. Reserved internal ids resolve — the unsaved
+    live-preview box is exported by its ``SCRATCH_BOX_ID`` manifest id."""
+    d = _box_dir(box_id, internal=True)
     if d is None:
         return None
     m = d / "box.json"
@@ -351,6 +375,8 @@ def get_box(box_id: str) -> dict[str, Any] | None:
 
 
 def delete_box(box_id: str) -> bool:
+    """Remove a saved preset. Reserved internal slots are not deletable (the
+    scratch manifest belongs to the live preview, not to the preset list)."""
     d = _box_dir(box_id)
     if d is None:
         return False

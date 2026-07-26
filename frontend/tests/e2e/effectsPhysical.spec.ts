@@ -10,23 +10,42 @@
  * fakes moire procedurally, scrolls a texture over time, or ignores the
  * substrate physics fails here even if a static screenshot looks right.
  *
+ * Three of the four axioms used to be enforced only as RELATIVE pixel deltas,
+ * which any view-keyed procedural shader also satisfies. The quantitative gates
+ * that close that hole:
+ *   - GEOMETRIC (absolute): the inner plane's gap must EQUAL the manifest's
+ *     paraxial T/n, not merely be nonzero (moire-parallax-physics).
+ *   - TEXTURE-DRIVEN: swapping only the bound mask at a fixed camera and gap
+ *     must change the plate pixels, and every plane's bound image must be the
+ *     PNG its own face manifest declares (carrier-reveal-tilt +
+ *     moire-fringe-flow).
+ *   - ALL SIX FACES run the two-plane foliage_moire recipe on both planes with
+ *     real masks, and no face was refused (moire-fringe-flow).
+ *
  * Run: `just test-effects` (Playwright, single worker — heavy process).
  */
 import { test, expect } from './fixtures';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { setCameraAzEl, waitForBoxTextures, waitForStudio } from './helpers';
+import { readLog, setCameraAzEl, waitForBoxTextures, waitForStudio } from './helpers';
 import {
+  allFaceRenderState,
   assignFacePattern,
   captureGray,
   diffFrames,
   dumpFramePng,
   facePlateROI,
   faceRecipeId,
+  faceSubstrate,
   lidRotationDeg,
   scaleBackPlaneGap,
+  zoomForMicroPatterns,
   settle,
+  waitForAllFaceMasks,
+  waitForStableFrame,
+  FACE_IDS,
+  GAP_COLLAPSE_FACTOR,
   type DiffMetrics,
   type GrayFrame,
   type Roi,
@@ -95,13 +114,14 @@ async function gotoStudio(page: Page): Promise<void> {
     st.setIllumination('ambient');
     st.setAutoRotate(false);
   });
-  await settle(page, 900);
+  // Quiescence by measurement, not by wall clock (see waitForStableFrame).
+  await waitForStableFrame(page, 900);
 }
 
 /** Head-on view of the front face, slight elevation. */
 async function faceFrontOn(page: Page, azDeg = 0, elDeg = 4): Promise<void> {
   await setCameraAzEl(page, azDeg, elDeg);
-  await settle(page, 350);
+  await waitForStableFrame(page, 400);
 }
 
 /**
@@ -129,13 +149,47 @@ async function azimuthSweep(
   const frames: GrayFrame[] = [];
   for (const az of azimuths) {
     await setCameraAzEl(page, az, elDeg);
-    await settle(page, 250);
+    await waitForStableFrame(page, 300);
     frames.push(await captureGray(page, roi));
   }
   return frames;
 }
 
 test.describe('@effects physical honesty of renderer effects', () => {
+  /**
+   * Pre-warm the two non-default pattern variants this suite assigns
+   * (TEST_PATTERNS.stereo, TEST_PATTERNS.reveal), one at a time, BEFORE any
+   * page exists. Both assignments used to pay a cold pattern generate inside a
+   * test, hidden behind assignFacePattern's 90 s wait, and nothing else in the
+   * run reused it. Materializing the default variant here (GET
+   * /{slug}/default, the same variant the specs assign) leaves the in-test wait
+   * covering only the plate compose + texture bind.
+   *
+   * Strictly sequential and strictly before the first `goto`, so this never
+   * runs beside a box regen (CLAUDE.md's single-heavy-compute rule). beforeAll
+   * can only use worker-scoped fixtures, hence a hand-built request context
+   * against the project's own baseURL (vite proxies /patterns to the backend).
+   */
+  test.beforeAll(async ({ playwright }, testInfo) => {
+    test.setTimeout(300_000); // two cold pattern generates, sequential
+    const baseURL = (testInfo.project.use.baseURL as string | undefined) ?? '';
+    const api = await playwright.request.newContext(baseURL ? { baseURL } : {});
+    try {
+      for (const slug of [TEST_PATTERNS.stereo, TEST_PATTERNS.reveal]) {
+        const t0 = Date.now();
+        const r = await api.get(`/patterns/${slug}/default`, { timeout: 140_000 });
+        // A pre-warm failure is not a test failure: the in-test assignment
+        // still generates on demand (slower). Log it so a slow run is
+        // explainable instead of mysterious.
+        console.log(
+          `[effects] pre-warm ${slug}: HTTP ${r.status()} in ${Date.now() - t0} ms`
+        );
+      }
+    } finally {
+      await api.dispose();
+    }
+  });
+
   test.beforeEach(async ({ page }) => {
     await gotoStudio(page);
   });
@@ -144,7 +198,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const outDir = path.join(OUT_ROOT, 'time-invariance');
     await fs.mkdir(outDir, { recursive: true });
     await faceFrontOn(page, 20, 25);
-    await settle(page, 800); // damping fully decayed
+    await waitForStableFrame(page, 800); // damping fully decayed (measured)
 
     const f0 = await captureGray(page, null);
     const p0 = await dumpFramePng(page, outDir, 'frame-0');
@@ -175,7 +229,61 @@ test.describe('@effects physical honesty of renderer effects', () => {
     // Post-merge every composed plate runs the two-plane foliage_moire
     // recipe (id 3): front foliage carrier on the outer plane, uniform back
     // carrier on the REAL inner plane at the paraxial T/n gap.
-    expect(await faceRecipeId(page, 'front')).toBe(3);
+    //
+    // Asserted for ALL SIX faces, on BOTH plane materials — the front face
+    // alone used to stand in for the box, so five walls could have run the
+    // banned single-plane path (or stayed on the 1x1 blank) unnoticed. And
+    // because uRecipe's material-creation default IS foliage_moire, the id on
+    // its own proves nothing: each face must also carry the masks its OWN
+    // manifest declares (outer plane <- files.front_png, inner <-
+    // files.back_png), which is the suite's native texture-driven gate, and
+    // BoxScene's recipe refusal (face_recipe_unsupported -> planes hidden)
+    // must not have fired for any face.
+    await waitForAllFaceMasks(page);
+    const faceStates = await allFaceRenderState(page);
+    const bindFailures: string[] = [];
+    expect(faceStates).toHaveLength(FACE_IDS.length);
+    for (const st of faceStates) {
+      if (st.manifestRecipe !== 'foliage_moire') {
+        bindFailures.push(`${st.face}: manifest render_recipe ${st.manifestRecipe}`);
+      }
+      if (st.recipe !== 3 || st.recipeBack !== 3) {
+        bindFailures.push(`${st.face}: uRecipe ${st.recipe}/${st.recipeBack} (want 3/3)`);
+      }
+      if (!st.visible || !st.visibleBack) {
+        bindFailures.push(
+          `${st.face}: plane hidden (outer ${st.visible}, inner ${st.visibleBack})`
+        );
+      }
+      if (st.maskW <= 1 || st.maskBackW <= 1) {
+        bindFailures.push(
+          `${st.face}: placeholder mask still bound (${st.maskW}px / ${st.maskBackW}px)`
+        );
+      }
+      if (!st.maskMatchesManifest || !st.maskBackMatchesManifest) {
+        bindFailures.push(
+          `${st.face}: bound mask URLs are not the manifest's front/back PNGs ` +
+            `(outer ${st.maskMatchesManifest}, inner ${st.maskBackMatchesManifest})`
+        );
+      }
+      const tUm = st.thicknessUm;
+      const nSub = st.n;
+      if (tUm === null || nSub === null) {
+        bindFailures.push(`${st.face}: manifest carries no substrate`);
+      } else if (Math.abs(st.uThicknessUm - tUm) > 1e-6 || Math.abs(st.uN - nSub) > 1e-9) {
+        bindFailures.push(
+          `${st.face}: substrate not bound (uThicknessUm ${st.uThicknessUm} vs ` +
+            `${st.thicknessUm}, uN ${st.uN} vs ${st.n})`
+        );
+      }
+    }
+    const unsupported = (await readLog(page)).filter((e) => e.type === 'face_recipe_unsupported');
+    if (unsupported.length > 0) {
+      bindFailures.push(
+        `face_recipe_unsupported logged: ${JSON.stringify(unsupported.map((e) => e.face))}`
+      );
+    }
+    expect(bindFailures, bindFailures.join('; ')).toHaveLength(0);
 
     const EL = 4;
     const AZ = [-10, -5, 0, 5, 10];
@@ -196,6 +304,13 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const metrics = {
       consecutive: consecutive.map(rd),
       endToEnd: rd(endToEnd),
+      faces: faceStates.map((s) => ({
+        face: s.face,
+        recipe: s.recipe,
+        recipeBack: s.recipeBack,
+        maskPx: [s.maskW, s.maskBackW],
+        maskFromManifest: s.maskMatchesManifest && s.maskBackMatchesManifest,
+      })),
     };
     console.log('[effects] moire-fringe-flow', JSON.stringify(metrics));
 
@@ -225,15 +340,20 @@ test.describe('@effects physical honesty of renderer effects', () => {
     // the outer plane, and fringe motion emerges from perspective across
     // that gap (the legacy uThicknessUm uniform is dead on the foliage
     // path — poking it proves nothing). So the substrate test manipulates
-    // the actual gap at a FIXED oblique camera: collapsing it to zero must
-    // register the layers and move the fringes; a partial collapse must
-    // move them LESS; and re-rendering at the same gap must be
-    // pixel-identical (determinism control).
+    // the actual gap at a FIXED oblique camera: the gap must EQUAL the
+    // manifest's T/n (the absolute contract, below); collapsing it toward
+    // registration must move the fringes; a partial collapse must move them
+    // LESS; and re-rendering at the same gap must be pixel-identical
+    // (determinism control, run at both the design and the collapsed gap).
     const outDir = path.join(OUT_ROOT, 'moire-parallax-physics');
     await fs.mkdir(outDir, { recursive: true });
 
     await faceFrontOn(page, 10, 6); // oblique: real in-plane view component
-    await settle(page, 600);
+    // The shader no longer magnifies the centerpiece pitch (honesty fix), so
+    // the 60 um comb is sub-pixel at the default view and its fringe response
+    // to the gap averages away. Zoom (angle-preserving) until it resolves.
+    const unzoom = await zoomForMicroPatterns(page);
+    await waitForStableFrame(page, 600);
     const roi = await frontROI(page);
     const capture = async () => await captureGray(page, roi);
 
@@ -242,19 +362,50 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const fNatural = await capture();
     const pngNat = await dumpFramePng(page, outDir, 'oblique-design-gap');
 
+    // --- the ONE quantitative renderer contract ------------------------------
+    // Every other honesty check in this suite is RELATIVE (collapsing the gap
+    // changes the frame; a partial collapse changes it less; the same gap is
+    // deterministic) and passes for ANY monotonic gap — including the
+    // pre-paraxial `outerZ - T` bug or a hardcoded constant. The absolute value
+    // is what puts every switch/reveal/scanimation crossing at its true tilt
+    // angle, so pin it: the inner plane sits exactly T/n below the outer plane
+    // (BoxScene: `inner.position.z = outerZ - T / nGlass`, scene units are mm,
+    // T = mm(thickness_um)), with n read from THIS face's manifest substrate —
+    // the same numbers bound into uThicknessUm/uN. Mirror BoxScene's n<=1 guard
+    // so a degenerate manifest is compared against the same fallback the
+    // renderer used, and fail if the manifest is missing entirely (the store
+    // must hold a box manifest by now — waitForBoxTextures ran in beforeEach).
+    const sub = await faceSubstrate(page, 'front');
+    expect(sub, 'box manifest has no substrate for the front face').not.toBeNull();
+    const nEff = sub!.n > 1.0 ? sub!.n : 1.46;
+    const expectedGapMm = sub!.thicknessUm / nEff / 1000;
+
     // Determinism control: same gap, recapture — must be identical.
     const fAgain = await capture();
     const dControl = diffFrames(fNatural, fAgain);
 
-    // Gap -> 0: layers register, all cross-layer parallax collapses.
-    await scaleBackPlaneGap(page, 'front', 0);
+    // Gap -> near registration: the layers register and all cross-layer
+    // parallax collapses. GAP_COLLAPSE_FACTOR is a small NON-ZERO floor on
+    // purpose — at exactly 0 the two opaque plane meshes become coplanar AND
+    // the inner plane leaves the glass slab, so the delta would be dominated by
+    // depth fighting and backdrop change rather than by layer registration
+    // (see the constant's docstring for the arithmetic). The PNG keeps its
+    // historical `gap0` name so the frame sequences stay comparable.
+    await scaleBackPlaneGap(page, 'front', GAP_COLLAPSE_FACTOR);
     const fZeroGap = await capture();
     const pngZero = await dumpFramePng(page, outDir, 'oblique-gap0');
+    // Determinism control AT THE COLLAPSED STATE too: the collapse frame is the
+    // one every anti-cheat threshold below leans on, so any nondeterminism
+    // introduced there (MSAA/depth fighting near-registration) must be caught
+    // rather than assumed away from the design-gap control.
+    const fZeroAgain = await capture();
+    const dControlZero = diffFrames(fZeroGap, fZeroAgain);
 
     // Gap -> 60%: response must be smaller than the full collapse.
     await scaleBackPlaneGap(page, 'front', 0.6);
     const fPartial = await capture();
     await scaleBackPlaneGap(page, 'front', 1); // restore design gap
+    await unzoom();
 
     const dCollapse = diffFrames(fNatural, fZeroGap);
     const dPartial = diffFrames(fNatural, fPartial);
@@ -263,11 +414,23 @@ test.describe('@effects physical honesty of renderer effects', () => {
       gapCollapse: rd(dCollapse),
       partialCollapse: rd(dPartial),
       sameGapControl: rd(dControl),
-      designGapMm: Number(designGapMm.toFixed(4)),
+      collapsedGapControl: rd(dControlZero),
+      collapseFactor: GAP_COLLAPSE_FACTOR,
+      designGapMm: Number(designGapMm.toFixed(6)),
+      expectedGapMm: Number(expectedGapMm.toFixed(6)),
+      substrate: { thickness_um: sub!.thicknessUm, n: sub!.n },
     };
     console.log('[effects] moire-parallax-physics', JSON.stringify(metrics));
 
     const failures: string[] = [];
+    // (0) the absolute gap IS the paraxial air gap T/n. 1e-4 mm = 0.1 um.
+    if (!(Math.abs(designGapMm - expectedGapMm) < 1e-4)) {
+      failures.push(
+        `inner-plane gap ${designGapMm.toFixed(6)} mm != T/n ` +
+          `${expectedGapMm.toFixed(6)} mm (T=${sub!.thicknessUm} um, n=${nEff}) — ` +
+          `every switch/reveal tilt angle is wrong by that ratio`
+      );
+    }
     if (dCollapse.changedFrac < 0.03) {
       failures.push(
         `fringes ignore the two-plane gap (collapse changedFrac ${dCollapse.changedFrac.toFixed(4)}) — parallax not geometric?`
@@ -281,6 +444,12 @@ test.describe('@effects physical honesty of renderer effects', () => {
     if (dControl.mad > 0.5) {
       failures.push(
         `same-gap recapture differs (mad ${dControl.mad.toFixed(2)}) — nondeterministic rendering`
+      );
+    }
+    if (dControlZero.mad > 0.5) {
+      failures.push(
+        `collapsed-gap recapture differs (mad ${dControlZero.mad.toFixed(2)}) — ` +
+          `nondeterministic rendering at the state the collapse metric is measured from`
       );
     }
     await writeMeta(
@@ -338,7 +507,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const view = async (t: number) => {
       if (alongAzimuth) await setCameraAzEl(page, t, 4);
       else await setCameraAzEl(page, 0, 4 + t);
-      await settle(page, 300);
+      await waitForStableFrame(page, 350);
     };
 
     await view(0);
@@ -393,12 +562,48 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const outDir = path.join(OUT_ROOT, 'carrier-reveal-tilt');
     await fs.mkdir(outDir, { recursive: true });
 
+    // --- TEXTURE-DRIVEN AXIOM (axiom 3), natively asserted -------------------
+    // Every other metric in this suite is a delta under a CAMERA or GEOMETRY
+    // change, which any procedural view-keyed shader also produces. This one
+    // holds camera and geometry fixed and changes only the BOUND MASK: capture
+    // the head-on ROI with the default front pattern (globe-duo-phase), assign
+    // a visually unrelated slug (the monogram carrier reveal), and capture the
+    // SAME ROI at the SAME camera. Nothing but the mask content differs, so a
+    // shader drawing procedural fringes instead of sampling the litho masks
+    // renders the two identically and fails here.
+    const slugBefore = await page.evaluate(
+      () => (window as any).__studio.store.getState().boxSpec.faces.front.pattern_slug as string
+    );
+    expect(
+      slugBefore,
+      'texture-driven check needs the front face to start on a DIFFERENT slug'
+    ).not.toBe(TEST_PATTERNS.reveal);
+    await faceFrontOn(page, 0, 4); // exactly the camera view(0) uses below
+    // Computed once and reused for every capture in this test: the plate
+    // geometry does not move when only the pattern slug changes, and identical
+    // ROIs are what makes the frames diffable.
+    const roi = await frontROI(page);
+    const fSlugBefore = await captureGray(page, roi);
+    const pSlugBefore = await dumpFramePng(page, outDir, 'mask-before-assign');
+
     // Post-merge the plate binds as foliage_moire (id 3): the carrier-reveal
     // masks ride the two real planes (front mask on the outer plane, back
     // anti-phase carrier on the inner plane at the T/n gap).
     await assignFacePattern(page, 'front', TEST_PATTERNS.reveal, 'foliage_moire');
     await settle(page, 400);
     expect(await faceRecipeId(page, 'front')).toBe(3);
+    // Structural half of the same axiom: the newly bound masks are the PNGs
+    // this face's manifest declares, on both planes, at real resolution.
+    const frontState = (await allFaceRenderState(page)).find((s) => s.face === 'front');
+    expect(frontState, 'no render state for the front face').toBeTruthy();
+    expect(
+      frontState!.maskW > 1 && frontState!.maskBackW > 1,
+      `front planes still on the placeholder mask (${frontState!.maskW}/${frontState!.maskBackW} px)`
+    ).toBeTruthy();
+    expect(
+      frontState!.maskMatchesManifest && frontState!.maskBackMatchesManifest,
+      'front planes are not bound to the manifest front/back PNGs'
+    ).toBeTruthy();
 
     // First-zone calibration: the reveal completes when the Snell-refracted
     // back shift equals HALF the carrier period, and zones repeat every full
@@ -424,13 +629,14 @@ test.describe('@effects physical honesty of renderer effects', () => {
     // generator in this repo, so the reveal tilt is a camera-azimuth move.
     const view = async (t: number) => {
       await setCameraAzEl(page, t, 4);
-      await settle(page, 300);
+      await waitForStableFrame(page, 350);
     };
 
     await view(0);
-    const roi = await frontROI(page);
     const f0 = await captureGray(page, roi);
     const p0 = await dumpFramePng(page, outDir, 'head-on');
+    // Same camera, same gap, same ROI as fSlugBefore — only the mask changed.
+    const dMaskSwap = diffFrames(fSlugBefore, f0);
     await view(-tiltDeg);
     const fNeg = await captureGray(page, roi);
     const pNeg = await dumpFramePng(page, outDir, 'tilt-neg');
@@ -445,12 +651,31 @@ test.describe('@effects physical honesty of renderer effects', () => {
       headOnVsPos: rd(d0P),
       headOnVsNeg: rd(d0N),
       posVsNeg: rd(dPN),
+      maskSwap: rd(dMaskSwap),
+      maskSwapSlugs: [slugBefore, TEST_PATTERNS.reveal],
+      // Kept out of `frames` on purpose: it shows a DIFFERENT pattern, so the
+      // vision grader must not read it as part of the tilt sequence.
+      maskSwapFrame: path.basename(pSlugBefore),
       periodUm,
       tiltDeg: Number(tiltDeg.toFixed(3)),
     };
     console.log('[effects] carrier-reveal-tilt', JSON.stringify(metrics));
 
     const failures: string[] = [];
+    // (0) Texture-driven: swapping ONLY the bound mask (camera + gap fixed)
+    // must change the plate pixels. Thresholds sit far above the suite's
+    // same-state noise floor (the parallax scenario pins identical-state
+    // recapture at mad <= 0.5) and far below what two unrelated centerpieces
+    // produce, so this fails on mask-independent rendering without being a
+    // sensitivity knob.
+    if (dMaskSwap.changedFrac < 0.03 || dMaskSwap.mad < 1.5) {
+      failures.push(
+        `plate pixels do not follow the bound mask: swapping ${slugBefore} -> ` +
+          `${TEST_PATTERNS.reveal} at a fixed camera/gap moved almost nothing ` +
+          `(changedFrac ${dMaskSwap.changedFrac.toFixed(4)}, mad ${dMaskSwap.mad.toFixed(2)}) — ` +
+          `procedural, mask-independent shading?`
+      );
+    }
     // (a) The reveal happens: at ±theta(p/2) the figure contrast appears, so
     // both tilted frames must differ substantially from head-on.
     if (d0P.changedFrac < 0.03 || d0N.changedFrac < 0.03) {
@@ -460,15 +685,25 @@ test.describe('@effects physical honesty of renderer effects', () => {
       );
     }
     // (b) Substrate anti-cheat: with the camera parked at +theta(p/2),
-    // collapsing the geometric two-plane gap to zero registers the layers,
-    // so the revealed figure must snap back toward registration. A
-    // view-sign bias (the retired recipe-2 cheat) would ignore the gap and
-    // sail through unchanged.
-    await scaleBackPlaneGap(page, 'front', 0);
+    // collapsing the geometric two-plane gap registers the layers, so the
+    // revealed figure must snap back toward registration. A view-sign bias
+    // (the retired recipe-2 cheat) would ignore the gap and sail through
+    // unchanged. GAP_COLLAPSE_FACTOR (not 0) keeps the two plane meshes from
+    // becoming coplanar — see its docstring.
+    // Zoomed pair for the collapse metric: at the default view the true-pitch
+    // carrier is sub-pixel (the shader no longer magnifies it), so the gap
+    // response averages away. Zoom preserves the parked tilt angle; the
+    // comparison frames are BOTH taken zoomed so they stay comparable.
+    const unzoomReveal = await zoomForMicroPatterns(page);
+    await waitForStableFrame(page, 400);
+    const roiZoom = await frontROI(page);
+    const fPosZoom = await captureGray(page, roiZoom);
+    await scaleBackPlaneGap(page, 'front', GAP_COLLAPSE_FACTOR);
     await settle(page, 150);
-    const fZeroGap = await captureGray(page, roi);
+    const fZeroGap = await captureGray(page, roiZoom);
     await scaleBackPlaneGap(page, 'front', 1);
-    const dGap = diffFrames(fPos, fZeroGap);
+    await unzoomReveal();
+    const dGap = diffFrames(fPosZoom, fZeroGap);
     (metrics as Record<string, unknown>).gapCollapse = rd(dGap);
     console.log('[effects] carrier-reveal gapCollapse', JSON.stringify(rd(dGap)));
     if (dGap.changedFrac < 0.03) {
@@ -487,7 +722,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const outDir = path.join(OUT_ROOT, 'lid-transition');
     await fs.mkdir(outDir, { recursive: true });
     await faceFrontOn(page, 30, 30);
-    await settle(page, 800);
+    await waitForStableFrame(page, 800);
 
     const closed0 = await captureGray(page, null);
     const pngs: string[] = [await dumpFramePng(page, outDir, 'closed-initial')];
@@ -522,7 +757,9 @@ test.describe('@effects physical honesty of renderer effects', () => {
     await page.waitForFunction(() => (window as any).__studio.getLidDeg() < 0.05, null, {
       timeout: 10_000,
     });
-    await settle(page, 600);
+    // The round-trip bound (changedFrac <= 0.02) needs the hinge damping fully
+    // decayed, so wait for measured quiescence rather than a flat 600 ms.
+    await waitForStableFrame(page, 600);
     const closed1 = await captureGray(page, null);
     pngs.push(await dumpFramePng(page, outDir, 'closed-final'));
     const roundTrip = diffFrames(closed0, closed1);
@@ -625,7 +862,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const outDir = path.join(OUT_ROOT, 'turntable-flow');
     await fs.mkdir(outDir, { recursive: true });
     await faceFrontOn(page, 20, 25);
-    await settle(page, 800);
+    await waitForStableFrame(page, 800);
 
     await page.evaluate(() => (window as any).__studio.store.getState().setAutoRotate(true));
     await settle(page, 300);
@@ -637,13 +874,23 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const dOn = diffFrames(f0, f1);
 
     await page.evaluate(() => (window as any).__studio.store.getState().setAutoRotate(false));
-    await settle(page, 900); // let damping decay
+    // The 'stopped' bound (changedFrac <= 0.005) is the flakiest in the suite:
+    // OrbitControls' damping decay is frame-rate dependent, so a flat 900 ms on
+    // a loaded host could leave residual sub-pixel drift. Wait for MEASURED
+    // quiescence instead — it returns as soon as two consecutive frame pairs are
+    // quiet (typically well under the old 900 ms) and only spends the larger cap
+    // when the scene genuinely has not stopped yet.
+    const decay = await waitForStableFrame(page, 1600);
     const g0 = await captureGray(page, null);
     await settle(page, 500);
     const g1 = await captureGray(page, null);
     const dOff = diffFrames(g0, g1);
 
-    const metrics = { rotating: rd(dOn), stopped: rd(dOff) };
+    const metrics = {
+      rotating: rd(dOn),
+      stopped: rd(dOff),
+      decay: { stable: decay.stable, waitedMs: decay.waitedMs },
+    };
     console.log('[effects] turntable-flow', JSON.stringify(metrics));
 
     const failures: string[] = [];

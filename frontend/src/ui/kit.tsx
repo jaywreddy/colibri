@@ -4,7 +4,8 @@
  * Small, dependency-free building blocks shared by every panel: collapsible
  * Section, SliderRow / NumberRow / SelectRow / TextRow / CheckRow form rows,
  * ChipRow preset chips, Swatch color chips, Disclosure for advanced options,
- * and Button. One consistent dark-studio style; no external UI deps.
+ * Button, and the Shimmer / FailedTile thumbnail placeholders. One consistent
+ * dark-studio style; no external UI deps.
  */
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 
@@ -143,7 +144,7 @@ export function Section({
   defaultOpen = true,
   testId,
   persistId,
-  onFirstOpen,
+  onOpen,
 }: {
   title: string;
   children: ReactNode;
@@ -151,18 +152,25 @@ export function Section({
   testId?: string;
   /** Stable key for persisting open state; defaults to `title`. */
   persistId?: string;
-  /** Fires once, the first time the section becomes open (incl. mount). */
-  onFirstOpen?: () => void;
+  /**
+   * Fires every time the section transitions closed -> open (incl. mount when
+   * it starts open). Same contract as Disclosure's onOpen: callers that want
+   * once-only behavior must dedupe — firing on EVERY open is what lets
+   * consumers retry lazy loads that failed earlier.
+   */
+  onOpen?: () => void;
 }) {
   const key = persistId ?? title;
   const [open, setOpen] = useState(() => readSectionOpen(key, defaultOpen));
-  const fired = useRef(false);
+  // Latest-callback ref so an inline arrow prop doesn't re-fire the effect on
+  // every parent render; `wasOpen` makes this transition-edge triggered.
+  const onOpenRef = useRef(onOpen);
+  onOpenRef.current = onOpen;
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (open && !fired.current) {
-      fired.current = true;
-      onFirstOpen?.();
-    }
-  }, [open, onFirstOpen]);
+    if (open && !wasOpen.current) onOpenRef.current?.();
+    wasOpen.current = open;
+  }, [open]);
   const toggle = () => {
     setOpen((o) => {
       const next = !o;
@@ -264,7 +272,26 @@ export function Disclosure({
   );
 }
 
-/** Slider with a label + formatted value (+ optional numeric twin). */
+/** Trailing-flush fallback (ms) for when rAF is starved (background tab). */
+const SLIDER_FLUSH_MS = 64;
+
+/**
+ * Slider with a label + formatted value (+ optional numeric twin).
+ *
+ * Delivery of `onChange` is rAF-throttled on the LEADING edge: the first change
+ * in an animation frame goes straight through, and any further changes in that
+ * same frame are coalesced into one trailing delivery of the last value. A
+ * pointer drag on a high-polling-rate mouse fires several input events per
+ * frame, and each one used to reach the store — which for a box dimension
+ * re-renders the panels and rebuilds the whole 3D scene graph.
+ *
+ * The leading edge is load-bearing, not an optimisation: a single programmatic
+ * set (`locator.fill()`, a preset chip) must land in the store with no added
+ * latency, because callers read the committed value straight afterwards. The
+ * COMMITTED-VALUE CONTRACT IS UNCHANGED — every value the user lands on is
+ * delivered, the last one always, and a parent that clamps or ignores a value
+ * still wins the display.
+ */
 export function SliderRow({
   label,
   value,
@@ -289,12 +316,71 @@ export function SliderRow({
   withNumber?: boolean;
 }) {
   const dec = decimals ?? (step >= 1 ? 0 : step >= 0.1 ? 1 : 2);
+  // Local echo for coalesced (not-yet-delivered) values only. React restores a
+  // controlled input's DOM value after any event whose handler did not move the
+  // `value` prop, so without this the thumb would snap backwards for a frame
+  // mid-drag. Null whenever nothing is in flight, so `value` is the single
+  // source of truth at rest.
+  const [draft, setDraft] = useState<number | null>(null);
+  const shown = draft ?? value;
+  const pendingRef = useRef<number | null>(null);
+  const rafRef = useRef(0);
+  const timerRef = useRef(0);
+  // Latest-callback ref: the throttle outlives the render that scheduled it.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  const clearScheduled = (): void => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    rafRef.current = 0;
+    timerRef.current = 0;
+  };
+  const flush = (): void => {
+    clearScheduled();
+    const v = pendingRef.current;
+    pendingRef.current = null;
+    if (v !== null) onChangeRef.current(v);
+  };
+  const openWindow = (): void => {
+    rafRef.current = requestAnimationFrame(flush);
+    timerRef.current = window.setTimeout(flush, SLIDER_FLUSH_MS);
+  };
+  const push = (v: number): void => {
+    if (rafRef.current || timerRef.current) {
+      pendingRef.current = v;
+      setDraft(v);
+      return;
+    }
+    pendingRef.current = null;
+    setDraft(null);
+    onChangeRef.current(v);
+    openWindow();
+  };
+  /** Discrete commit (numeric twin): no throttling, drop anything in flight. */
+  const pushNow = (v: number): void => {
+    clearScheduled();
+    pendingRef.current = null;
+    setDraft(null);
+    onChangeRef.current(v);
+  };
+  // Stop echoing once the parent has caught up — and once it has had its say on
+  // the final value, so a clamp or a refusal is what the user ends up seeing.
+  useEffect(() => {
+    if (pendingRef.current === null) setDraft(null);
+  }, [value]);
+  // Deliver, don't drop, a value still in flight when the row goes away.
+  useEffect(() => () => flush(), []);
+  const endGesture = (): void => {
+    flush();
+    setDraft(null);
+  };
   return (
     <label style={ROW}>
       <span>
         {label}
         <span style={VALUE}>
-          {value.toFixed(dec)}
+          {shown.toFixed(dec)}
           {unit ? ` ${unit}` : ''}
         </span>
       </span>
@@ -305,8 +391,11 @@ export function SliderRow({
           min={min}
           max={max}
           step={step}
-          value={value}
-          onChange={(e) => onChange(parseFloat(e.target.value))}
+          value={shown}
+          onChange={(e) => push(parseFloat(e.target.value))}
+          onPointerUp={endGesture}
+          onKeyUp={endGesture}
+          onBlur={endGesture}
           style={{ flex: 1 }}
         />
         {withNumber && (
@@ -315,10 +404,10 @@ export function SliderRow({
             min={min}
             max={max}
             step={step}
-            value={Number(value.toFixed(dec))}
+            value={Number(shown.toFixed(dec))}
             onChange={(e) => {
               const v = parseFloat(e.target.value);
-              if (Number.isFinite(v)) onChange(v);
+              if (Number.isFinite(v)) pushNow(v);
             }}
             style={{ ...INPUT_STYLE, width: 58 }}
           />
@@ -328,6 +417,18 @@ export function SliderRow({
   );
 }
 
+/**
+ * Numeric field that commits on blur / Enter — never per keystroke — and
+ * clamps the typed value to [min, max].
+ *
+ * Both behaviors are load-bearing, not polish: HTML number inputs do not
+ * constrain typed text outside a form submit, and every keystroke used to
+ * reach the store. Typing "2500" passes through 2, 25 and 250, so a foil-tape
+ * edit patched three nonsense specs on the way, flashing validation errors and
+ * (past the regen debounce) firing a multi-second /boxes/generate for a spec
+ * the user never asked for. The draft therefore stays local until commit;
+ * Escape abandons it.
+ */
 export function NumberRow({
   label,
   value,
@@ -347,6 +448,20 @@ export function NumberRow({
   unit?: string;
   testId?: string;
 }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  // Abandon a pending draft when the committed value moves underneath us (our
+  // own commit, or a preset chip writing the same field) so the box can never
+  // show text that disagrees with the spec.
+  useEffect(() => {
+    setDraft(null);
+  }, [value]);
+  const commit = (raw: string) => {
+    setDraft(null);
+    const v = parseFloat(raw);
+    if (!Number.isFinite(v)) return;
+    const clamped = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v));
+    if (clamped !== value) onChange(clamped);
+  };
   return (
     <label style={ROW}>
       <span>
@@ -359,10 +474,16 @@ export function NumberRow({
         min={min}
         max={max}
         step={step}
-        value={value}
-        onChange={(e) => {
-          const v = parseFloat(e.target.value);
-          if (Number.isFinite(v)) onChange(v);
+        value={draft ?? String(value)}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit(e.currentTarget.value);
+          } else if (e.key === 'Escape') {
+            setDraft(null);
+          }
         }}
         style={INPUT_STYLE}
       />
@@ -545,6 +666,50 @@ export function Swatch({
       />
       <span style={{ textTransform: 'capitalize' }}>{label}</span>
     </button>
+  );
+}
+
+/**
+ * Static placeholder for a thumbnail whose fetch FAILED — deliberately
+ * unanimated so it reads differently from Shimmer. A shimmer that never
+ * resolves is indistinguishable from a slow load, which is how failed pattern
+ * previews used to sit spinning for a whole session.
+ */
+export function FailedTile({
+  style,
+  label = 'preview failed',
+  title,
+}: {
+  style?: CSSProperties;
+  label?: string;
+  title?: string;
+}) {
+  return (
+    <div
+      title={title}
+      style={{
+        background: KIT.field,
+        border: `1px dashed ${KIT.error}`,
+        borderRadius: 4,
+        color: KIT.error,
+        opacity: 0.8,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 2,
+        fontSize: 10,
+        lineHeight: 1.2,
+        textAlign: 'center',
+        padding: 4,
+        ...style,
+      }}
+    >
+      <span aria-hidden style={{ fontSize: 14 }}>
+        ↻
+      </span>
+      <span>{label}</span>
+    </div>
   );
 }
 
