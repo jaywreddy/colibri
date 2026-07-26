@@ -1178,6 +1178,30 @@ export default function BoxScene() {
       return;
     }
     renderer.setPixelRatio(window.devicePixelRatio);
+    // ITEM 2a — tone mapping. The plate rig sums key 2.1 + fill 0.8 + rim 1.3 +
+    // frontFill 1.05 + ambient 0.5 ~= 5.7 of irradiance, so with no tone map the
+    // highlights HARD-CLIP — and clipping is what destroys hue exactly where a
+    // conductor is diagnostic: gold peaks near linear (1.19, 0.97, 0.41) and clamps
+    // to (1.0, 0.97, 0.41), where R and G collapse to near-equal and every bright
+    // gold highlight reads yellow-white (the single biggest reason the metal used to
+    // read as chrome-ish plastic).
+    //
+    // NeutralToneMapping specifically, NOT ACES or AgX: it returns `color` UNCHANGED
+    // below its StartCompression = 0.76 peak, so mid-range differences are preserved
+    // EXACTLY. ACES multiplies by exposure/0.6 and reshapes the whole range; AgX
+    // log2's the full domain. Both compress mid-tone contrast globally, which attacks
+    // every changedFrac floor in the @effects suite — most dangerously the tightest,
+    // opposite-tilt >= 0.06.
+    //
+    // Note the RENDER-TARGET GUARD that makes this safe for the two-plane renderer:
+    // three applies tone mapping + the sRGB OETF only when _currentRenderTarget is
+    // null. The plates therefore write LINEAR, un-tone-mapped values into the glass
+    // slab's transmission backdrop RT (where the inner plane lives) and tone-mapped
+    // sRGB values into the default framebuffer. The inner plane is tone-mapped
+    // exactly once, by the glass fragment that composites it; the outer plane exactly
+    // once, directly. There is no double-tone-map to fear.
+    renderer.toneMapping = THREE.NeutralToneMapping;
+    renderer.toneMappingExposure = 1.0;
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';

@@ -17,7 +17,7 @@ uniform float uN;              // refractive index of substrate
 uniform int uIllumination;     // 0=ambient, 1=laser, 2=backlight
 uniform vec3 uLaserColor;
 uniform vec3 uBacklightColor;
-uniform vec3 uAmbientColor;
+uniform vec3 uAmbientColor;    // ambient illuminant tint (linear; white today)
 
 // Which render recipe to run. Numeric IDs match RECIPE_IDS in frontend/src/api.ts:
 //   0 stereo_lenticular, 1 moire_interactive, 3 foliage_moire (every composed
@@ -179,8 +179,22 @@ uniform vec2 uArtBoxCenterUv;            // uv center of the art box
 // disables the whole feature so pre-accent manifests render identically.
 uniform float uRainbowLevel;       // L of the accent level, normalized 0..1 (<0 = off)
 
-const vec3 GOLD = vec3(0.902, 0.737, 0.314);
-const vec3 GOLD_BACK = vec3(0.4, 0.32, 0.12);
+// ITEM 2b — these are LINEAR-LIGHT reflectances. They used to be sRGB display
+// codes multiplied by lighting terms and written straight to the framebuffer, i.e.
+// the whole plate was lit in GAMMA space: a `lift` of 0.30 on an sRGB code is only
+// 0.30^2.4 ~= 0.065 of full linear radiance — ~4.6x darker than intended, which is
+// why the terminator was harsh and why the rig needed a 0.30 ambient floor and an
+// AmbientLight(0.5) to compensate. main() now runs <tonemapping_fragment> +
+// <colorspace_fragment>, so this file is linear throughout and the plates share ONE
+// transfer function with the metalwork for the first time.
+//
+// The values are the exact sRGB->linear images of the previous constants, so the old
+// LOOK is the porting baseline; the lighting coefficients below were then re-derived
+// to hold displayed mid-tone brightness (see runFoliageMoireLayer's ambient branch).
+// Moving GOLD to measured Au F0 is a separate art call — item 4 does that for the
+// SPECULAR lobe only, where F0 is the physically meaningful quantity.
+const vec3 GOLD = vec3(0.791, 0.503, 0.080);       // was sRGB (0.902, 0.737, 0.314)
+const vec3 GOLD_BACK = vec3(0.133, 0.084, 0.013);  // was sRGB (0.4,   0.32,  0.12)
 
 vec3 ambientLit(vec3 base) {
   // Simple Lambert + subtle specular on gold
@@ -672,19 +686,40 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
     // dimmer so the bare carrier recedes behind the foliage. The dim/hot buckets
     // (water barrier / flowing water) override that default so the scanimation
     // reads: the barrier recedes and the water behind it glows.
+    // ITEM 2d — coefficients RE-DERIVED for linear-light shading. Every constant
+    // here was originally hand-tuned against display-space output; with GOLD now
+    // linear and <tonemapping_fragment>/<colorspace_fragment> in main(), the same
+    // numbers would read wrong at both ends (dark side washed out, because the old
+    // 0.30 floor was compensating for gamma-space lighting; highlights rolled off,
+    // because they used to hard-clip). The retune target is the PREVIOUS BUILD'S
+    // DISPLAYED MID-TONE BRIGHTNESS, so measured @effects deltas stay in the same
+    // band: at ndl = 0.5, full coverage, the outer plane lands within ~0.5% of the
+    // old displayed channel mean, the inner plane within ~1%, and the dim/hot buckets
+    // within ~1%. The dark end comes back ~5% dim and the peak ~13% dim — the peak is
+    // NeutralToneMapping's shoulder replacing a hard clip, which is the entire point:
+    // the clipped peak used to collapse R and G to near-equal and read yellow-white
+    // instead of gold.
     float normalCov = clamp(cov - dimCov - hotCov, 0.0, 1.0);
     vec3 tint = isBack ? mix(GOLD_BACK, GOLD, 0.55) : GOLD;
-    float lift = isBack ? (0.22 + 0.5 * ndl) : (0.30 + 0.72 * ndl);
+    float lift = isBack ? (0.05 + 0.42 * ndl) : (0.155 + 1.00 * ndl);
     color = tint * normalCov * lift;
-    color += GOLD * 0.3 * normalCov * (0.3 + 0.7 * ndl) * (isBack ? 0.4 : 1.0); // glint
+    color += GOLD * 0.3 * normalCov * (0.15 + 1.0 * ndl) * (isBack ? 0.4 : 1.0); // glint
     // Recessed barrier: dim, so the flowing water behind it dominates the read.
-    color += mix(GOLD_BACK, GOLD, 0.15) * dimCov * (0.14 + 0.22 * ndl);
+    color += mix(GOLD_BACK, GOLD, 0.15) * dimCov * (0.05 + 0.08 * ndl);
     // Flowing water: bright first-surface gold regardless of plane.
-    color += GOLD * hotCov * (0.45 + 0.7 * ndl);
+    color += GOLD * hotCov * (0.43 + 0.67 * ndl);
     // Diffraction accent: OUTER plane only, labelled angle-hue sheen.
     if (!isBack && rainbowHere > 0.0) {
       color += diffractionSheen(viewTangent, pUm, ndl) * rainbowHere;
     }
+    // Ambient illuminant tint. uAmbientColor was bound by BoxScene but read by no
+    // branch in any recipe — inert plumbing. Consume it here (rather than delete the
+    // uniform, which is part of the material's bound surface) so the ambient
+    // illuminant can actually be coloured. It is white today, and Color.setHex
+    // already converts sRGB -> linear working space, so this is a no-op at the
+    // current binding and correct if that binding ever changes. Applied after the
+    // sheen on purpose: the illuminant spectrum modulates the diffracted spectrum too.
+    color *= uAmbientColor;
   }
   return vec4(color, clamp(cov, 0.0, 1.0));
 }
@@ -692,22 +727,39 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
 void main() {
   vec3 viewTangent = normalize(vViewDirTangent);
 
-  // Recipe 3 (foliage_moire = every box face) is the TWO-PLANE geometric path:
-  // it returns its own alpha so the two real surfaces composite in the scene.
+  // ITEM 2c — SINGLE exit point so every recipe runs the colour pipeline. The three
+  // chunks below operate on `gl_FragColor` BY NAME, so the old recipe-3 early
+  // `return` would have skipped them; hence the if/else-if/else shape rather than an
+  // early-out. Recipe 3 (foliage_moire = every box face) is the TWO-PLANE geometric
+  // path and returns its own alpha so the two real surfaces composite in the scene;
+  // the legacy single-plane recipes (standalone-pattern previews) stay opaque.
+  // (uRecipe == 2 no longer exists — phase_shift_overlay is retired.)
   if (uRecipe == 3) {
     gl_FragColor = runFoliageMoireLayer(viewTangent);
-    return;
-  }
-
-  // Legacy single-plane recipes (standalone-pattern previews) stay opaque.
-  // (uRecipe == 2 no longer exists — phase_shift_overlay is retired.)
-  vec3 color;
-  if (uRecipe == 0) {
-    color = runStereoLenticular(viewTangent);
+  } else if (uRecipe == 0) {
+    gl_FragColor = vec4(runStereoLenticular(viewTangent), 1.0);
   } else {
     // Default + uRecipe == 1: moire_interactive.
-    color = runMoireInteractive(viewTangent);
+    gl_FragColor = vec4(runMoireInteractive(viewTangent), 1.0);
   }
 
-  gl_FragColor = vec4(color, 1.0);
+  // makePlateShader builds a ShaderMaterial (NOT RawShaderMaterial), so three's full
+  // fragment prefix — toneMapping(), toneMappingExposure, linearToOutputTexel() — is
+  // already prepended and resolveIncludes() runs on this file. The angle-bracket form
+  // survives vite-plugin-glsl untouched: its include regex character class explicitly
+  // excludes '<' and '>', so only the './lib/parallax.glsl' form above is its
+  // business. No build-tooling change is needed.
+  //
+  // Per-pass correctness (this is what makes the two-plane renderer safe): three
+  // disables tone mapping and forces LinearSRGBColorSpace whenever it is rendering
+  // into a render target. These two chunks therefore write LINEAR, un-tone-mapped
+  // values into the glass slab's transmission backdrop RT — where the inner plane
+  // lives — and tone-mapped, sRGB-encoded values into the default framebuffer. The
+  // inner plane gets tone-mapped exactly once, by the glass fragment that composites
+  // it; the outer plane exactly once, directly. No double application.
+  //
+  // sRGBTransferOETF passes .a through untouched, so alphaToCoverage (which reads
+  // the gold-coverage alpha) is unaffected.
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
 }
