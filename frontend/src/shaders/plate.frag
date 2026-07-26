@@ -2,10 +2,18 @@ precision highp float;
 
 #include './lib/parallax.glsl'
 
+// ITEM 3 — world-space surface basis from plate.vert; the view and light directions
+// are built PER FRAGMENT in main() and passed down as explicit parameters. The old
+// vViewDirTangent / vLightDirTangent varyings are gone: they interpolated normalized
+// directions across a 4-vertex quad spanning a whole 50 mm face (see plate.vert).
 varying vec2 vUv;
-varying vec3 vViewDirTangent;
-varying vec3 vLightDirTangent;
+varying vec3 vWorldPos;
 varying vec3 vNormalWorld;
+varying vec3 vTangentWorld;
+varying vec3 vBitangentWorld;
+
+// Key-light direction in world space. Treated as a DIRECTIONAL light — see main().
+uniform vec3 uLightWorld;
 
 uniform sampler2D uFront;
 uniform sampler2D uBack;
@@ -196,22 +204,19 @@ uniform float uRainbowLevel;       // L of the accent level, normalized 0..1 (<0
 const vec3 GOLD = vec3(0.791, 0.503, 0.080);       // was sRGB (0.902, 0.737, 0.314)
 const vec3 GOLD_BACK = vec3(0.133, 0.084, 0.013);  // was sRGB (0.4,   0.32,  0.12)
 
-vec3 ambientLit(vec3 base) {
-  // Simple Lambert + subtle specular on gold
-  float ndl = max(0.0, vLightDirTangent.z);
-  float ndv = max(0.0, vViewDirTangent.z);
-  vec3 h = normalize(vLightDirTangent + vViewDirTangent);
-  float ndh = max(0.0, h.z);
-  float spec = pow(ndh, 80.0) * 0.35;
-  return base * (0.2 + 0.9 * ndl) + vec3(1.0, 0.85, 0.6) * spec * (0.3 + ndv);
-}
+// (The `ambientLit` helper that used to sit here was DEAD — nothing ever called it —
+// and it read the two varyings item 3 removed. It did contain the only correct
+// half-vector specular in the file, which is now implemented for real, inline, in
+// runFoliageMoireLayer's ambient branch. Deliberately deleted rather than fixed up:
+// a second, divergent copy of the lighting model is exactly how the branch drifted
+// into having no view-dependent response at all.)
 
 // ----------------------------------------------------------------------------
 // Recipe 1: moire_interactive — sample front & back with physical parallax.
 // The Snell-refracted shift means rotating/orbiting the camera actually
 // produces moving moiré fringes.
 // ----------------------------------------------------------------------------
-vec3 runMoireInteractive(vec3 viewTangent) {
+vec3 runMoireInteractive(vec3 viewTangent, vec3 lightTangent) {
   vec2 shift = parallax_offset(viewTangent, uThicknessUm, uN, uExtentUm);
   float frontGold = texture2D(uFront, vUv).r;
   float backGold  = texture2D(uBack,  vUv - shift).r;
@@ -223,12 +228,12 @@ vec3 runMoireInteractive(vec3 viewTangent) {
 
   vec3 color;
   if (uIllumination == 0) {
-    vec3 goldShade = GOLD * reflected * (0.3 + 0.7 * max(0.0, vLightDirTangent.z));
+    vec3 goldShade = GOLD * reflected * (0.3 + 0.7 * max(0.0, lightTangent.z));
     color = goldShade + vec3(0.04) * transmission;
     float overlap = frontGold * backGold;
     color *= (1.0 - 0.35 * overlap);
   } else if (uIllumination == 1) {
-    color = uLaserColor * transmission * (0.45 + 0.55 * max(0.0, vLightDirTangent.z));
+    color = uLaserColor * transmission * (0.45 + 0.55 * max(0.0, lightTangent.z));
     color += GOLD * 0.12 * reflected;
   } else {
     color = uBacklightColor * transmission;
@@ -243,7 +248,7 @@ vec3 runMoireInteractive(vec3 viewTangent) {
 // vector on the slit-normal axis picks which scene is visible through the
 // slits. Switch half-angle ≈ arctan(p/2·t).
 // ----------------------------------------------------------------------------
-vec3 runStereoLenticular(vec3 viewTangent) {
+vec3 runStereoLenticular(vec3 viewTangent, vec3 lightTangent) {
   vec2 shift = parallax_offset(viewTangent, uThicknessUm, uN, uExtentUm);
 
   // EMERGENT parallax barrier. A front comb (opaque bars, slit open half of each
@@ -286,11 +291,11 @@ vec3 runStereoLenticular(vec3 viewTangent) {
 
   vec3 color;
   if (uIllumination == 0) {
-    vec3 sceneGold = GOLD * transmission * (0.35 + 0.7 * max(0.0, vLightDirTangent.z));
-    vec3 barrier = GOLD * frontGold * (0.2 + 0.5 * max(0.0, vLightDirTangent.z)) * 0.6;
+    vec3 sceneGold = GOLD * transmission * (0.35 + 0.7 * max(0.0, lightTangent.z));
+    vec3 barrier = GOLD * frontGold * (0.2 + 0.5 * max(0.0, lightTangent.z)) * 0.6;
     color = sceneGold + barrier;
   } else if (uIllumination == 1) {
-    color = uLaserColor * transmission * (0.5 + 0.5 * max(0.0, vLightDirTangent.z));
+    color = uLaserColor * transmission * (0.5 + 0.5 * max(0.0, lightTangent.z));
     color += GOLD * 0.08 * frontGold;
   } else {
     color = uBacklightColor * transmission * 0.9;
@@ -538,7 +543,7 @@ float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
 // perspective projection of the two physical planes in the scene. Returns
 // straight colour + alpha (= gold coverage), so gaps are transparent and the
 // inner plane shows through the outer one.
-vec4 runFoliageMoireLayer(vec3 viewTangent) {
+vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
   float mR = texture2D(uFront, vUv).r;   // THIS layer's own mask
   float oR = texture2D(uBack, vUv).r;    // the OTHER layer's mask (the switch's
                                          // second silhouette — see uSwitchInterlace)
@@ -673,7 +678,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
     }
   }
 
-  float ndl = max(0.0, vLightDirTangent.z);
+  float ndl = max(0.0, lightTangent.z);
   vec3 color;
   if (uIllumination == 1) {
     // Laser transmission: bright where the layer is OPEN (gaps) — but the alpha
@@ -725,7 +730,33 @@ vec4 runFoliageMoireLayer(vec3 viewTangent) {
 }
 
 void main() {
-  vec3 viewTangent = normalize(vViewDirTangent);
+  // ITEM 3 — build the view and light directions PER FRAGMENT, then project them onto
+  // the interpolated world basis. `cameraPosition` is declared by three's own fragment
+  // prefix, so this needs no new uniform.
+  vec3 tangentWorld   = normalize(vTangentWorld);
+  vec3 bitangentWorld = normalize(vBitangentWorld);
+  vec3 normalWorld    = normalize(vNormalWorld);
+
+  vec3 viewDirWorld = normalize(cameraPosition - vWorldPos);
+  // DIRECTIONAL, not positional. plate.vert used to treat uLightWorld as a POINT
+  // light (normalize(uLightWorld - worldPos)) while the scene's keyLight is a
+  // THREE.DirectionalLight fed that very same vector — the plate and the PBR rig
+  // disagreed about what the uniform means. Numerically this is near-neutral today
+  // (the root scale of ~0.028 makes plate world positions tiny against the 3-unit
+  // light distance), which is exactly why it is safe to unify now, before the
+  // divergence can grow into something that has to be untangled under a regression.
+  vec3 lightDirWorld = normalize(uLightWorld);
+
+  vec3 viewTangent = vec3(
+    dot(viewDirWorld, tangentWorld),
+    dot(viewDirWorld, bitangentWorld),
+    dot(viewDirWorld, normalWorld)
+  );
+  vec3 lightTangent = vec3(
+    dot(lightDirWorld, tangentWorld),
+    dot(lightDirWorld, bitangentWorld),
+    dot(lightDirWorld, normalWorld)
+  );
 
   // ITEM 2c — SINGLE exit point so every recipe runs the colour pipeline. The three
   // chunks below operate on `gl_FragColor` BY NAME, so the old recipe-3 early
@@ -735,12 +766,12 @@ void main() {
   // the legacy single-plane recipes (standalone-pattern previews) stay opaque.
   // (uRecipe == 2 no longer exists — phase_shift_overlay is retired.)
   if (uRecipe == 3) {
-    gl_FragColor = runFoliageMoireLayer(viewTangent);
+    gl_FragColor = runFoliageMoireLayer(viewTangent, lightTangent);
   } else if (uRecipe == 0) {
-    gl_FragColor = vec4(runStereoLenticular(viewTangent), 1.0);
+    gl_FragColor = vec4(runStereoLenticular(viewTangent, lightTangent), 1.0);
   } else {
     // Default + uRecipe == 1: moire_interactive.
-    gl_FragColor = vec4(runMoireInteractive(viewTangent), 1.0);
+    gl_FragColor = vec4(runMoireInteractive(viewTangent, lightTangent), 1.0);
   }
 
   // makePlateShader builds a ShaderMaterial (NOT RawShaderMaterial), so three's full
