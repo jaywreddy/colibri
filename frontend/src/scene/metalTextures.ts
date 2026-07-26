@@ -1,6 +1,27 @@
 import * as THREE from 'three';
 
 /**
+ * Anisotropic-filtering level for every map this module builds.
+ *
+ * These used to be hardcoded to 8 and 4, which silently threw away whatever the GPU
+ * actually offers (commonly 16) — and anisotropy is exactly what keeps the foil and
+ * solder maps sharp at the GRAZING angles the box is mostly seen at, so the
+ * hardcoded ceiling cost real detail on every side wall.
+ *
+ * A module-level cap rather than a threaded renderer argument: the builders below are
+ * memoized at module level on their input tuples, so adding a renderer parameter would
+ * either pollute every cache key or have to be ignored in it. BoxScene calls the setter
+ * once, immediately after the renderer exists and again on context restore, which is
+ * before any build runs — so no texture is ever built at the stale default.
+ */
+let maxAnisotropy = 8;
+
+/** Raise the anisotropy used by subsequently-built maps to the GPU's real limit. */
+export function setMetalTextureAnisotropy(limit: number): void {
+  if (Number.isFinite(limit) && limit >= 1) maxAnisotropy = Math.floor(limit);
+}
+
+/**
  * Procedural microsurface maps for the copper-foil / solder metals.
  *
  * Everything here is generated from a small 2D canvas (256px) — no external
@@ -124,7 +145,7 @@ function finalizeTex(
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 8;
+  tex.anisotropy = maxAnisotropy;
   if (repeat) tex.repeat.set(repeat[0], repeat[1]);
   tex.needsUpdate = true;
   return tex;
@@ -422,7 +443,9 @@ function buildStripHeatColor(
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.anisotropy = 4;
+  // The heat map was capped at 4 (half the others) for no stated reason; it sits on the
+  // same grazing-angle foil, so it gets the same treatment.
+  tex.anisotropy = maxAnisotropy;
   tex.needsUpdate = true;
   return tex;
 }

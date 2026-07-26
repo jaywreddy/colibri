@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildStudioEnvScene } from './studioEnv';
-import { makeFoilMaps, makeSolderMaps, makeStripHeatColor, hashStr } from './metalTextures';
+import {
+  makeFoilMaps,
+  makeSolderMaps,
+  makeStripHeatColor,
+  hashStr,
+  setMetalTextureAnisotropy,
+} from './metalTextures';
 import { makeBeadGeometry, makeCornerBlob } from './solderBead';
 import vert from '../shaders/plate.vert';
 import frag from '../shaders/plate.frag';
@@ -1292,6 +1298,10 @@ export default function BoxScene() {
     // once, directly. There is no double-tone-map to fear.
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = 1.0;
+    // Let the foil/solder maps use the GPU's real anisotropy limit (commonly 16) rather
+    // than the 8/4 they were hardcoded to. Set before any build runs, so no map is ever
+    // built at the stale default.
+    setMetalTextureAnisotropy(renderer.capabilities.getMaxAnisotropy());
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
@@ -1438,6 +1448,9 @@ export default function BoxScene() {
       window.clearTimeout(restoreTimer);
       const c = ctxRef.current;
       if (c) {
+        // A fresh context may report a different anisotropy limit; re-assert it before
+        // the rebuild below re-derives the metal maps.
+        setMetalTextureAnisotropy(c.renderer.capabilities.getMaxAnisotropy());
         c.envTex.dispose();
         c.pmrem.dispose();
         const env = makeStudioEnv(c.renderer);
