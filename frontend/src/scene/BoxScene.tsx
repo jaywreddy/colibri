@@ -458,9 +458,29 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
 function makeGlassMaterial(): THREE.MeshPhysicalMaterial {
   return new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
-    transmission: 0.85,
+    // ITEM 1 — substrate honesty. The inner gold plane is only ever seen THROUGH
+    // this material, so its transmission sampling is the LAST low-pass filter
+    // applied to the back layer; no shader-side work can recover detail that has
+    // already been smeared here.
+    //
+    // `roughness` sets the transmission blur LOD directly (three's
+    // transmission_pars_fragment):
+    //     lod = log2(transmissionSamplerSize.x) * roughness * clamp(2*ior - 2, 0, 1)
+    // At roughness 0.06 / ior 1.46 (factor 0.92) on a ~1400 px viewport that is
+    // lod ~= 0.58 — the back carrier arrives bicubic-blurred across ~1.5 device
+    // pixels. At 0.012 it is lod ~= 0.115. 0.06 describes GROUND glass; a
+    // lambda/10-polished fused-silica window is an order of magnitude smoother,
+    // so the new value is also the more physical one.
+    //
+    // `transmission` 0.85 left 15% of a white-diffuse-lit slab composited OVER the
+    // back plane as a milky veil that flattened back-layer contrast globally. Bare
+    // polished fused silica transmits ~92%.
+    //
+    // Both are set here only — the rebuild loop overwrites `ior` from spec.glass.n
+    // but never these two, so this single edit persists across rebuilds.
+    transmission: 0.94,
     ior: 1.46,
-    roughness: 0.06,
+    roughness: 0.012,
     metalness: 0.0,
     // No volume: the T/n inner-plane placement is the only refractive
     // displacement in the scene (see the rebuild loop's g.thickness note).
