@@ -773,8 +773,14 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // A REAL half-vector specular lobe, carrying gold's own spectral character (F)
     // rather than the white highlight a naive rig would give — a white highlight on
     // gold is precisely what made the metal read as chrome.
-    vec3 h = normalize(lightTangent + viewTangent);
-    float spec = pow(max(0.0, h.z), 80.0);
+    //
+    // Guard the normalize: when the light is exactly opposite the view direction the
+    // sum is the zero vector and normalize() returns NaN, which would propagate
+    // straight into gl_FragColor as a hard artifact (and poison the pixel metrics).
+    // There is no specular lobe in that configuration anyway.
+    vec3 hSum = lightTangent + viewTangent;
+    float hLen = length(hSum);
+    float spec = (hLen > 1e-4) ? pow(max(0.0, hSum.z / hLen), 80.0) : 0.0;
 
     // ITEM 5 — the inner plane's dimming is now REAL SECOND-SURFACE PHYSICS instead
     // of hand-picked numbers. It used to be tint = mix(GOLD_BACK, GOLD, 0.55) and a
