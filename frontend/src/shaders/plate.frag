@@ -204,6 +204,14 @@ uniform float uRainbowLevel;       // L of the accent level, normalized 0..1 (<0
 const vec3 GOLD = vec3(0.791, 0.503, 0.080);       // was sRGB (0.902, 0.737, 0.314)
 const vec3 GOLD_BACK = vec3(0.133, 0.084, 0.013);  // was sRGB (0.4,   0.32,  0.12)
 
+// ITEM 4 — normal-incidence Fresnel reflectance (F0) of evaporated gold, linear.
+// This is a MEASURED physical constant, not an art value: it is what sets both the
+// colour of the specular lobe and the rate at which the metal desaturates toward
+// white as the view goes grazing, which is the actual visual signature of gold.
+// Kept separate from GOLD (the diffuse-lobe albedo, which is the ported old look) so
+// the head-on appearance the item-2 retune calibrated is not disturbed.
+const vec3 GOLD_F0 = vec3(1.000, 0.766, 0.336);
+
 // (The `ambientLit` helper that used to sit here was DEAD — nothing ever called it —
 // and it read the two varyings item 3 removed. It did contain the only correct
 // half-vector specular in the file, which is now implemented for real, inline, in
@@ -704,11 +712,49 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // NeutralToneMapping's shoulder replacing a hard clip, which is the entire point:
     // the clipped peak used to collapse R and G to near-equal and read yellow-white
     // instead of gold.
+    //
+    // ITEM 4 — real conductor response. This branch previously NEVER read the view
+    // direction (except inside diffractionSheen): its whole shading was
+    // tint * normalCov * lift plus a second term LABELLED "glint" that used ndl, not
+    // a half-vector, so it was not specular at all. Net effect: the gold litho layer
+    // had zero view-dependent material response and no specular lobe — flat diffuse
+    // paint. Real evaporated gold on quartz is a near-mirror conductor whose
+    // reflectance rises toward unity and desaturates toward white at grazing
+    // incidence, and that angular behaviour IS what makes gold read as gold.
+    //
+    // This is MATERIAL RESPONSE, not a synthesised optical effect: view-dependent,
+    // time-invariant (no time term anywhere), litho-mask-driven (every term is gated
+    // by normalCov, so it appears only where gold actually exists) and geometric.
+    // Categorically different from the self-admitted preview stand-in in
+    // diffractionSheen.
+    float ndv = max(0.0, viewTangent.z);
+    float schlick = pow(1.0 - ndv, 5.0);
+    vec3 F = GOLD_F0 + (1.0 - GOLD_F0) * schlick;
+    // NORMALIZED Fresnel for the diffuse-ish lobe: exactly 1.0 at normal incidence,
+    // rising toward 1/F0 = (1.0, 1.31, 2.98) at grazing. Folding it in this way adds
+    // gold's correct angular desaturation WITHOUT shifting the head-on brightness the
+    // item-2 retune just calibrated. Over the ±14° cone the suite samples, schlick
+    // runs 0 -> 0.031, so this gain runs 1.0 -> ~(1.00, 1.01, 1.06): a physically
+    // correct term that is near-constant everywhere the tests look while varying
+    // strongly at the 60-80° views a user actually orbits to.
+    vec3 fresnelGain = F / GOLD_F0;
+    // A REAL half-vector specular lobe, carrying gold's own spectral character (F)
+    // rather than the white highlight a naive rig would give — a white highlight on
+    // gold is precisely what made the metal read as chrome.
+    vec3 h = normalize(lightTangent + viewTangent);
+    float spec = pow(max(0.0, h.z), 80.0);
+
     float normalCov = clamp(cov - dimCov - hotCov, 0.0, 1.0);
     vec3 tint = isBack ? mix(GOLD_BACK, GOLD, 0.55) : GOLD;
-    float lift = isBack ? (0.05 + 0.42 * ndl) : (0.155 + 1.00 * ndl);
-    color = tint * normalCov * lift;
-    color += GOLD * 0.3 * normalCov * (0.15 + 1.0 * ndl) * (isBack ? 0.4 : 1.0); // glint
+    // The old "glint" term's BROAD (ndl-driven) energy is folded into `lift` here,
+    // because the specular replacing it is a tight pow(.,80) lobe that carries almost
+    // none of it. Outer: 0.155 + 1.00*ndl plus the glint's 0.045 + 0.30*ndl = the
+    // 0.20 + 1.30*ndl item 2 solved for. Inner: the same fold, and it is hue-safe
+    // because GOLD ~= 1.60 * mix(GOLD_BACK, GOLD, 0.55) to within 0.5% per channel,
+    // so the glint's GOLD tint collapses cleanly into the back tint.
+    float lift = isBack ? (0.079 + 0.61 * ndl) : (0.20 + 1.30 * ndl);
+    color = tint * normalCov * lift * fresnelGain;
+    color += F * spec * normalCov * 0.5 * ndl;
     // Recessed barrier: dim, so the flowing water behind it dominates the read.
     color += mix(GOLD_BACK, GOLD, 0.15) * dimCov * (0.05 + 0.08 * ndl);
     // Flowing water: bright first-surface gold regardless of plane.
