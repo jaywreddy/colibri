@@ -1177,7 +1177,19 @@ export default function BoxScene() {
       shadowTex.dispose();
       return;
     }
-    renderer.setPixelRatio(window.devicePixelRatio);
+    // ITEM 2e — cap the device pixel ratio at 2. `transmission` makes three render
+    // the scene TWICE per frame (the backdrop RT, then the beauty pass), so an
+    // uncapped 3x DPR is ~18x the fill of a 1x single pass — and items 3-5 make the
+    // plate fragment shader materially more expensive. 2x is past the point of
+    // visible return for the fine litho masks.
+    //
+    // Deliberately NOT a store field with UI: a store-dependent pixel-ratio effect
+    // can re-assert the app ratio mid-probe and silently invalidate a
+    // zoomForMicroPatterns capture. Note also that onResize() below calls setSize()
+    // only, never setPixelRatio — that is load-bearing, because it is what stops a
+    // ResizeObserver tick from clobbering the ratio zoomForMicroPatterns saves and
+    // restores itself.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     // ITEM 2a — tone mapping. The plate rig sums key 2.1 + fill 0.8 + rim 1.3 +
     // frontFill 1.05 + ambient 0.5 ~= 5.7 of irradiance, so with no tone map the
     // highlights HARD-CLIP — and clipping is what destroys hue exactly where a
