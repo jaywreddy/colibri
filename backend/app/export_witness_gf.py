@@ -23,6 +23,13 @@ Honest expectation, stated up front: this roughly HALVES the GDSII. It cannot
 approach OASIS, because ~450 k references at ~32 bytes is a 14 MB floor that no
 hierarchy removes — only a coarser asset would, and that is a design knob, not a
 format one. The measured numbers are in the manifest.
+
+Fidelity, measured: against the flat writer the hierarchical GDS has the same
+shape count (4,422,299 flattened) and bounding box, and a total area different
+by 1,048 um^2 in 3.5e9 — one-nanometre edge jitter, because a size-cached cell
+has its WIDTH rounded to the grid and is then placed at a rounded origin, where
+the flat writer rounds each edge independently. Nothing against a 2 um floor,
+but not bit-identical, so it is stated.
 """
 from __future__ import annotations
 
