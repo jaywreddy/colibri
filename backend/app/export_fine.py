@@ -1059,7 +1059,7 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # slot, floored so a huge plate does not explode the source raster.
     from .patterns._helpers import MAX_LATTICE_CELLS
 
-    ideal = min(P.WATER_SCAN_FAB_PITCH_UM / P.WATER_SCAN_N_PHASES, back_period) / 4.0
+    ideal = min(P.water_scan_fab_pitch_um(spec) / P.WATER_SCAN_N_PHASES, back_period) / 4.0
     budget_pitch = math.sqrt(W * H / (0.9 * MAX_LATTICE_CELLS))
     pitch = max(ideal, budget_pitch)
 
@@ -1234,7 +1234,7 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
             if zm.waterline_y is not None
             else P._water_waterline_y(spec.pattern_params)
         )
-        fp = P.WATER_SCAN_FAB_PITCH_UM
+        fp = P.water_scan_fab_pitch_um(spec)
         nph = P.WATER_SCAN_N_PHASES
         carrier_um = P.WATER_SCAN_FAB_CARRIER_UM
         # Front body shimmer: native 24 µm vertical carrier clipped to the dry

@@ -438,7 +438,10 @@ def generate(
 # bucket. INTEGRATOR NOTE: if you want the understory on a guaranteed-distinct
 # fringe (independent of theme leaf mix), add an "understory" key to
 # plates.MOTIF_ANGLE_BUCKET (e.g. bucket 6, N_FRAME_BUCKETS -> 7, top level 180
-# still < ART_MIN·255=191) and tag these sprites with type="understory".
+# still < RAINBOW_MIN·255 ≈ 183.6 — the REAL frame ceiling; the diffraction
+# accent window was carved below ART_MIN after this note was written, so a
+# 7th bucket at 194 would silently reclassify those leaves as centerpiece ART)
+# and tag these sprites with type="understory".
 _FEATHERY = ("fern", "wax_palm")
 
 

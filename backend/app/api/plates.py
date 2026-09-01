@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -46,6 +46,10 @@ class PlateSpecBody(BaseModel):
     weld_margin_um: float = 1000.0
     # Fabricated grating pitch (μm) of the back carrier + leaf louvre family.
     carrier_pitch_um: float = 22.0
+    # Per-face carrier scaling vs the real glass: "gap" tracks t/n (controlled
+    # reveal on any stock, no-op at the 500 µm baseline); "fixed" keeps the
+    # literal fine pitch (refraction shimmer on thick stock).
+    carrier_scale_mode: Literal["gap", "fixed"] = "gap"
     label: str = ""
 
     def to_spec(self) -> PlateSpec:

@@ -48,9 +48,11 @@ def _direct_stats(polys) -> tuple[int, float, int, float]:
 
 def _tiled_stats(polys, tile_um: float = 50.0) -> tuple[int, float, int, float]:
     floor_dbu = int(round(FLOOR / DBU))
+    # Drop the trailing violation-marker Regions (they ride along for the
+    # heal's surgical weld) — these tests compare the count/min stats.
     return D._tiled_check_stats(
         polys, kdb, width_dbu=floor_dbu, gap_dbu=floor_dbu, dbu_um=DBU, tile_um=tile_um
-    )
+    )[:4]
 
 
 def _grating(x0: float, n: int, period: float, width: float, y0: float, y1: float) -> np.ndarray:

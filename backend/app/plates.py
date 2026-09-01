@@ -48,7 +48,11 @@ from .patterns.frames import (
     scene_to_multipolygon,
 )
 from .patterns.frames.api import FrameParams
-from .rasterize import make_thumbnail
+from .rasterize import (
+    DEFAULT_THUMBNAIL_METAL,
+    THUMBNAIL_PALETTES,
+    make_thumbnail,
+)
 from .service import (
     DATA_ROOT,
     cache_lock,
@@ -175,6 +179,18 @@ class PlateSpec:
     # (see boxes.normalize_face_dims); part of the plate hash so a pitch change
     # regenerates the cached plate.
     carrier_pitch_um: float = 22.0
+    # PER-FACE carrier scaling policy against the plate's real glass:
+    #   "gap"   (default) — the fabricated carrier family scales with the
+    #           paraxial gap t/n (see parallax_period_scale), preserving the
+    #           designed reveal/beat TILT behavior on any stock. A no-op at
+    #           the 500 µm fused-silica baseline (scale = 1), so every
+    #           existing plate keeps byte-identical geometry.
+    #   "fixed" — keep carrier_pitch_um as the literal fabricated pitch. On
+    #           thick stock the reveals compress into sub-degree "refraction
+    #           shimmer" — a deliberate aesthetic choice per face.
+    # The switch/scanimation barrier periods scale with the gap regardless
+    # (fab_center_period_um) — their crossing angle is the effect.
+    carrier_scale_mode: str = "gap"
     label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -188,6 +204,7 @@ class PlateSpec:
             "weld_margin_um": self.weld_margin_um,
             "back_margin_um": self.back_margin_um,
             "carrier_pitch_um": self.carrier_pitch_um,
+            "carrier_scale_mode": self.carrier_scale_mode,
             "label": self.label,
         }
 
@@ -209,6 +226,7 @@ class PlateSpec:
                 else None
             ),
             carrier_pitch_um=float(data.get("carrier_pitch_um", 22.0)),
+            carrier_scale_mode=str(data.get("carrier_scale_mode", "gap")),
             label=data.get("label", ""),
         )
 
@@ -272,9 +290,16 @@ ART_LEVEL = 255     # 1.0 in the shader
 # only (steam-curl tips, gear hub, monogram flourish tips) —
 # keep them tiny so the sub-5 µm feature count stays inside the lattice budget.
 RAINBOW_LEVEL = 200
+# Fab accent-grating parameters, imported (never copied) so recipe_data and the
+# baked mask always quote the same grating — see the rainbow_* keys below.
+from .patterns.effects.gratings import (  # noqa: E402
+    DIFFRACTION_ACCENT_ANGLE_DEG as _DIFFRACTION_ACCENT_ANGLE_DEG,
+    DIFFRACTION_ACCENT_DUTY as _DIFFRACTION_ACCENT_DUTY,
+    DIFFRACTION_ACCENT_PERIOD_UM as _DIFFRACTION_ACCENT_PERIOD_UM,
+)
 
 # Frame-band angle-bucket palette. Levels live strictly inside the shader's
-# frame window (FRAME_MIN·255 = 51 .. ART_MIN·255 = 191) so they still classify
+# frame window (FRAME_MIN·255 = 51 .. RAINBOW_MIN·255 ≈ 183.6) so they still classify
 # as "frame" (not centerpiece art) while carrying an angle index. Bucket b sits
 # at L = FRAME_BUCKET0 + b·FRAME_BUCKET_STEP; the shader recovers b by rounding
 # and maps it to an angle offset spanning ±(N/2)·FRAME_ANGLE_SPAN_DEG.
@@ -456,6 +481,47 @@ SWITCH_INTERLACE_SLUGS = frozenset(
 WATER_SCAN_FAB_PITCH_UM = 60.0
 WATER_SCAN_FAB_CARRIER_UM = 24.0
 
+# --- glass-derived fab periods ------------------------------------------------
+# The 60 µm barrier periods above are TILT targets, not absolute pitches: the
+# A↔B switch crosses after the back layer walks half a period, and the parallax
+# rate is set by the paraxial gap t/n (~5.98 µm/deg at the 500 µm / n=1.46
+# baseline → half of 60 µm ≈ 5° of tilt, the comfortable hand sweep). On other
+# stock — e.g. the bonded build's 1.5 mm soda-lime ply (gap 987 µm, ~2.9× the
+# baseline) — keeping the RAW 60 µm would triple the flicker rate, so the fab
+# bake scales the barrier/scanimation periods with the spec's real gap and the
+# ~5° crossing is preserved for ANY glass. Snapped to 0.5 µm; exactly the
+# legacy constants at the baseline, so every existing 500 µm plate hash keeps
+# byte-identical geometry. The FINE-pitch families (22 µm louvre carrier, 24 µm
+# body shimmer, 4.4 µm rainbow) deliberately do NOT scale: on thick stock their
+# reveals tighten into sub-degree refraction shimmer — a chosen look, and the
+# 2 µm litho floor is the binding constraint in the other direction.
+BASE_PARALLAX_GAP_UM = 500.0 / 1.46
+
+
+def parallax_gap_um(spec: "PlateSpec") -> float:
+    """Paraxial back-layer gap t/n for this plate's glass (um)."""
+    n = spec.glass.n if spec.glass.n > 1.0 else 1.46
+    return spec.glass.thickness_um / n
+
+
+def parallax_period_scale(spec: "PlateSpec") -> float:
+    """How much slower/faster this glass walks parallax vs the baseline."""
+    return parallax_gap_um(spec) / BASE_PARALLAX_GAP_UM
+
+
+def _snap_half_um(v: float) -> float:
+    return round(v * 2.0) / 2.0
+
+
+def fab_center_period_um(spec: "PlateSpec") -> float:
+    """The switch-barrier fab period for THIS spec's glass (~5° crossing)."""
+    return _snap_half_um(FAB_CENTER_PERIOD_UM * parallax_period_scale(spec))
+
+
+def water_scan_fab_pitch_um(spec: "PlateSpec") -> float:
+    """The scanimation frame pitch for THIS spec's glass (~2.5°/phase)."""
+    return _snap_half_um(WATER_SCAN_FAB_PITCH_UM * parallax_period_scale(spec))
+
 
 def _water_waterline_y(params: dict[str, Any] | None) -> float:
     """Effective capybara waterline for a face — art-box normalized y, 0 = top.
@@ -510,6 +576,17 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     carrier_pitch = float(getattr(spec, "carrier_pitch_um", BACK_CARRIER_PERIOD_UM))
     if carrier_pitch <= 0:
         carrier_pitch = BACK_CARRIER_PERIOD_UM
+    # PER-FACE carrier scaling (PlateSpec.carrier_scale_mode): in "gap" mode the
+    # FABRICATED carrier family follows the paraxial gap t/n, so the reveal and
+    # frame-louvre TILT behavior designed at the 500 µm baseline carries to any
+    # stock (a no-op at the baseline itself, scale = 1). "fixed" keeps the
+    # literal pitch — on thick stock the reveals compress into sub-degree
+    # refraction shimmer (a per-face aesthetic choice). Floored at the 4 µm
+    # carrier litho limit for very thin stock. The capybara BODY shimmer
+    # (WATER_SCAN_FAB_CARRIER_UM below) deliberately stays FIXED in both modes:
+    # it is a sparkle accent, not a phase-coded reveal.
+    if getattr(spec, "carrier_scale_mode", "gap") != "fixed":
+        carrier_pitch = max(4.0, _snap_half_um(carrier_pitch * parallax_period_scale(spec)))
     front_pitch = carrier_pitch * FRONT_GRATING_RATIO
     # Preview periods (what the shader actually draws) — magnified so even the
     # 4 µm litho-floor pitch resolves on the two real planes; see
@@ -585,7 +662,7 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         # and a hardcoded phase constant in a shader is exactly how the generator
         # side lost its registration. ``svg_bake_barrier_*`` carries the ACHIEVED
         # lattice when the budget raster forces a coarser one.
-        "switch_interlace_period_um": FAB_CENTER_PERIOD_UM,
+        "switch_interlace_period_um": fab_center_period_um(spec),
         "switch_barrier_phase_um": 0.0,
         # Water scanimation (capybara back face). N>0 makes the shader render an
         # N-phase travelling-ripple flow over the back-art (water) region of the
@@ -629,6 +706,25 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         # render identically — safe to emit unconditionally. Drives the spectral
         # sheen in preview + the 4.4 µm 45° grating OR-in during fab bake.
         "rainbow_level": float(RAINBOW_LEVEL),
+        # The FABRICATED accent grating, published so the preview's spectral
+        # sheen is computed from the same numbers the mask is written with.
+        # Until this existed the shader was given only `rainbow_level` and
+        # hardcoded its own 45 deg + a tuned hue ramp, so changing the fab
+        # period produced a BIT-IDENTICAL preview — the on-screen rainbow could
+        # not report anything true about the plate. Sourced from
+        # effects.gratings (the same constants diffraction_accent_grating bakes
+        # with), never re-declared here, so the two cannot drift.
+        "rainbow_period_um": float(_DIFFRACTION_ACCENT_PERIOD_UM),
+        "rainbow_angle_deg": float(_DIFFRACTION_ACCENT_ANGLE_DEG),
+        "rainbow_duty": float(_DIFFRACTION_ACCENT_DUTY),
+        # Zeroth-order share of the accent grating's return, eta_0 = duty^2 for
+        # a lamellar amplitude grating. Inside the accent zone the metal does
+        # NOT behave like plain gold: only this fraction stays in the specular
+        # (zeroth) order, and the remainder is what becomes the diffracted
+        # rainbow. The renderer scales its ordinary body/specular/env terms by
+        # this in the accent zone so the spectrum REPLACES that energy instead
+        # of being painted on top of a full-strength metal.
+        "rainbow_zero_order": float(_DIFFRACTION_ACCENT_DUTY ** 2),
         # Fab (SVG/GDS) — true fine gratings baked as clipped rect arrays. These
         # are the user-tunable pitch (== carrier_period_um / slit_period_um): the
         # fab path (ensure_plate_svg, export_fine.build_plate_fine) reads these,
@@ -638,8 +734,9 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         "fab_back_period_um": carrier_pitch,
         "fab_front_period_um": front_pitch,
         "fab_angle_offset_deg": CARRIER_ANGLE_OFFSET_DEG,
-        # Fab centerpiece stripe period (comfortable ~5° switch, see constant).
-        "fab_center_period_um": FAB_CENTER_PERIOD_UM,
+        # Fab centerpiece stripe period — GLASS-DERIVED so the ~5° switch
+        # crossing holds on any stock (see fab_center_period_um).
+        "fab_center_period_um": fab_center_period_um(spec),
     }
 
 
@@ -1239,8 +1336,19 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 
     save_png_atomic(front, out_dir / "front.png")
     save_png_atomic(back, out_dir / "back.png")
+    # One chip per litho metal. Written at compose time (three tiny pastes)
+    # rather than keyed into the plate hash, so switching metal in the UI is an
+    # instant swap instead of a full six-plate recompose — the METAL never
+    # changes the mask geometry, only how the chip is tinted.
     thumb = make_thumbnail(front, back, size=320)
     save_png_atomic(thumb, out_dir / "thumbnail.png")
+    for _metal in THUMBNAIL_PALETTES:
+        if _metal == DEFAULT_THUMBNAIL_METAL:
+            continue
+        save_png_atomic(
+            make_thumbnail(front, back, size=320, metal=_metal),
+            out_dir / f"thumbnail_{_metal}.png",
+        )
 
     # The frame scene (potentially MBs of segment dicts) goes to a sidecar,
     # NOT into manifest.json: embedding it made every plate manifest 0.4-2.3
@@ -1311,7 +1419,7 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 #     ``_centerpiece_masks`` already carved the band and the plate pitch is keyed to
 #     the pattern's unchanged ``pixel_pitch_um``. Without the bump a warm plate slot
 #     keeps advertising the pre-carve measured minimums next to a re-baked SVG.
-PLATE_COMPOSE_VERSION = 6
+PLATE_COMPOSE_VERSION = 10
 
 
 def frame_scene_for_plate(
@@ -1435,6 +1543,16 @@ def _materialize_plate_locked(spec: PlateSpec, pid: str, force: bool) -> dict[st
                 "front_svg": "",
                 "back_svg": "",
                 "thumbnail": f"/data/plates/{pid}/thumbnail.png",
+                # Per-metal chips; the renderer picks by spec.metal and falls
+                # back to `thumbnail` for manifests written before this existed.
+                "thumbnails": {
+                    _m: (
+                        f"/data/plates/{pid}/thumbnail.png"
+                        if _m == DEFAULT_THUMBNAIL_METAL
+                        else f"/data/plates/{pid}/thumbnail_{_m}.png"
+                    )
+                    for _m in THUMBNAIL_PALETTES
+                },
             },
         }
         # Published last and by rename — the PNGs above are already in place, so a
@@ -1904,7 +2022,7 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         # CENTERPIECE_FILL square (open current flanks the animal).
         b = _capyscan._build(
             extent_um=CENTERPIECE_FILL * aperture,
-            frame_pitch_um=WATER_SCAN_FAB_PITCH_UM,
+            frame_pitch_um=water_scan_fab_pitch_um(spec),
             n_phases=WATER_SCAN_N_PHASES,
             carrier_period_um=WATER_SCAN_FAB_CARRIER_UM,
             waterline_y=_water_waterline_y(spec.pattern_params),
@@ -1933,9 +2051,9 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
                 "scanimation — true-pitch geometry comes from export_fine "
                 "(plate=%s)",
                 pitch,
-                WATER_SCAN_FAB_PITCH_UM,
+                water_scan_fab_pitch_um(spec),
                 WATER_SCAN_N_PHASES,
-                WATER_SCAN_FAB_PITCH_UM / WATER_SCAN_N_PHASES,
+                water_scan_fab_pitch_um(spec) / WATER_SCAN_N_PHASES,
                 plate_id,
             )
 
@@ -2223,7 +2341,7 @@ _SVG_BAKE_KEYS = (
 #     bars across the animal, back.svg no longer interleaves ripple crests under
 #     it, and the plain back carrier is kept over the submerged body instead of
 #     being cleared for the band. Only the capybara face changes.
-PLATE_SVG_VERSION = "plate-svg-v8"
+PLATE_SVG_VERSION = "plate-svg-v9"
 
 
 def _svg_is_current(svg_path: Path) -> bool:

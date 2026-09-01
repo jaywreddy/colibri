@@ -639,7 +639,7 @@ def _tiled_check_stats(
         big.merge()
         bb = big.bbox()
     if not entries and not have_big:
-        return 0, float("inf"), 0, float("inf")
+        return 0, float("inf"), 0, float("inf"), kdb.Region(), kdb.Region()
 
     xs0 = [e[0] for e in entries] + ([bb.left * dbu_um] if have_big else [])
     ys0 = [e[1] for e in entries] + ([bb.bottom * dbu_um] if have_big else [])
@@ -776,7 +776,9 @@ def _tiled_check_stats(
         "tiled_check: tiles %.1fs total, slowest %.2fs at %s (%d payloads)",
         _time.time() - _t_bin, _slowest[0], _slowest[1], _slowest[2],
     )
-    return int(w_markers.count()), mnw, int(s_markers.count()), mns
+    # The merged marker Regions ride along for the heal's surgical weld
+    # (drc_clean_region) — counts alone serve the report path.
+    return int(w_markers.count()), mnw, int(s_markers.count()), mns, w_markers, s_markers
 
 
 def _region_from_polys(polys, dbu_um: float):
@@ -864,7 +866,7 @@ def drc_report_region(
     # region sends klayout's self-check quadratic on the back layer's fused
     # full-window carrier (measured ~27 min per check on a 40 mm face vs ~1 s
     # for the identical geometry checked in 2 mm tiles).
-    nw, mnw, ns, mns = _tiled_check_stats(
+    nw, mnw, ns, mns, _, _ = _tiled_check_stats(
         polys, kdb, width_dbu=floor_dbu, gap_dbu=gap_dbu, dbu_um=dbu_um
     )
     return {
@@ -909,6 +911,56 @@ def drc_clean_region(
     cores = reg.sized(-open_dbu)
     reg = reg.interacting(cores)
     reg.merge()
+    # Sub-floor GAP weld — surgical, not a global close. The fine families
+    # prevent gaps at the source (seam-gutter insets + floor-gridded crest
+    # runs), but a COARSE carrier pitch (a user slider, and the glass-scaled
+    # pitch on thick stock) can land a clipped line end within a fraction of a
+    # micrometre of a neighboring zone's geometry — a near-tangency litho
+    # would bridge unpredictably in resist. Rather than hoping, we make the
+    # bridge explicit: klayout's space_check returns exactly the violating
+    # edge pairs, and each pair's connecting polygon (padded by the half
+    # floor so the weld overlaps both flanks and rounds its own notches) is
+    # OR-ed back in. Only the violation sites change; a global close would
+    # pinch legal necks and reshape angled lines (see the note above).
+    gap_dbu = max(1, int(round(min_gap_um / dbu_um)))
+    width_dbu = max(1, int(round(min_width_um / dbu_um)))
+    pad_dbu = max(1, int(round((min_gap_um / 2.0) / dbu_um)))
+
+    def _rings(r) -> list[np.ndarray]:
+        rr = []
+        for poly in r.each():
+            ring = [(pt.x * dbu_um, pt.y * dbu_um) for pt in poly.each_point_hull()]
+            if len(ring) >= 3:
+                rr.append(np.asarray(ring, dtype=float))
+        return rr
+
+    for it in range(12):  # a weld can expose a thin ledge; usually converges in 1-2
+        # NEVER a raw whole-region width/space check here — that is the
+        # measured ~27-minute superlinear pathology the tiled checker exists
+        # for (see _tiled_check_stats). The tiled pass hands back the merged
+        # violation-marker Regions directly.
+        _, _, _, _, w_markers, s_markers = _tiled_check_stats(
+            _rings(reg), kdb, width_dbu=width_dbu, gap_dbu=gap_dbu, dbu_um=dbu_um
+        )
+        if w_markers.is_empty() and s_markers.is_empty():
+            break
+        # OR the padded markers back in: welding a sub-floor GAP makes the
+        # bridge litho would form anyway explicit, and thickening a sub-floor
+        # NECK (welds can create these as ledges at their ends) is the same
+        # surgery on the width axis. Padding by the half floor overlaps both
+        # flanks and rounds the patch's own notches. Only violation sites
+        # change — a global close would pinch legal necks (see note above).
+        #
+        # ESCALATION: two nearly-parallel curved strokes converging at a
+        # shallow angle (the monogram cursive) can PING-PONG the half-floor
+        # patch — each weld exposes a complementary neck beside it. After a
+        # few fine rounds, switch to a FULL-floor pad: the whole convergence
+        # zone fuses into one ≥-floor blob (which is what litho would print
+        # there anyway) instead of being chased ledge by ledge.
+        pad = pad_dbu if it < 3 else max(pad_dbu, gap_dbu) * (1 if it < 6 else 2)
+        patch = (w_markers + s_markers).sized(pad)
+        reg += patch
+        reg.merge()
     out = []
     for poly in reg.each():
         # Exterior hull only (fill-only mask). klayout Polygon → µm vertices.
