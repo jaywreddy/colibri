@@ -144,7 +144,10 @@ type State = {
   setInspectMode: (on: boolean) => void;
   /** Tilt-progression view: per-face supersampled tilt sweeps + eye verdict. */
   progressionOpen: boolean;
+  /** Collage view: every catalogue pattern composited across a fan of angles. */
+  collageOpen: boolean;
   setProgressionOpen: (open: boolean) => void;
+  setCollageOpen: (open: boolean) => void;
 };
 
 export const useStore = create<State>((set, get) => ({
@@ -168,6 +171,7 @@ export const useStore = create<State>((set, get) => ({
   backdrop: 'studio',
   inspectMode: false,
   progressionOpen: false,
+  collageOpen: false,
 
   setCatalog: (catalog) => set({ catalog }),
 
@@ -332,6 +336,7 @@ export const useStore = create<State>((set, get) => ({
   setBackdrop: (backdrop) => set({ backdrop }),
   setInspectMode: (inspectMode) => set({ inspectMode }),
   setProgressionOpen: (progressionOpen) => set({ progressionOpen }),
+  setCollageOpen: (collageOpen) => set({ collageOpen }),
   setLaserColor: (laserColor) => set({ laserColor }),
   setLight: (lightAzimuthDeg, lightElevationDeg) =>
     set({ lightAzimuthDeg, lightElevationDeg }),

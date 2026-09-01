@@ -452,6 +452,7 @@ def _collage_for(
     thickness_um: float | None,
     n: float | None,
     cols: int | None = None,
+    show_title: bool = True,
 ):
     from .. import collage as collage_mod
     from .. import sim2d
@@ -493,7 +494,8 @@ def _collage_for(
     frames, metrics, chosen = best
     metrics = {**metrics, "axis": chosen, "axis_mode": axis}
     sheet = collage_mod.compose_grid(
-        frames, cols=cols, title=f"{slug}  {illum}  tilt-{chosen}"
+        frames, cols=cols,
+        title=f"{slug}  {illum}  tilt-{chosen}" if show_title else None,
     )
     return sheet, metrics, angles, root, chosen
 
@@ -508,6 +510,7 @@ def collage_sheet(
     axis: str = "auto",
     tile_px: int = 160,
     cols: int | None = None,
+    show_title: bool = True,
     thickness_um: float | None = None,
     n: float | None = None,
 ) -> StreamingResponse:
@@ -528,6 +531,7 @@ def collage_sheet(
     sheet, metrics, angles, root, chosen = _collage_for(
         slug, variant, span_deg=span_deg, steps=steps, illum=illum, axis=axis,
         tile_px=tile_px, thickness_um=thickness_um, n=n, cols=cols,
+        show_title=show_title,
     )
     _log.info(
         "collage slug=%s variant=%s angles=%d illum=%s axis=%s strength=%.3f peak=%s",

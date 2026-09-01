@@ -18,6 +18,7 @@ import { log } from './logger';
 import { useStore, LID_MAX_DEG } from './store';
 import BoxScene from './scene/BoxScene';
 import ProgressionView from './ui/ProgressionView';
+import CollageView from './ui/CollageView';
 import BuildPanel from './ui/BuildPanel';
 import FacesPanel from './ui/FacesPanel';
 import PatternLab from './ui/PatternLab';
@@ -263,6 +264,7 @@ export default function App() {
   const inspectMode = useStore((s) => s.inspectMode);
   const setInspectMode = useStore((s) => s.setInspectMode);
   const setProgressionOpen = useStore((s) => s.setProgressionOpen);
+  const setCollageOpen = useStore((s) => s.setCollageOpen);
   const labOpen = useStore((s) => s.labOpen);
   const setLabOpen = useStore((s) => s.setLabOpen);
 
@@ -783,6 +785,8 @@ export default function App() {
         )}
       </header>
 
+      <CollageView />
+
       <div
         style={{
           display: 'grid',
@@ -889,6 +893,17 @@ export default function App() {
               }}
             >
               {inspectMode ? '◉ Inspect' : '○ Inspect'}
+            </button>
+            <button
+              data-testid="collage-toggle"
+              title="Composite every catalogue pattern across a fan of view angles — what the eye integrates, which the 3D preview cannot show"
+              onClick={() => {
+                log('collage_toggled', { on: true });
+                setCollageOpen(true);
+              }}
+              style={BUTTON_STYLE}
+            >
+              Collage
             </button>
             <button
               data-testid="progression-toggle"
