@@ -15,7 +15,7 @@ def client():
 
 
 SLUG = "monogram-carrier-reveal"   # strong x-axis reveal
-FLAT = "monogram-jp"               # single layer: empty back, no effect possible
+SHIMMER = "monogram-jp"            # shading moire against the back carrier
 YAXIS = "bitmap-halftone"          # lines run horizontally -> effect is on y
 
 
@@ -63,12 +63,18 @@ def test_auto_does_not_flip_a_pattern_that_lives_on_x(client):
     assert m["axis"] == "x"
 
 
-def test_a_single_layer_pattern_reports_no_effect(client):
-    """An empty back layer cannot produce parallax at any angle, and the sheet
-    should say so rather than inventing motion from the raster border."""
-    m = _metrics(client, FLAT, steps=7, axis="auto")
-    assert m["effect_strength"] == pytest.approx(0.0, abs=1e-6)
-    assert m["changed_frac"] == pytest.approx(0.0, abs=1e-6)
+def test_the_shimmer_faces_register_a_real_effect(client):
+    """Regression on the shading-moire change. These faces used to bake an
+    EMPTY back layer, which cannot produce parallax at any angle — they read as
+    exactly 0.000 here, and their second plate was earning nothing. They now
+    carry a carrier of their own that the figure beats against.
+
+    (The zero-effect path itself is pinned synthetically in test_collage.py::
+    test_a_featureless_pair_registers_no_effect, which does not depend on any
+    catalogue pattern staying single-layer.)"""
+    m = _metrics(client, SHIMMER, steps=7, axis="auto")
+    assert m["effect_strength"] > 0.05
+    assert m["changed_frac"] > 0.1
 
 
 def test_peak_pair_is_reported_and_is_a_real_pair_of_angles(client):

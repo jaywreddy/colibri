@@ -47,6 +47,7 @@ from .patterns.frames import (
     render_scene_to_svg,
     scene_to_multipolygon,
 )
+from .patterns.effects.gratings import beat_delta_um
 from .patterns.frames.api import FrameParams
 from .rasterize import (
     DEFAULT_THUMBNAIL_METAL,
@@ -434,6 +435,42 @@ PREVIEW_PITCH_MAGNIFY = 5.0
 # still reads as a solid silhouette when the stripes collapse (shader averages).
 CENTER_CARRIER_PERIOD_UM = 170.0   # preview centerpiece stripe period (shader)
 CENTER_SWITCH_AXIS_DEG = 0.0       # vertical stripes -> +X switch axis
+
+# --- centerpiece SHADING MOIRE on the front-only shimmer faces --------------
+# These four faces carry one figure and no second image to switch to. They used
+# to be described as "front-only glimmer", which quietly conceded that their
+# back plate did nothing — and on a two-ply build that is a plate's worth of
+# glass and litho earning nothing.
+#
+# They were never short of a second grating. ``back_dims`` spans the whole
+# exposed face, so the uniform carrier already runs underneath the figure. What
+# they were short of was any reason for the two to BEAT: the centerpiece fill
+# ran at a fixed CENTER_SWITCH_AXIS_DEG (0 deg) while the back carrier runs at a
+# per-face angle ((seed*17) mod 180). Crossing two ~20 um gratings at 114 deg
+# puts the beat at 18 um -- 0.21 arcmin, against the ~2 arcmin the eye needs,
+# and FINER than either grating, which is the signature of crossing too steeply.
+#
+# So the fill now runs PARALLEL to the back carrier and takes its beat from a
+# pitch mismatch. That is a fabrication choice before it is an aesthetic one:
+# this build has no backside alignment, so front-to-back ROTATION is the one
+# thing it cannot hold, and a beat derived from a crossing angle is at its mercy
+# (0.45 deg designed -> 2801 um; 869 um if the flip lands a degree off; INFINITE
+# if it lands square). A beat from delta-p is anchored in the mask geometry:
+# 1635 um designed, 1372 um at half a degree of misregistration, and it cannot
+# collapse to "no fringes" for any rotation error at all.
+#
+# The knob is the BEAT, not the pitch mismatch that produces it. 1.64 mm puts
+# about a dozen bands across a 20 mm lid. Coarser is bolder AND more
+# rotation-sensitive, because the delta it implies shrinks toward the rotation
+# term. Delta is solved from it per face (gratings.beat_delta_um) because the
+# carrier pitch is NOT fixed -- it is gap-scaled with the glass, so it is 22 um
+# at the 500 um baseline and 63.5 um on the 1.5 mm stock this box is built from.
+# Pinning delta instead would let the beat follow the carrier up by that same
+# 2.9x and put one and a half bands on the lid.
+CENTERPIECE_BEAT_UM = 1635.0
+SHIMMER_MOIRE_SLUGS = frozenset(
+    {"monogram-jp", "inscription-line", "jamon-tray", "food-pair-chirp"}
+)
 # FAB centerpiece stripe period. The A<->B (colibrí<->globe) switch happens
 # after parallax walks HALF a period; at t=500 µm, n=1.46 the parallax is
 # ~5.98 µm/deg, so a 60 µm period switches at ~5° tilt — squarely inside the
@@ -634,6 +671,24 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     art_half_h_uv = (0.5 * art_side_um / spec.height_um) if spec.height_um > 0 else 0.0
     water_ripple_um = WATER_RIPPLE_WAVELENGTH_FRAC * art_side_um if is_water else 0.0
     waterline_y = _water_waterline_y(spec.pattern_params)
+
+    # Centerpiece fill. All three consumers -- the preview shader, the SVG bake
+    # (ensure_plate_svg) and the fine export -- read exactly these two fields,
+    # so setting them here is the whole change for a face's centerpiece grating.
+    #
+    # A shimmer face gets the shading-moire pair: parallel to the back carrier,
+    # mismatched by CENTERPIECE_BEAT_DELTA_UM. Every other face keeps the
+    # glass-derived barrier/comb pitch on the +X axis, because there the pitch
+    # and axis set a SWITCH angle rather than a beat and must not be retuned for
+    # fringe aesthetics.
+    is_shimmer = spec.pattern_slug in SHIMMER_MOIRE_SLUGS
+    center_period = (
+        carrier_pitch + beat_delta_um(carrier_pitch, CENTERPIECE_BEAT_UM)
+        if is_shimmer
+        else fab_center_period_um(spec)
+    )
+    center_axis = base_angle if is_shimmer else CENTER_SWITCH_AXIS_DEG
+
     return {
         # Frame shader gratings — the REAL fabricated pitch (the preview shader
         # draws these exact μm values × uPatternScale; see BoxScene binding and
@@ -660,7 +715,7 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         "frame_angle_span_deg": FRAME_ANGLE_SPAN_DEG,
         # Centerpiece tilt-switch carrier (preview).
         "center_period_um": CENTER_CARRIER_PERIOD_UM,
-        "switch_axis_deg": CENTER_SWITCH_AXIS_DEG,
+        "switch_axis_deg": center_axis,
         # Barrier-interlace tilt switch (Task 3): the shader draws the neutral
         # barrier (outer) + interleaved A/B lanes (inner) at the fab barrier pitch
         # instead of the phase-offset carrier. True only on the hard-swap faces
@@ -765,7 +820,7 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         "fab_angle_offset_deg": CARRIER_ANGLE_OFFSET_DEG,
         # Fab centerpiece stripe period — GLASS-DERIVED so the ~5° switch
         # crossing holds on any stock (see fab_center_period_um).
-        "fab_center_period_um": fab_center_period_um(spec),
+        "fab_center_period_um": center_period,
     }
 
 
@@ -1448,7 +1503,7 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 #     ``_centerpiece_masks`` already carved the band and the plate pitch is keyed to
 #     the pattern's unchanged ``pixel_pitch_um``. Without the bump a warm plate slot
 #     keeps advertising the pre-carve measured minimums next to a re-baked SVG.
-PLATE_COMPOSE_VERSION = 11
+PLATE_COMPOSE_VERSION = 12
 
 
 def frame_scene_for_plate(
@@ -2370,7 +2425,7 @@ _SVG_BAKE_KEYS = (
 #     bars across the animal, back.svg no longer interleaves ripple crests under
 #     it, and the plain back carrier is kept over the submerged body instead of
 #     being cleared for the band. Only the capybara face changes.
-PLATE_SVG_VERSION = "plate-svg-v10"
+PLATE_SVG_VERSION = "plate-svg-v11"
 
 
 def _svg_is_current(svg_path: Path) -> bool:

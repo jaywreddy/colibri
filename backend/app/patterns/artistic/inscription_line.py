@@ -7,6 +7,7 @@ import numpy as np
 from .._helpers import check_lattice_budget, raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, register
 from ..motifs import inscription
+from ..effects.gratings import beat_delta_um, shimmer_moire_layers
 
 
 def _resolve_grid(period_um: float, extent_um: float) -> tuple[int, float]:
@@ -98,8 +99,10 @@ class InscriptionLine(Pattern):
         ),
         ParamSpec("year", "Year", "int", 2026, 2000, 2099, 1),
         ParamSpec("heart", "Heart flourish", "bool", True),
-        ParamSpec("period_um", "Carrier period", "float", 20.0, 6.0, 80.0, 0.5, "μm"),
-        ParamSpec("extent_um", "Extent", "float", 4000.0, 500.0, 5000.0, 100.0, "μm"),
+        ParamSpec("period_um", "Carrier period", "float", 22.0, 6.0, 80.0, 0.5, "μm"),
+        # Shading-moiré band spacing; see monogram_jp / shimmer_moire_layers.
+        ParamSpec("beat_um", "Moiré band spacing", "float", 1635.0, 200.0, 8000.0, 5.0, "μm"),
+        ParamSpec("extent_um", "Extent", "float", 3000.0, 500.0, 5000.0, 100.0, "μm"),
     ]
 
     @classmethod
@@ -132,8 +135,9 @@ class InscriptionLine(Pattern):
         separator: str = "·",
         year: int = 2026,
         heart: bool = True,
-        period_um: float = 20.0,
-        extent_um: float = 4000.0,
+        period_um: float = 22.0,
+        extent_um: float = 3000.0,
+        beat_um: float = 1635.0,
     ) -> float:
         return _resolve_grid(period_um, extent_um)[1]
 
@@ -144,8 +148,9 @@ class InscriptionLine(Pattern):
         separator: str = "·",
         year: int = 2026,
         heart: bool = True,
-        period_um: float = 20.0,
-        extent_um: float = 4000.0,
+        period_um: float = 22.0,
+        extent_um: float = 3000.0,
+        beat_um: float = 1635.0,
     ) -> float:
         return period_um * 0.5
 
@@ -156,8 +161,9 @@ class InscriptionLine(Pattern):
         separator: str = "·",
         year: int = 2026,
         heart: bool = True,
-        period_um: float = 20.0,
-        extent_um: float = 4000.0,
+        period_um: float = 22.0,
+        extent_um: float = 3000.0,
+        beat_um: float = 1635.0,
     ) -> tuple[dict, dict, tuple[str, ...]]:
         # Informational only — kept out of recipe_data on purpose: the
         # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
@@ -180,8 +186,9 @@ class InscriptionLine(Pattern):
         separator: str = "·",
         year: int = 2026,
         heart: bool = True,
-        period_um: float = 20.0,
-        extent_um: float = 4000.0,
+        period_um: float = 22.0,
+        extent_um: float = 3000.0,
+        beat_um: float = 1635.0,
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
@@ -199,10 +206,13 @@ class InscriptionLine(Pattern):
         # cap, so this extent cannot be raised without also capping n_grid the
         # way monogram-carrier-reveal does (min(1200, ...)).
         n_stripes = int(math.ceil(extent_um / period_um))
+        # BOTH layers are gratings now, and the back one spans the full field
+        # rather than being glyph-limited — count the pair.
         check_lattice_budget(
-            n_grid * n_stripes,
-            "inscription-line front carrier",
+            2 * n_grid * n_stripes,
+            "inscription-line carrier pair",
             period_um=period_um,
+            beat_um=beat_um,
             extent_um=extent_um,
         )
 
@@ -210,14 +220,17 @@ class InscriptionLine(Pattern):
             extent, n_grid=n_grid, text=text, heart=want_heart
         )
 
-        period_pix = period_um / cell_um
-        cols = np.arange(n_grid, dtype=np.float32)
-        # Vertical stripe carrier at phase 0 on the front.
-        phase_front = (cols % period_pix) < (period_pix / 2.0)
-
-        front_mask = line & phase_front[None, :]
-        # Back is plain glass — the inscription glimmers front-only.
-        back_mask = np.zeros_like(front_mask)
+        # SHADING MOIRE, not a front-only glimmer: the back carries a uniform
+        # carrier of its own and the script is filled parallel to it at a
+        # mismatched pitch, so bands sweep along the line as the box tilts.
+        # See monogram_jp for why the beat comes from pitch, not from a crossing
+        # angle, on a build with no backside alignment.
+        front_mask, back_mask = shimmer_moire_layers(
+            line,
+            back_period_um=period_um,
+            delta_um=beat_delta_um(period_um, beat_um),
+            cell_um=cell_um,
+        )
 
         front_poly = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back_poly = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
@@ -231,6 +244,7 @@ class InscriptionLine(Pattern):
             heart=heart,
             period_um=period_um,
             extent_um=extent_um,
+            beat_um=beat_um,
         )
         extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(

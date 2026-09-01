@@ -4,7 +4,13 @@ import numpy as np
 
 from .._helpers import raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, register
-from ..effects.gratings import chirped_grating, clip_mask, linear_grating_mask
+from ..effects.gratings import (
+    beat_delta_um,
+    chirped_grating,
+    clip_mask,
+    linear_grating_mask,
+    shimmer_moire_layers,
+)
 from ..motifs.lab.food_pair import food_bodies_silhouette, food_steam_silhouette
 
 
@@ -118,6 +124,8 @@ class FoodPairChirp(Pattern):
         # the diffraction accent REAL rather than coarsened away. Larger extents
         # remain selectable but will auto-coarsen the chirp (accent lost).
         ParamSpec("extent_um", "Extent", "float", 640.0, 400.0, 2000.0, 20.0, "μm"),
+        # Shading-moiré band spacing; see monogram_jp / shimmer_moire_layers.
+        ParamSpec("beat_um", "Moiré band spacing", "float", 1635.0, 200.0, 8000.0, 5.0, "μm"),
     ]
 
     # --- metadata (no geometry) — see Pattern.metadata ----------------------
@@ -125,10 +133,11 @@ class FoodPairChirp(Pattern):
     @classmethod
     def pixel_pitch_um(
         cls,
-        period_um: float = 20.0,
+        period_um: float = 22.0,
         steam_base_period_um: float = 22.0,
         tip_period_um: float = 4.5,
         extent_um: float = 640.0,
+        beat_um: float = 1635.0,
     ) -> float:
         steam_g, _body_g = _carriers(
             period_um, steam_base_period_um, tip_period_um, extent_um
@@ -138,10 +147,11 @@ class FoodPairChirp(Pattern):
     @classmethod
     def min_feature_um(
         cls,
-        period_um: float = 20.0,
+        period_um: float = 22.0,
         steam_base_period_um: float = 22.0,
         tip_period_um: float = 4.5,
         extent_um: float = 640.0,
+        beat_um: float = 1635.0,
     ) -> float:
         # Half the finest EFFECTIVE period anywhere in the front layer: both
         # chirp ends AND the body carrier, all at 50% duty. Omitting the body
@@ -165,10 +175,11 @@ class FoodPairChirp(Pattern):
     @classmethod
     def extra_metadata(
         cls,
-        period_um: float = 20.0,
+        period_um: float = 22.0,
         steam_base_period_um: float = 22.0,
         tip_period_um: float = 4.5,
         extent_um: float = 640.0,
+        beat_um: float = 1635.0,
     ) -> tuple[dict, dict, tuple[str, ...]]:
         steam_g, body_g = _carriers(
             period_um, steam_base_period_um, tip_period_um, extent_um
@@ -208,10 +219,11 @@ class FoodPairChirp(Pattern):
     @classmethod
     def generate(
         cls,
-        period_um: float = 20.0,
+        period_um: float = 22.0,
         steam_base_period_um: float = 22.0,
         tip_period_um: float = 4.5,
         extent_um: float = 640.0,
+        beat_um: float = 1635.0,
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
@@ -226,17 +238,23 @@ class FoodPairChirp(Pattern):
         bodies = food_bodies_silhouette(extent, n_grid=n_grid)
         steam = food_steam_silhouette(extent, n_grid=n_grid)
 
-        # Body carrier: uniform vertical stripes (angle 0 → vertical lines),
-        # baked at the SAME pitch as the chirp so the masks align cell-for-cell.
-        body_carrier = body_g.mask
-
-        # Clip each carrier to its region, then union into the front layer.
-        front_bodies = clip_mask(body_carrier, bodies)
+        # SHADING MOIRE on the bodies: the back carries a full-field carrier and
+        # the cup + arepa are filled parallel to it at a mismatched pitch, so
+        # bands sweep through them on tilt instead of the old front-only
+        # glimmer. See monogram_jp for why the beat comes from pitch rather than
+        # from a crossing angle on a build with no backside alignment.
+        front_bodies, back_mask = shimmer_moire_layers(
+            bodies,
+            back_period_um=period_um,
+            delta_um=beat_delta_um(period_um, beat_um),
+            cell_um=cell_um,
+        )
+        # The steam keeps its CHIRP (that is its whole effect, and the sub-5 µm
+        # tips are the diffraction accent). It now sits over the same back
+        # carrier, so the plume beats too — at a spacing that varies along its
+        # length, because one of the two pitches is swept.
         front_steam = clip_mask(steam_carrier, steam)
         front_mask = front_bodies | front_steam
-
-        # Back is plain glass — front-only glimmer (matches monogram-jp).
-        back_mask = np.zeros_like(front_mask)
 
         front_poly = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back_poly = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
@@ -248,6 +266,7 @@ class FoodPairChirp(Pattern):
             steam_base_period_um=steam_base_period_um,
             tip_period_um=tip_period_um,
             extent_um=extent_um,
+            beat_um=beat_um,
         )
         extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(

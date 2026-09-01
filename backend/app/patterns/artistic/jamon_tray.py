@@ -4,7 +4,12 @@ import numpy as np
 
 from .._helpers import raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, register
-from ..effects.gratings import clip_mask, linear_grating_mask
+from ..effects.gratings import (
+    beat_delta_um,
+    clip_mask,
+    linear_grating_mask,
+    shimmer_moire_layers,
+)
 from ..motifs.lab.jamon import jamon_silhouette
 
 
@@ -77,8 +82,10 @@ class JamonTray(Pattern):
     theme = "Colombia"
     render_recipe = "moire_interactive"
     params = [
-        ParamSpec("period_um", "Carrier period", "float", 20.0, 6.0, 80.0, 0.5, "μm"),
+        ParamSpec("period_um", "Carrier period", "float", 22.0, 6.0, 80.0, 0.5, "μm"),
         ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
+        # Shading-moiré band spacing; see monogram_jp / shimmer_moire_layers.
+        ParamSpec("beat_um", "Moiré band spacing", "float", 1635.0, 200.0, 8000.0, 5.0, "μm"),
     ]
 
     # --- metadata (no geometry) — see Pattern.metadata ----------------------
@@ -86,7 +93,8 @@ class JamonTray(Pattern):
     @classmethod
     def pixel_pitch_um(
         cls,
-        period_um: float = 20.0,
+        period_um: float = 22.0,
+        beat_um: float = 1635.0,
         extent_um: float = 2000.0,
     ) -> float:
         return _resolve_grid(period_um, extent_um)[1]
@@ -94,7 +102,8 @@ class JamonTray(Pattern):
     @classmethod
     def min_feature_um(
         cls,
-        period_um: float = 20.0,
+        period_um: float = 22.0,
+        beat_um: float = 1635.0,
         extent_um: float = 2000.0,
     ) -> float:
         return _carrier_grating(period_um, extent_um).period_um * 0.5
@@ -102,7 +111,8 @@ class JamonTray(Pattern):
     @classmethod
     def extra_metadata(
         cls,
-        period_um: float = 20.0,
+        period_um: float = 22.0,
+        beat_um: float = 1635.0,
         extent_um: float = 2000.0,
     ) -> tuple[dict, dict, tuple[str, ...]]:
         carrier_g = _carrier_grating(period_um, extent_um)
@@ -123,7 +133,8 @@ class JamonTray(Pattern):
     @classmethod
     def generate(
         cls,
-        period_um: float = 20.0,
+        period_um: float = 22.0,
+        beat_um: float = 1635.0,
         extent_um: float = 2000.0,
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
@@ -133,23 +144,31 @@ class JamonTray(Pattern):
         # resampling.
         n_grid, cell_um = _resolve_grid(period_um, extent_um)
 
+        # Keep _carrier_grating's budget-aware pitch, then build BOTH layers on
+        # that grid: the ham filled at a mismatched pitch over a full-field back
+        # carrier, so it is a shading moiré rather than a front-only glimmer.
+        # See monogram_jp for why the beat comes from pitch and not from a
+        # crossing angle on a build with no backside alignment.
         carrier_g = _carrier_grating(period_um, extent_um)
-        carrier = carrier_g.mask
-        h_px, w_px = carrier.shape
+        h_px, w_px = carrier_g.mask.shape
         n_grid = w_px  # square extent → square grid
+        cell_um = carrier_g.pitch_um
 
         jamon = jamon_silhouette(extent, n_grid=n_grid)
 
-        front_mask = clip_mask(carrier, jamon)
-        # Back is plain glass — front-only glimmer (matches monogram-jp).
-        back_mask = np.zeros_like(front_mask)
+        front_mask, back_mask = shimmer_moire_layers(
+            jamon,
+            back_period_um=carrier_g.period_um,
+            delta_um=beat_delta_um(carrier_g.period_um, beat_um),
+            cell_um=cell_um,
+        )
 
         front_poly = raster_to_polygons(front_mask.astype(np.uint8), cell_um, extent)
         back_poly = raster_to_polygons(back_mask.astype(np.uint8), cell_um, extent)
 
         # Metadata comes from the accessors above so the numbers a plate reads
         # without generating are the ones a full generate publishes.
-        kw = dict(period_um=period_um, extent_um=extent_um)
+        kw = dict(period_um=period_um, extent_um=extent_um, beat_um=beat_um)
         extra, recipe_data, _layer_names = cls.extra_metadata(**kw)
         return GeneratedPattern(
             front=front_poly,

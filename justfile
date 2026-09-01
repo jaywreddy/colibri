@@ -40,7 +40,7 @@ test-backend flags="":
     cd backend; uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_sim_numerics.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_sim2d.py tests/test_pattern_types.py tests/test_showcase_patterns.py tests/test_bitmap_halftone.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_param_validation.py tests/test_sim_bounds.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_readability.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_collage.py tests/test_api_collage.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_collage.py tests/test_api_collage.py tests/test_shimmer_moire.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_cache_integrity.py tests/test_export_jobs.py -q {{flags}}
 
 # Frontend vitest (Layer 2)

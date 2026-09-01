@@ -527,3 +527,73 @@ def band_select(
     in_first = frac < duty
     keep = ~in_first if want_odd else in_first
     return local_rects[keep]
+
+
+def beat_delta_um(period_um: float, beat_um: float) -> float:
+    """Pitch mismatch that puts a shading-moire beat at ``beat_um``.
+
+    ``beat = p*(p+d)/d``, so ``d = p^2 / (beat - p)``. Solve for d rather than
+    fixing it, because the BEAT is the design intent -- how far apart the bands
+    sit on the face -- while the carrier pitch is not free: on this build it is
+    gap-scaled with the glass (``plates.parallax_period_scale``), so a carrier
+    designed at 22 um becomes 63.5 um on 1.5 mm stock. A delta pinned at the
+    22 um value would follow the carrier up and stretch the beat by the same
+    2.9x, turning a dozen bands across the lid into one and a half.
+    """
+    if period_um <= 0.0:
+        raise ValueError(f"period_um must be > 0 (got {period_um})")
+    if beat_um <= period_um:
+        raise ValueError(
+            f"beat_um {beat_um} must exceed the {period_um} um carrier it beats against"
+        )
+    return period_um * period_um / (beat_um - period_um)
+
+
+def shimmer_moire_layers(
+    silhouette: np.ndarray,
+    *,
+    back_period_um: float,
+    delta_um: float,
+    cell_um: float,
+    angle_deg: float = 0.0,
+    duty: float = 0.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """(front, back) for a single-figure motif that BEATS with the back carrier.
+
+    The back plate already carries a uniform carrier across the whole exposed
+    face, so a "front-only" motif is not short of a second grating — it is short
+    of a reason for the two to beat. Filling the silhouette with a grating that
+    runs PARALLEL to that carrier at a slightly different pitch turns the figure
+    into a shading moiré: bands sweep through it where the two drift in and out
+    of phase, so the letterform goes solid gold, then sinks back into the
+    surrounding carrier haze, as the piece tilts.
+
+    The beat comes from ``delta_um`` (the pitch mismatch) rather than from a
+    crossing angle, and that is a fabrication choice, not an aesthetic one. With
+    no backside alignment the front-to-back ROTATION is the one thing the build
+    cannot hold, and a beat derived from a crossing angle is at its mercy: a
+    0.45 deg design gives 2801 um, but 869 um if the flip lands a degree off,
+    and INFINITE -- no fringes at all -- if it happens to land square. A beat
+    derived from delta is anchored in the mask geometry instead. Rotation error
+    still perturbs it (the two contributions add as vectors), but only by ~19%
+    at half a degree, and it can never collapse to nothing.
+
+    ``angle_deg`` orients both gratings together; it does not affect the beat.
+    """
+    if back_period_um <= 0.0:
+        raise ValueError(f"back_period_um must be > 0 (got {back_period_um})")
+    if back_period_um + delta_um <= 0.0:
+        raise ValueError(f"delta_um {delta_um} cancels the {back_period_um} um carrier")
+    h, w = silhouette.shape
+    a = math.radians(angle_deg)
+    # Projection of each cell centre onto the grating vector, in micrometres.
+    # Built as an outer sum rather than a full meshgrid: two 1-D ramps instead
+    # of two h x w float arrays, which matters on a plate-sized raster.
+    u = (
+        (np.arange(w, dtype=np.float32) * (math.cos(a) * cell_um))[None, :]
+        + (np.arange(h, dtype=np.float32) * (math.sin(a) * cell_um))[:, None]
+    )
+    d = float(np.clip(duty, 0.01, 0.99))
+    back = ((u / float(back_period_um)) % 1.0) < d
+    front = (((u / float(back_period_um + delta_um)) % 1.0) < d) & silhouette
+    return front, back
