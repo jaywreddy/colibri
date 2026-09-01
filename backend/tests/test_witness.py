@@ -16,6 +16,12 @@ from app import witness_cells as wc
 from app.export_witness import (
     BASE_PERIOD_LADDER_UM,
     C3_DUTY_LADDER,
+    COARSEN_LADDER_PX,
+    DUTY_LADDER,
+    SCALE_LADDER_MM,
+    SCREEN_LADDER_UM,
+    SPREAD_LADDER,
+    STEPS_LADDER,
     MM,
     RESOLUTION_LADDER_UM,
     Placed,
@@ -103,10 +109,33 @@ def test_every_cell_id_is_unique():
 def test_the_ladders_are_all_present():
     ids = {p.cell.cid for p in layout(doe_cells())[0]}
     assert {"B6a", "B6b", "B6c"} <= ids, "the three colour variants"
-    assert len([i for i in ids if i.startswith("C2")]) == len(RESOLUTION_LADDER_UM)
-    assert len([i for i in ids if i.startswith("C3")]) == len(C3_DUTY_LADDER)
-    assert len([i for i in ids if i.startswith("K")]) == len(BASE_PERIOD_LADDER_UM)
+    for pre, ladder in (("C2", RESOLUTION_LADDER_UM), ("C3", C3_DUTY_LADDER),
+                        ("CP", BASE_PERIOD_LADDER_UM), ("SP", SCREEN_LADDER_UM),
+                        ("TS", STEPS_LADDER), ("DU", DUTY_LADDER),
+                        ("SR", SPREAD_LADDER), ("GR", COARSEN_LADDER_PX),
+                        ("SZ", SCALE_LADDER_MM)):
+        got = [i for i in ids if i.startswith(pre)]
+        assert len(got) == len(ladder), f"{pre}: {sorted(got)}"
     assert {"A1", "A2", "A4", "A6"} <= ids
+
+
+def test_every_sweep_cell_is_labelled_with_its_VALUE():
+    """A witness plate is read under a microscope, where every sweep cell looks
+    like every other one and the map is elsewhere. "K3" is unreadable there."""
+    import re
+
+    for p in layout(doe_cells())[0]:
+        if p.cell.axis and p.cell.level and p.cell.group == "B":
+            assert p.cell.label, p.cell.cid
+            head = p.cell.level.split()[0]
+            digits = re.sub(r"[^0-9.]", "", head)
+            # A numeric level must appear as a number; a named one (plain / hue /
+            # zones) as the word.
+            want = digits if digits else head
+            assert want.lower() in p.cell.label.lower(), (
+                f"{p.cell.cid}: label {p.cell.label!r} does not carry "
+                f"level {p.cell.level!r}"
+            )
 
 
 # --- rect primitives --------------------------------------------------------

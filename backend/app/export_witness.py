@@ -145,7 +145,7 @@ def _plan(mode: str, **kw: Any) -> cp.ColourPlan:
 
 def _halftone_cell(
     cid: str, title: str, side_mm: float, *, mode: str = "zones",
-    axis: str = "", level: str = "", note: str = "",
+    axis: str = "", level: str = "", note: str = "", label: str = "",
     plan_kw: dict[str, Any] | None = None,
     prep: ip.PrepSpec | None = None,
     line_period_um: float = REF_SCREEN_UM, tone_steps: int = REF_TONE_STEPS,
@@ -160,19 +160,19 @@ def _halftone_cell(
         )
 
     return Cell(cid=cid, title=title, group="B", w_um=side, h_um=side,
-                build=build, note=note, axis=axis, level=level)
+                build=build, note=note, axis=axis, level=level, label=label)
 
 
 def _patch_cell(cid: str, title: str, side_mm: float, group: str,
                 axis: str = "", level: str = "", note: str = "",
-                **kw: Any) -> Cell:
+                label: str = "", **kw: Any) -> Cell:
     side = side_mm * MM
 
     def build(cx: float, cy: float, w: float, h: float) -> CellArt:
         return wc.build_grating_patch(cx, cy, w, h, **kw)
 
     return Cell(cid=cid, title=title, group=group, w_um=side, h_um=side,
-                build=build, note=note, axis=axis, level=level)
+                build=build, note=note, axis=axis, level=level, label=label)
 
 
 def doe_cells() -> list[list[Cell]]:
@@ -181,84 +181,91 @@ def doe_cells() -> list[list[Cell]]:
 
     # --- B6: the headline. Three variants, same size, same prep, same screen.
     bands.append([
-        _halftone_cell("B6a", "portrait / plain gold", PORTRAIT_MM, mode="plain",
+        _halftone_cell("B6a", "portrait / plain gold", PORTRAIT_MM, mode="plain", label="B6a PLAIN",
                        axis="colour mode", level="plain",
                        note="the control: identical code path, empty period field"),
-        _halftone_cell("B6b", "portrait / hue-mapped", PORTRAIT_MM, mode="hue",
+        _halftone_cell("B6b", "portrait / hue-mapped", PORTRAIT_MM, mode="hue", label="B6b HUE",
                        axis="colour mode", level="hue",
                        note="period from each pixel's own hue, whole frame"),
-        _halftone_cell("B6c", "portrait / zone-mapped", PORTRAIT_MM, mode="zones",
+        _halftone_cell("B6c", "portrait / zone-mapped", PORTRAIT_MM, mode="zones", label="B6c ZONES",
                        axis="colour mode", level="zones",
                        note="flowers by hue, sweater and glasses authored"),
     ])
 
     # --- scale ladder: the one question a single size cannot answer.
     bands.append([
-        _halftone_cell(f"S{i+1}", f"scale {mm:g} mm", mm, mode="zones",
+        _halftone_cell(f"SZ{mm:g}", f"scale {mm:g} mm", mm, mode="zones",
+                       label=f"SZ {mm:g}mm",
                        axis="image scale", level=f"{mm:g} mm",
                        note=f"{int(mm*1000/87)} eye-cells across at 300 mm")
-        for i, mm in enumerate(SCALE_LADDER_MM)
+        for mm in SCALE_LADDER_MM
     ] + [
-        _halftone_cell(f"P{i+1}", f"screen {p:g} um", SWEEP_MM, mode="zones",
+        _halftone_cell(f"SP{p:g}", f"screen {p:g} um", SWEEP_MM, mode="zones",
+                       label=f"SP {p:g}um",
                        line_period_um=p,
                        tone_steps=min(REF_TONE_STEPS, int(p / 2.0)),
                        axis="screen pitch", level=f"{p:g} um",
                        note=f"tone depth capped at {int(p/2.0)} steps by the 2 um floor")
-        for i, p in enumerate(SCREEN_LADDER_UM)
+        for p in SCREEN_LADDER_UM
     ])
 
     # --- tone depth and colour base period.
     bands.append([
-        _halftone_cell(f"T{i+1}", f"{n} tone steps", SWEEP_MM, mode="zones",
+        _halftone_cell(f"TS{n}", f"{n} tone steps", SWEEP_MM, mode="zones",
+                       label=f"TS {n}",
                        tone_steps=n, axis="tone steps", level=str(n),
                        note=f"finest band {REF_SCREEN_UM/n:.2f} um")
-        for i, n in enumerate(STEPS_LADDER)
+        for n in STEPS_LADDER
     ] + [
-        _halftone_cell(f"K{i+1}", f"colour base {d:g} um", SWEEP_MM, mode="zones",
-                       plan_kw={"base_period_um": d},
+        _halftone_cell(f"CP{d:g}", f"colour base {d:g} um", SWEEP_MM, mode="zones",
+                       label=f"CP {d:.1f}um", plan_kw={"base_period_um": d},
                        axis="colour base period", level=f"{d:g} um",
                        note="gated on C2 below 4.8 um" if d < 4.82 else "")
-        for i, d in enumerate(BASE_PERIOD_LADDER_UM)
+        for d in BASE_PERIOD_LADDER_UM
     ])
 
     # --- the three shading knobs that only exist because of the period field.
     bands.append(
         [
-            _halftone_cell(f"U{i+1}", f"sub-duty {c:.2f}", SWEEP_MM, mode="zones",
+            _halftone_cell(f"DU{c:.2f}", f"sub-duty {c:.2f}", SWEEP_MM, mode="zones",
+                           label=f"DU {c:.2f}",
                            plan_kw={"duty": c}, axis="sub-grating duty",
                            level=f"{c:.2f}",
                            note="saturation vs brightness; also moves the line width")
-            for i, c in enumerate(DUTY_LADDER)
+            for c in DUTY_LADDER
         ] + [
-            _halftone_cell(f"R{i+1}", f"spread {s:.2f}", SWEEP_MM, mode="zones",
+            _halftone_cell(f"SR{s:.2f}", f"spread {s:.2f}", SWEEP_MM, mode="zones",
+                           label=f"SR {s:.2f}",
                            plan_kw={"spread": s}, axis="ladder spread",
                            level=f"{s:.2f}",
                            note="red/blue period ratio — how far apart two zones read")
-            for i, s in enumerate(SPREAD_LADDER)
+            for s in SPREAD_LADDER
         ] + [
-            _halftone_cell(f"G{i+1}", f"coarsen {px} px", SWEEP_MM, mode="zones",
+            _halftone_cell(f"GR{px}", f"coarsen {px} px", SWEEP_MM, mode="zones",
+                           label=f"GR {px}px",
                            plan_kw={"coarsen_px": px}, axis="colour coarsening",
                            level=f"{px} px",
                            note="patch size of the colour field — noise vs intent")
-            for i, px in enumerate(COARSEN_LADDER_PX)
+            for px in COARSEN_LADDER_PX
         ]
     )
 
     # --- prep gains, and the two single-layer B cells.
     prep_cells = [
-        _halftone_cell(f"N{i+1}", f"unsharp {a:.2f}", SWEEP_MM, mode="zones",
+        _halftone_cell(f"PU{a:.2f}", f"unsharp {a:.2f}", SWEEP_MM, mode="zones",
+                       label=f"PU {a:.2f}",
                        prep=ip.PrepSpec(tone_steps=REF_TONE_STEPS, unsharp_amount=a),
                        axis="prep: local contrast", level=f"{a:.2f}",
                        note="the screen discards detail below its pitch")
-        for i, a in enumerate(UNSHARP_LADDER)
+        for a in UNSHARP_LADDER
     ] + [
-        _halftone_cell("N4", "no falloff", SWEEP_MM, mode="zones",
+        _halftone_cell("PF0", "no falloff", SWEEP_MM, mode="zones", label="PF off",
                        prep=ip.PrepSpec(tone_steps=REF_TONE_STEPS, falloff=0.0),
                        axis="prep: subject falloff", level="off"),
-        _halftone_cell("N5", "falloff 0.30", SWEEP_MM, mode="zones",
+        _halftone_cell("PF30", "falloff 0.30", SWEEP_MM, mode="zones", label="PF 0.30",
                        prep=ip.PrepSpec(tone_steps=REF_TONE_STEPS, falloff=0.30),
                        axis="prep: subject falloff", level="0.30"),
-        _halftone_cell("N6", "no linearise", SWEEP_MM, mode="zones",
+        _halftone_cell("PL0", "no linearise", SWEEP_MM, mode="zones", label="PL off",
                        prep=ip.PrepSpec(tone_steps=REF_TONE_STEPS, linearize=False),
                        axis="prep: linearisation", level="off",
                        note="the classic error: a 0.25 midtone prints as 0.54"),
@@ -438,7 +445,7 @@ def build_plate(
         for a in art.arrays:
             arrays.append(a)
         outline.append(_frame_rects(p.cx, p.cy, c.w_um, c.h_um))
-        labels.append(_text_rects(c.cid, p.cx, p.cy + c.h_um / 2.0 + LABEL_H_UM * 0.5,
+        labels.append(_text_rects(c.label or c.cid, p.cx, p.cy + c.h_um / 2.0 + LABEL_H_UM * 0.5,
                                   LABEL_H_UM * 0.62))
         n_back = 0
         if c.two_layer and p.pair_cx is not None:
@@ -452,7 +459,7 @@ def build_plate(
             pair_marks.append(_frame_rects(p.pair_cx, p.cy, c.w_um, c.h_um))
             outline.append(_frame_rects(p.pair_cx, p.cy, c.w_um, c.h_um))
             labels.append(_text_rects(
-                c.cid + "'", p.pair_cx, p.cy + c.h_um / 2.0 + LABEL_H_UM * 0.5,
+                (c.label or c.cid) + " B", p.pair_cx, p.cy + c.h_um / 2.0 + LABEL_H_UM * 0.5,
                 LABEL_H_UM * 0.62))
         n_arr = sum(int(np.size(a["period_um"])) for a in art.arrays)
         dt = time.perf_counter() - t0
@@ -503,8 +510,48 @@ def _insert_rects(cell: Any, layer: int, rects: np.ndarray, kdb: Any) -> None:
         shapes.insert(kdb.DBox(x0, y0, x1, y1))
 
 
-def write_gds(plate: dict[str, Any], out_path: Path, *, flat: bool = False) -> Path:
-    """Write the plate as GDSII.
+def _save_options(suffix: str, kdb: Any) -> Any:
+    """Writer settings per format.
+
+    OASIS with CBLOCKs is the whole trick: 158 MB of GDSII becomes 6.5 MB, a
+    24x saving with no geometry change at all. Two reasons it wins so heavily
+    here. GDSII spends a fixed ~64 bytes on every rectangle — a BOUNDARY record
+    plus five 4-byte coordinate PAIRS to describe four numbers — while OASIS has
+    a native rectangle record with delta-encoded varint coordinates; that alone
+    is the 4.7x you get before any compression. CBLOCKs then deflate each cell,
+    and a halftone's coordinates are enormously redundant (every band on a line
+    shares two y values, every stripe steps by one period).
+
+    ``oasis_recompress`` — klayout's search for repetitions it can turn into
+    OASIS repetition records — is deliberately left OFF. It was measured at
+    exactly the same 6.5 MB, because the periodic geometry has already been
+    arrayed by hand in :func:`write_mask`; there is nothing left for it to find,
+    and it is not free to run.
+    """
+    o = kdb.SaveLayoutOptions()
+    if suffix == ".oas":
+        o.format = "OASIS"
+        o.oasis_compression_level = 2
+        o.oasis_write_cblocks = True
+    else:
+        o.format = "GDS2"
+        o.gds2_write_timestamps = False   # byte-identical rebuilds
+    return o
+
+
+def write_mask(
+    plate: dict[str, Any],
+    out_path: Path,
+    *,
+    flat: bool = False,
+    formats: Sequence[str] = (".oas",),
+) -> list[Path]:
+    """Write the plate as OASIS and/or GDSII.
+
+    ``out_path`` names the stem; one file is written per entry in ``formats``.
+    OASIS is the default because it is both the smaller and the more modern
+    interchange format, and every current mask shop and pattern generator reads
+    it; GDSII is written alongside on request for a flow that will not.
 
     Periodic sub-gratings go in as ARRAY REFERENCES: one unit cell per distinct
     (line width, band height) pair — about 260 of them, because band heights are
@@ -522,7 +569,6 @@ def write_gds(plate: dict[str, Any], out_path: Path, *, flat: bool = False) -> P
     top = ly.create_cell("WITNESS_5IN")
     l_front = ly.layer(*LAYER_FRONT)
     l_out = ly.layer(*LAYER_OUTLINE)
-    l_lab = ly.layer(*LAYER_LABEL)
     l_pair = ly.layer(*LAYER_PAIR)
 
     _insert_rects(top, l_front, plate["front"], kdb)
@@ -588,18 +634,31 @@ def write_gds(plate: dict[str, Any], out_path: Path, *, flat: bool = False) -> P
                     ))
                 n_inst += 1
 
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    ly.write(str(out_path))
+    stem = Path(out_path).with_suffix("")
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    sizes: dict[str, float] = {}
+    for suffix in formats:
+        p = stem.with_suffix(suffix)
+        ly.write(str(p), _save_options(suffix, kdb))
+        written.append(p)
+        sizes[suffix.lstrip(".")] = round(p.stat().st_size / 1e6, 2)
     plate["gds"] = {
-        "path": str(out_path),
+        "path": str(written[0]) if written else "",
+        "paths": [str(p) for p in written],
         "flat": flat,
         "n_array_instances": n_inst,
         "n_edge_boxes": n_box,
         "n_unit_cells": 0 if flat else len(unit),
-        "size_mb": round(out_path.stat().st_size / 1e6, 2),
+        "size_mb": sizes.get(written[0].suffix.lstrip(".") if written else "", 0.0),
+        "size_mb_by_format": sizes,
     }
-    return out_path
+    return written
+
+
+def write_gds(plate: dict[str, Any], out_path: Path, *, flat: bool = False) -> Path:
+    """Back-compat single-file GDSII write."""
+    return write_mask(plate, out_path, flat=flat, formats=(".gds",))[0]
 
 
 def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
@@ -650,7 +709,10 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--out", default="data/witness/witness-5in.gds")
+    ap.add_argument("--out", default="data/witness/witness-5in",
+                    help="output stem; the suffix comes from --formats")
+    ap.add_argument("--formats", default="oas",
+                    help="comma list of oas,gds (default oas: 6.5 MB vs 158)")
     ap.add_argument("--flat", action="store_true",
                     help="expand array references into polygons (much larger)")
     ap.add_argument("--map", default="data/witness/witness-5in-map.svg")
@@ -672,9 +734,12 @@ def main(argv: list[str] | None = None) -> int:
           f"({n_flat/max(1,len(plate['front'])):.1f}x)")
 
     if not a.dry_run:
-        gds = write_gds(plate, Path(a.out), flat=a.flat)
-        print(f"GDS  {gds}  {plate['gds']['size_mb']} MB  "
-              f"{plate['gds']['n_array_instances']:,} arrays, "
+        fmts = tuple("." + f.strip().lstrip(".") for f in a.formats.split(","))
+        paths = write_mask(plate, Path(a.out), flat=a.flat, formats=fmts)
+        for p_ in paths:
+            mb_ = plate["gds"]["size_mb_by_format"][p_.suffix.lstrip(".")]
+            print(f"mask {p_}  {mb_} MB")
+        print(f"     {plate['gds']['n_array_instances']:,} array refs over "
               f"{plate['gds']['n_unit_cells']} unit cells")
         svg = write_map_svg(plate, Path(a.map))
         print(f"map  {svg}")

@@ -86,6 +86,14 @@ class Cell:
     build: Callable[[float, float, float, float], CellArt]
     """``build(cx, cy, w, h) -> CellArt``."""
     note: str = ""
+    label: str = ""
+    """What is etched in gold beside the cell. Defaults to ``cid``.
+
+    A witness plate is read under a microscope at 50x, where every sweep cell
+    looks like every other sweep cell. An id like "K3" is unreadable there
+    without the map, and maps get separated from plates — so the label carries
+    the VALUE, not just the index: "CP 6.5um" tells you what you are looking at
+    and a stack of them tells you which way the ladder runs."""
     two_layer: bool = False
     axis: str = ""
     """Which DoE axis this cell is a rung of, empty for a one-off."""
