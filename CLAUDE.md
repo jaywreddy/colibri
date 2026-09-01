@@ -22,7 +22,7 @@
   uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q
   uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_sim_numerics.py -q
   uv run --extra dev pytest tests/test_sim2d.py tests/test_pattern_types.py tests/test_showcase_patterns.py tests/test_bitmap_halftone.py -q
-  uv run --extra dev pytest tests/test_param_validation.py tests/test_sim_bounds.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py -q
+  uv run --extra dev pytest tests/test_param_validation.py tests/test_sim_bounds.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_readability.py -q
   uv run --extra dev pytest tests/test_cache_integrity.py tests/test_export_jobs.py -q
   ```
   (Chunk 2 is six files and chunk 5 is four, but all of them are light/fast —

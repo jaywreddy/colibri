@@ -277,6 +277,99 @@ def _substrate_defaults(
     return t, n_val, float(manifest["pixel_pitch_um"])
 
 
+@router.get("/readability/{box_id}")
+def readability(
+    box_id: str,
+    distance_mm: float = 300.0,
+    pupil_mm: float = 3.0,
+) -> dict:
+    """Will this box's faces READ to a human eye, face by face?
+
+    Computed from each face's FABRICATED periods (the manifest's recipe_data)
+    and the box's real glass — never from the render, which systematically
+    understates the effect (it filters the two layers independently, so it
+    loses the correlation term the physical part keeps). Every barrier face
+    gets the switch budget, every face gets the frame-moire budget.
+    """
+    from ..boxes import get_box
+    from ..readability import moire_readability, switch_readability, verdict
+
+    box = get_box(box_id)
+    if box is None:
+        raise HTTPException(404, f"Unknown box: {box_id}")
+    glass = (box.get("spec") or {}).get("glass") or {}
+    t = float(glass.get("thickness_um", 500.0))
+    n = float(glass.get("n", 1.46)) or 1.46
+
+    reports = []
+    for fid, fm in (box.get("faces") or {}).items():
+        rd = fm.get("recipe_data") or {}
+        num = lambda k, d: float(rd.get(k, d) or d)  # noqa: E731
+        # Barrier faces: the A/B interlace and the scanimation both switch by
+        # walking a barrier, so both take the switch budget.
+        is_barrier = bool(rd.get("switch_interlace")) or num("water_scan_n", 0) > 0
+        if is_barrier:
+            pitch = num("switch_interlace_period_um", 0) or num("fab_center_period_um", 60.0)
+            reports.append(
+                switch_readability(
+                    face=fid, barrier_pitch_um=pitch, thickness_um=t, n=n,
+                    distance_mm=distance_mm, pupil_mm=pupil_mm,
+                )
+            )
+        # The frame encodes a DIFFERENT louvre orientation per motif species
+        # (plate.frag: frameAngle = slitAngle + (bucket - (count-1)/2) * span),
+        # so one face fabricates a FAN of crossing angles. Evaluating only the
+        # base offset reported "passes" for every face while individual leaf
+        # species sat below acuity — the gate has to judge every direction it
+        # actually writes.
+        base = num("fab_angle_offset_deg", 3.0)
+        span = num("frame_angle_span_deg", 3.5)
+        count = int(num("frame_bucket_count", 6)) or 6
+        offsets = [base + (b - (count - 1) / 2.0) * span for b in range(count)]
+        reports.append(
+            moire_readability(
+                face=fid,
+                back_pitch_um=num("fab_back_period_um", 22.0),
+                front_pitch_um=num("fab_front_period_um", 23.98),
+                angle_offset_deg=base,
+                thickness_um=t, n=n, distance_mm=distance_mm, pupil_mm=pupil_mm,
+                angle_offsets_deg=offsets,
+            )
+        )
+    out = verdict(reports)
+    out["viewing"] = {"distance_mm": distance_mm, "pupil_mm": pupil_mm}
+    out["glass"] = {"thickness_um": t, "n": n}
+    return out
+
+
+@router.get("/diffraction/lut")
+def diffraction_lut(
+    duty: float = 0.5,
+    u_max_um: float = 10.0,
+    size: int = 1024,
+    orders: int = 16,
+) -> dict:
+    """Baked diffraction colour table for the renderer's spectral accent.
+
+    The physics (grating equation, square-wave order series, CIE integration)
+    runs in ``app.diffraction`` where it is unit-tested against closed forms;
+    the shader does one texture fetch. Indexed by the optical path term
+    ``u = period * (V.g + L.g)`` in um, so ONE table serves every pitch — see
+    the module docstring. Values are LINEAR sRGB.
+    """
+    from ..diffraction import lut_payload
+
+    if not (0.0 < duty < 1.0):
+        raise HTTPException(400, f"duty must be in (0, 1) (got {duty})")
+    if not (2 <= size <= 4096):
+        raise HTTPException(400, f"size must be 2..4096 (got {size})")
+    if not (1 <= orders <= 64):
+        raise HTTPException(400, f"orders must be 1..64 (got {orders})")
+    if not (0.1 <= u_max_um <= 100.0):
+        raise HTTPException(400, f"u_max_um must be 0.1..100 (got {u_max_um})")
+    return lut_payload(duty=duty, u_max_um=u_max_um, size=size, orders=orders)
+
+
 @router.get("/parallax2d/{slug}/{variant}")
 def parallax2d(
     slug: str,
