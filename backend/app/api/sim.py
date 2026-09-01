@@ -420,6 +420,155 @@ def parallax2d(
     return StreamingResponse(buf, media_type="image/png")
 
 
+# ---------------------------------------------------------------------------
+# Tilt-sweep collage — one sheet per pattern, every angle side by side.
+# ---------------------------------------------------------------------------
+
+# The sweep composites the full raster once per angle, so the tile count is the
+# multiplier on the work. 13 angles at a 512-px working grid is ~0.4 s and a
+# few tens of MB; these caps keep a URL from turning into a heavy compute.
+MAX_COLLAGE_ANGLES = 25
+COLLAGE_MAX_SIDE = 512
+
+
+def _collage_angles(span_deg: float, steps: int) -> list[float]:
+    if not 0.2 <= span_deg <= 45.0:
+        raise HTTPException(400, f"span_deg must be 0.2..45, got {span_deg}")
+    if not 3 <= steps <= MAX_COLLAGE_ANGLES:
+        raise HTTPException(400, f"steps must be 3..{MAX_COLLAGE_ANGLES}, got {steps}")
+    half = (steps - 1) / 2.0
+    return [round(span_deg * (i - half) / half, 3) for i in range(steps)]
+
+
+def _collage_for(
+    slug: str,
+    variant: str,
+    *,
+    span_deg: float,
+    steps: int,
+    illum: str,
+    axis: str,
+    tile_px: int,
+    thickness_um: float | None,
+    n: float | None,
+    cols: int | None = None,
+):
+    from .. import collage as collage_mod
+    from .. import sim2d
+
+    if illum not in sim2d.ILLUMINATIONS:
+        raise HTTPException(400, f"Unknown illum: {illum}")
+    if axis not in ("x", "y", "auto"):
+        raise HTTPException(400, f"axis must be 'x', 'y' or 'auto', got {axis!r}")
+    if not 48 <= tile_px <= 400:
+        raise HTTPException(400, f"tile_px must be 48..400, got {tile_px}")
+
+    angles = _collage_angles(span_deg, steps)
+    root, manifest = _load_parallax_pair(slug, variant)
+    t, n_val, pitch = _substrate_defaults(manifest, thickness_um, n)
+    front, back, grid_pitch, _ = _mask_arrays(
+        root, pitch, max_side=COLLAGE_MAX_SIDE
+    )
+
+    # 'auto' sweeps BOTH axes and keeps the stronger. This is not a nicety: a
+    # layer whose lines run horizontally is invariant under a horizontal shift,
+    # so tilting about the wrong axis walks it in the one direction where it has
+    # no structure and the pattern reads as perfectly dead. bitmap-halftone does
+    # exactly that — 0.000 on x, 0.195 on y — and monogram-carrier-reveal is the
+    # mirror image at 0.585 / 0.000. A fixed default is wrong for one of them.
+    candidates = ("x", "y") if axis == "auto" else (axis,)
+    best = None
+    for cand in candidates:
+        frames = collage_mod.sweep_frames(
+            front, back,
+            pixel_pitch_um=grid_pitch, thickness_um=t, n=n_val,
+            angles_deg=angles, illum=illum, axis=cand, tile_px=tile_px,
+        )
+        crop = collage_mod.border_crop_frac(
+            front.shape, grid_pitch, t, n_val, angles, cand
+        )
+        m = collage_mod.tile_metrics(frames, crop_frac=crop)
+        if best is None or m["effect_strength"] > best[1]["effect_strength"]:
+            best = (frames, m, cand)
+    frames, metrics, chosen = best
+    metrics = {**metrics, "axis": chosen, "axis_mode": axis}
+    sheet = collage_mod.compose_grid(
+        frames, cols=cols, title=f"{slug}  {illum}  tilt-{chosen}"
+    )
+    return sheet, metrics, angles, root, chosen
+
+
+@router.get("/collage/{slug}/{variant}")
+def collage_sheet(
+    slug: str,
+    variant: str = "default",
+    span_deg: float = 6.0,
+    steps: int = 13,
+    illum: str = "ambient",
+    axis: str = "auto",
+    tile_px: int = 160,
+    cols: int | None = None,
+    thickness_um: float | None = None,
+    n: float | None = None,
+) -> StreamingResponse:
+    """One PNG sheet: this pattern composited across a fan of view angles.
+
+    This is the honest preview. The WebGL renderer filters each layer
+    separately and so computes <front>*<back>, losing the cross term that IS
+    the effect once the lattice goes sub-pixel; here the product is formed at
+    raster resolution and only then area-averaged into a tile, which is the
+    order the eye integrates in. A pattern that does nothing across this sheet
+    will do nothing in glass.
+
+    Metrics for the same sweep come back on the ``X-Collage-Metrics`` header so
+    a caller showing the image does not have to composite it twice.
+    """
+    if cols is not None and not 1 <= cols <= MAX_COLLAGE_ANGLES:
+        raise HTTPException(400, f"cols must be 1..{MAX_COLLAGE_ANGLES}, got {cols}")
+    sheet, metrics, angles, root, chosen = _collage_for(
+        slug, variant, span_deg=span_deg, steps=steps, illum=illum, axis=axis,
+        tile_px=tile_px, thickness_um=thickness_um, n=n, cols=cols,
+    )
+    _log.info(
+        "collage slug=%s variant=%s angles=%d illum=%s axis=%s strength=%.3f peak=%s",
+        slug, root.name, len(angles), illum, chosen,
+        metrics["effect_strength"], metrics.get("peak_pair_deg"),
+    )
+    buf = io.BytesIO()
+    sheet.save(buf, format="PNG")
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="image/png",
+        headers={"X-Collage-Metrics": json.dumps(metrics)},
+    )
+
+
+@router.get("/collage/{slug}/{variant}/metrics")
+def collage_metrics(
+    slug: str,
+    variant: str = "default",
+    span_deg: float = 6.0,
+    steps: int = 13,
+    illum: str = "ambient",
+    axis: str = "auto",
+    thickness_um: float | None = None,
+    n: float | None = None,
+) -> dict:
+    """The same sweep's numbers without the image."""
+    _, metrics, angles, root, _chosen = _collage_for(
+        slug, variant, span_deg=span_deg, steps=steps, illum=illum, axis=axis,
+        tile_px=96, thickness_um=thickness_um, n=n,
+    )
+    return {
+        "slug": slug,
+        "variant": root.name,
+        "angles_deg": angles,
+        "illum": illum,
+        **metrics,
+    }
+
+
 @router.get("/parallax2d/{slug}/{variant}/curve")
 def parallax2d_curve(
     slug: str,
