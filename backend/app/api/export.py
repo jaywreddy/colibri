@@ -546,19 +546,38 @@ def _box_assembly_block(box_manifest: dict[str, Any]) -> dict[str, Any]:
     if block:
         return block
     spec = BoxSpec.from_dict(box_manifest.get("spec", {}))
+    if spec.bonded:
+        from ..assembly import bonded_assembly_summary
+
+        return bonded_assembly_summary(
+            spec.width_um, spec.depth_um, spec.height_um,
+            spec.glass.thickness_um, spec.foil, spec.hinge,
+        )
     return assembly_summary(
         spec.width_um, spec.depth_um, spec.height_um,
         spec.glass.thickness_um, spec.foil, spec.hinge,
     )
 
 
+def _assembly_sheet_um(assembly: dict[str, Any]) -> float:
+    """Sheet thickness every physical plate is cut from: the single glass, or
+    ONE ply of the bonded stack (``bonded_assembly_summary`` carries no
+    ``glass_thickness_um`` — its plates are plies)."""
+    if "glass_thickness_um" in assembly:
+        return float(assembly["glass_thickness_um"])
+    return float(assembly["ply_um"])
+
+
 def _cutlist_csv(assembly: dict[str, Any]) -> str:
-    """CUTLIST.csv — one glass plate per row, mm first for the saw bench."""
-    t_mm = assembly["glass_thickness_um"] / 1000.0
-    lines = ["face,width_mm,height_mm,thickness_mm,width_um,height_um"]
+    """CUTLIST.csv — one physical glass plate per row, mm first for the saw
+    bench. Bonded boxes list all 12 plies (outer + inner per face); the ply
+    column is empty for single-plate construction."""
+    t_mm = _assembly_sheet_um(assembly) / 1000.0
+    lines = ["face,ply,width_mm,height_mm,thickness_mm,width_um,height_um"]
     for entry in assembly["cut_list"]:
         lines.append(
-            f"{entry['face']},{entry['width_mm']},{entry['height_mm']},"
+            f"{entry['face']},{entry.get('ply', '')},"
+            f"{entry['width_mm']},{entry['height_mm']},"
             f"{round(t_mm, 3)},{entry['width_um']},{entry['height_um']}"
         )
     return "\n".join(lines) + "\n"
@@ -573,20 +592,47 @@ def _assembly_md(box_manifest: dict[str, Any], assembly: dict[str, Any]) -> str:
     w_mm = dims["width"] / 1000.0
     d_mm = dims["depth"] / 1000.0
     h_mm = dims["height"] / 1000.0
-    t_mm = assembly["glass_thickness_um"] / 1000.0
+    bonded = assembly.get("construction") == "bonded"
+    t_mm = _assembly_sheet_um(assembly) / 1000.0
     overlap_mm = assembly["overlap_um"] / 1000.0
     keepout_mm = assembly["keepout_um"] / 1000.0
     tape_mm = foil.tape_width_um / 1000.0
     safety_mm = foil.safety_um / 1000.0
+    material = str(spec.get("glass", {}).get("material", "fused silica"))
 
     cut_rows = "\n".join(
-        f"| {e['face']} | {e['width_mm']:.1f} | {e['height_mm']:.1f} | {t_mm:.1f} |"
+        f"| {e['face']}{' (' + e['ply'] + ')' if 'ply' in e else ''} "
+        f"| {e['width_mm']:.1f} | {e['height_mm']:.1f} | {t_mm:.1f} |"
         for e in assembly["cut_list"]
     )
     # Total foil = sum of plate perimeters (the tape wraps every plate edge).
+    # Bonded: the tape wraps each BONDED PAIR once — outer-ply perimeters only.
     foil_total_mm = sum(
-        2.0 * (e["width_um"] + e["height_um"]) for e in assembly["cut_list"]
+        2.0 * (e["width_um"] + e["height_um"])
+        for e in assembly["cut_list"]
+        if e.get("ply", "outer") == "outer"
     ) / 1000.0
+
+    construction_line = (
+        f"{t_mm:.1f} mm {material} plates"
+        if not bonded
+        else (
+            f"BONDED two-ply faces: 2 x {t_mm:.1f} mm {material} plies per face "
+            f"({assembly['wall_um'] / 1000.0:.1f} mm walls)"
+        )
+    )
+    bonding_section = "" if not bonded else f"""
+## 1b. Bond the ply pairs (before any foil)
+
+Each face is an OUTER ply (full cut dims) + an INNER ply exactly
+{t_mm:.1f} mm smaller per edge. Stack CHROME-DOWN on both plies (F chrome at
+the bond line, B chrome facing the box interior — the masks are pre-mirrored
+for this), centered: the nested-shell corners then interleave as the
+45-degree-approximating step. Null rotation on the corner vernier combs
+(80/88 um pair — fringes amplify error ~11x) while watching the live moire,
+wick UV optical adhesive from the edges, re-check, cure. The bond is
+repositionable until the UV lamp fires.
+"""
 
     seams = assembly["seams"]
     bottom_seams = [s for s in seams if s["kind"] == "bottom"]
@@ -605,7 +651,7 @@ def _assembly_md(box_manifest: dict[str, Any], assembly: dict[str, Any]) -> str:
     return f"""# {box_manifest.get('name', 'Ring box')} — stained-glass assembly
 
 Outer dimensions: {w_mm:.1f} x {d_mm:.1f} x {h_mm:.1f} mm (W x D x H),
-{t_mm:.1f} mm fused-silica plates, copper-foil construction with a brass
+{construction_line}, copper-foil construction with a brass
 tube-and-rod lid hinge. Work the body first; the lid is hinged, never soldered.
 
 ## 1. Cut the glass
@@ -617,7 +663,7 @@ tube-and-rod lid hinge. Work the body first; the lid is hinged, never soldered.
 Walls sit ON the bottom plate and the lid rests on the wall rim, so the
 walls are cut 2 x {t_mm:.1f} mm short of the box height, and the left/right
 walls fit BETWEEN front/back ({2 * t_mm:.1f} mm narrower than the depth).
-
+{bonding_section}
 ## 2. Check the gold keep-out
 
 Each mask leaves a blank rim of {keepout_mm:.3f} mm on every edge:
@@ -703,6 +749,61 @@ def wafer_plan() -> dict[str, Any]:
         "placements": [
             {
                 "face": p.face,
+                "cx_um": round(p.cx, 1),
+                "cy_um": round(p.cy, 1),
+                "width_um": round(p.width_um, 1),
+                "height_um": round(p.height_um, 1),
+                "rotated": p.rotated,
+            }
+            for p in result.placements
+        ],
+    }
+
+
+@router.get("/blank/plan")
+def blank_plan(
+    plate_thickness_um: float | None = None,
+    blank_side_um: float | None = None,
+    aspect_h_over_w: float | None = None,
+) -> dict[str, Any]:
+    """The single-blank bonded-pair packing plan (12 sub-plates, one blank).
+
+    Pure math (no pattern generation): the square-blank packer + max-scale
+    solver from ``export_blank``. Each face appears twice (``face:F`` outer
+    ply, ``face:B`` the inset inner ply — the bonded pair); the reported box
+    wall is the bonded stack (2 x ply) and ``interior_*_mm`` is the ring-fit
+    readout. Defaults: 5-inch blank, 1.5 mm soda-lime plies, upright H/W 1.1.
+    The full single-layer GDS is produced offline via
+    ``python -m app.export_blank``.
+    """
+    from ..export_blank import (
+        BLANK_EDGE_MARGIN_UM,
+        BLANK_SIDE_UM,
+        BLANK_STREET_UM,
+        DEFAULT_ASPECT_H_OVER_W,
+        PLATE_THICKNESS_UM,
+        solve_blank_max_scale,
+    )
+
+    plate_thickness_um = plate_thickness_um or PLATE_THICKNESS_UM
+    blank_side_um = blank_side_um or BLANK_SIDE_UM
+    aspect_h_over_w = aspect_h_over_w or DEFAULT_ASPECT_H_OVER_W
+    result = solve_blank_max_scale(
+        plate_thickness_um=plate_thickness_um,
+        blank_side_um=blank_side_um,
+        aspect_h_over_w=aspect_h_over_w,
+    )
+    if result is None:
+        raise HTTPException(500, "No box size fits the blank — check constants.")
+    return {
+        "blank_side_um": result.blank_side_um,
+        "usable_side_um": result.usable_side_um,
+        "edge_margin_um": BLANK_EDGE_MARGIN_UM,
+        "dicing_street_um": BLANK_STREET_UM,
+        "box": result.dims_mm(),
+        "placements": [
+            {
+                "plate": p.face,
                 "cx_um": round(p.cx, 1),
                 "cy_um": round(p.cy, 1),
                 "width_um": round(p.width_um, 1),

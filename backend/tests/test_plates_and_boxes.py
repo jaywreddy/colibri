@@ -434,10 +434,12 @@ def test_http_box_fab_export_has_cutlist_and_assembly(app_client):
 
     csv_text = zf.read("CUTLIST.csv").decode()
     lines = csv_text.strip().splitlines()
-    assert lines[0] == "face,width_mm,height_mm,thickness_mm,width_um,height_um"
+    # The `ply` column is empty for single-plate construction and carries
+    # outer/inner for bonded boxes (12 rows there).
+    assert lines[0] == "face,ply,width_mm,height_mm,thickness_mm,width_um,height_um"
     assert len(lines) == 7  # header + 6 plates
-    assert any(line.startswith("bottom,24.0,24.0,0.5") for line in lines)
-    assert any(line.startswith("left,23.0,23.0,0.5") for line in lines)
+    assert any(line.startswith("bottom,,24.0,24.0,0.5") for line in lines)
+    assert any(line.startswith("left,,23.0,23.0,0.5") for line in lines)
 
     md = zf.read("ASSEMBLY.md").decode()
     # Real numbers: keep-out, foil width, hinge segment length, rod length.
