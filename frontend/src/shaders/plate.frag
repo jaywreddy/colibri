@@ -274,6 +274,13 @@ uniform float uDiffReady;          // 1 once the table has been uploaded
 uniform float uRainbowPeriodUm;    // fabricated accent-grating period
 uniform float uRainbowAngleRad;    // fabricated accent-grating orientation
 uniform float uRainbowZeroOrder;   // eta_0 = duty^2: share left in specular
+// Accent INTERLEAVE (see backend gratings.band_select / export_fine). The accent
+// zone carries the diffraction grating and a moire louvre in alternating
+// sub-acuity bands, both written at the accent's 45 deg axis so they share one
+// lattice. Drawn here from the SAME published numbers the mask is baked with,
+// so the preview stops showing a blend the part does not have.
+uniform float uAccentBandPitchUm;  // interleave band pitch
+uniform float uAccentMoirePeriodUm;// the moire band's louvre period
 
 // ITEM 2b — these are LINEAR-LIGHT reflectances. They used to be sRGB display
 // codes multiplied by lighting terms and written straight to the framebuffer, i.e.
@@ -706,6 +713,9 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
   // plane is otherwise the dim recessed layer.
   float dimCov = 0.0;   // rendered as a dim/recessed barrier
   float hotCov = 0.0;   // rendered extra-bright (flowing water)
+  // Fraction of this fragment sitting in the accent's DIFFRACTION band; only
+  // that share returns a spectrum (the other band is a plain moire louvre).
+  float accentDiffFrac = 0.0;
   if (!isBack) {
     // OUTER plane: per-motif foliage louvre in the frame band …
     float bucket = 0.0;
@@ -716,7 +726,23 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
     float frameAngle = uSlitAngle
       + (bucket - 0.5 * (uFrameBucketCount - 1.0)) * uFrameAngleSpan;
     float louvre = gratingCoverage(pUm, frameAngle, slitP, duty);
-    cov = band * louvre;
+    // The accent is NOT frame band: it carries its own interleaved pair at the
+    // accent axis. Draw the frame louvre only where the frame actually is.
+    float frameOnly = band * (1.0 - rainbowHere);
+    cov = frameOnly * louvre;
+    if (rainbowHere > 0.0) {
+      // Which interleave band is this fragment in? Bands are perpendicular to
+      // the accent axis, so the selector is the same projection the gratings use.
+      vec2 ag = vec2(cos(uRainbowAngleRad), sin(uRainbowAngleRad));
+      float bandCoord = dot(pUm, ag) / max(1.0, uAccentBandPitchUm);
+      float inDiff = boxPulse(bandCoord, 0.5, fwidth(bandCoord));
+      float diffCov = gratingCoverage(pUm, uRainbowAngleRad, uRainbowPeriodUm, duty);
+      float moireCov = gratingCoverage(pUm, uRainbowAngleRad, uAccentMoirePeriodUm, duty);
+      cov += rainbowHere * mix(moireCov, diffCov, inDiff);
+      // Only the diffraction band diffracts; the sheen is weighted by how much
+      // of this fragment's footprint that band actually occupies.
+      accentDiffFrac = rainbowHere * inDiff;
+    }
 
     // … plus the centerpiece front-layer geometry.
     if (isWater) {
@@ -941,7 +967,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
     // spectral term added below. So inside the accent the ordinary metal
     // response is scaled down by eta_0 and the rainbow takes over, rather than
     // being tinted on top of full-strength metal (which washed it out).
-    float zeroOrder = mix(1.0, uRainbowZeroOrder, rainbowHere);
+    float zeroOrder = mix(1.0, uRainbowZeroOrder, accentDiffFrac);
     color = uMetalAlbedo * normalCov * lift * uMetalBody * fresnelGain * zeroOrder;
     color += F * spec * normalCov * uMetalSpec * ndl * zeroOrder;
     // Environment reflection: a sky/ground hemisphere sampled along the mirror
@@ -959,7 +985,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
     color += uMetalAlbedo * hotCov * (0.43 + 0.67 * ndl);
     // Diffraction accent: OUTER plane only, labelled angle-hue sheen.
     if (!isBack && rainbowHere > 0.0) {
-      color += diffractionSheen(viewTangent, lightTangent, pUm, ndl) * rainbowHere * uMetalSheen;
+      color += diffractionSheen(viewTangent, lightTangent, pUm, ndl) * accentDiffFrac * uMetalSheen;
     }
     // Ambient illuminant tint. uAmbientColor was bound by BoxScene but read by no
     // branch in any recipe — inert plumbing. Consume it here (rather than delete the

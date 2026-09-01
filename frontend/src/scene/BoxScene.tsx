@@ -689,6 +689,8 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       uRainbowPeriodUm: { value: 4.4 },
       uRainbowAngleRad: { value: Math.PI / 4 },
       uRainbowZeroOrder: { value: 0.25 },
+      uAccentBandPitchUm: { value: 48.0 },
+      uAccentMoirePeriodUm: { value: 23.98 },
       uSkyColor: { value: new THREE.Color().setRGB(...ENV_SKY, THREE.LinearSRGBColorSpace) },
       uGroundColor: { value: new THREE.Color().setRGB(...ENV_GROUND, THREE.LinearSRGBColorSpace) },
       // Pattern Scale (Task 1b): multiplies the preview-MAGNIFIED period family
@@ -2402,6 +2404,8 @@ export default function BoxScene() {
               u.uRainbowAngleRad.value =
                 ((Number(rd.rainbow_angle_deg ?? 45) || 45) * Math.PI) / 180;
               u.uRainbowZeroOrder.value = Number(rd.rainbow_zero_order ?? 0.25) || 0.25;
+              u.uAccentBandPitchUm.value = Number(rd.accent_interleave_pitch_um ?? 48) || 48;
+              u.uAccentMoirePeriodUm.value = Number(rd.accent_moire_period_um ?? 23.98) || 23.98;
             };
             applyShared(rt.shader.uniforms);
             applyShared(rt.shaderBack.uniforms);

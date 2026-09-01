@@ -485,3 +485,45 @@ def diffraction_accent_meta(
         "litho_floor_um": MIN_PERIOD_UM,
         "note": d.note,
     }
+
+
+# --- sub-acuity interleaving -------------------------------------------------
+# Band pitch for spatially interleaving two gratings in one zone. 48 µm subtends
+# 0.55 arcmin at 300 mm — under the ~0.7 arcmin invisibility limit, so the eye
+# cannot resolve the bands and simply sees BOTH effects superimposed over the
+# same area. This is how a diffraction grating and a moiré louvre coexist:
+# nesting the fine grating INSIDE the coarse one instead would make the coarse
+# envelope split the spectrum into orders ~1.3° apart against a ~7° useful
+# lobe, washing the colour toward white. Interleaved, each band stays a full
+# clean grating of its own kind (the 24 µm diffraction band holds ~5.5 periods
+# of 4.4 µm, giving orders ~1.3° wide against 7.2° separation) at the cost of
+# roughly half the area each.
+INTERLEAVE_BAND_PITCH_UM = 48.0
+
+
+def band_select(
+    local_rects: np.ndarray,
+    band_pitch_um: float = INTERLEAVE_BAND_PITCH_UM,
+    *,
+    want_odd: bool = False,
+    duty: float = 0.5,
+    phase: float = 0.0,
+) -> np.ndarray:
+    """Keep the grating lines that fall in alternating bands.
+
+    ``local_rects`` are ``(N,4)`` ``[x0,x1,y0,y1]`` in a GRATING-LOCAL frame —
+    the frame where the lines are vertical, so ``x`` is the across-the-lines
+    axis and a band is simply an x interval. Two gratings generated at the SAME
+    angle therefore share one local frame, which is what lets both be clipped to
+    the same band lattice with a scalar test instead of polygon clipping.
+
+    ``want_odd`` picks the complementary set, so the two callers tile the zone
+    exactly once with no overlap and no bare gap.
+    """
+    if local_rects.size == 0:
+        return local_rects
+    cx = 0.5 * (local_rects[:, 0] + local_rects[:, 1])
+    frac = np.mod(cx / band_pitch_um - phase, 1.0)
+    in_first = frac < duty
+    keep = ~in_first if want_odd else in_first
+    return local_rects[keep]

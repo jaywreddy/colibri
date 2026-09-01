@@ -64,6 +64,8 @@ from typing import Any, Callable, Iterable
 
 import numpy as np
 
+from .patterns.effects.gratings import band_select
+
 _log = logging.getLogger("optics.export_fine")
 
 # --- GDS layer map (layer, datatype) ---------------------------------------
@@ -1129,17 +1131,41 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
                 0.0, front_rects_parts, front_angled,
             )
 
-    # --- FRONT rainbow accent (4.4 µm, 45°, angled) ------------------------
+    # --- FRONT accent: INTERLEAVED diffraction + moiré (both at 45°) -------
+    # The accent used to be pure 4.4 µm diffraction: it could flash a rainbow
+    # but never shimmer, because its only possible moiré partner (the 22 µm back
+    # carrier) beats with 4.4 µm at 5.5 µm — far below anything an eye resolves.
+    # It now carries BOTH effects, spatially interleaved in sub-acuity bands so
+    # the eye integrates them as one surface (see gratings.band_select for why
+    # interleaving beats nesting the fine grating inside the coarse one).
+    #
+    # Both gratings are written at the SAME 45° axis, so they share one
+    # grating-local frame and the band lattice is a scalar test on local x —
+    # no polygon clipping, and the two sets tile the zone exactly once.
     if zm.front_accent.any():
         # Inset the accent too so a 1-cell gutter sits between it and the 0°
         # carrier (accent zones are many cells wide, so the inset is negligible).
         accent_zone = _erode_zone(zm.front_accent, 1)
-        _emit_grating(
-            accent_zone if accent_zone.any() else zm.front_accent, pitch, extent,
-            4.4,  # DIFFRACTION_ACCENT_PERIOD_UM — sub-5 µm, exact
-            0.5, 45.0,
-            0.0, front_rects_parts, front_angled,
+        if not accent_zone.any():
+            accent_zone = zm.front_accent
+        acc_angle = P._DIFFRACTION_ACCENT_ANGLE_DEG
+        band_pitch = P._INTERLEAVE_BAND_PITCH_UM
+        # Band A: the diffraction grating (rainbow).
+        diff_local = _angled_grating_local_rects(
+            accent_zone, pitch, extent,
+            P._DIFFRACTION_ACCENT_PERIOD_UM, P._DIFFRACTION_ACCENT_DUTY, acc_angle,
         )
+        diff_local = band_select(diff_local, band_pitch, want_odd=False)
+        if diff_local.shape[0]:
+            front_angled.append((diff_local, acc_angle))
+        # Band B: a moiré louvre at the frame's front period, which beats
+        # against the dedicated back patch emitted below.
+        moire_local = _angled_grating_local_rects(
+            accent_zone, pitch, extent, front_period, duty, acc_angle,
+        )
+        moire_local = band_select(moire_local, band_pitch, want_odd=True)
+        if moire_local.shape[0]:
+            front_angled.append((moire_local, acc_angle))
 
     is_scanimation = zm.water_band is not None
 
@@ -1168,12 +1194,31 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
         # the neighbour field within the floor. The extra cell is one ~39 µm
         # boundary-raster step off a rim already inset by the weld margin —
         # optically invisible, and it only shrinks gold so it cannot add defects.
+        # The accent zone gets its OWN back patch just below (at a small
+        # crossing to the accent's 45° front bands), so keep the main carrier
+        # out of it — two carriers at different angles in one place would beat
+        # against each other as well as against the front.
+        if zm.front_accent.any():
+            carrier_zone = carrier_zone & ~zm.front_accent
         carrier_zone = _erode_zone(carrier_zone, 2)
         # base_angle is a per-face carrier rotation (seed-keyed); non-zero →
         # grating-local rects + angle, else exact axis rects.
         if carrier_zone.any():
             _emit_grating(
                 carrier_zone, pitch, extent, back_period, duty, base_angle,
+                0.0, back_rects_parts, back_angled,
+            )
+
+    # --- BACK patch under the accent (the accent moiré's partner) ----------
+    # Laid at a SMALL crossing to the accent's 45° front bands so the pair beats
+    # at a spacing the eye resolves; the frame's per-species angle fan does not
+    # apply here because the accent is centerpiece geometry, not frame foliage.
+    if zm.front_accent.any():
+        acc_back = _erode_zone(zm.front_accent, 2)
+        if acc_back.any():
+            _emit_grating(
+                acc_back, pitch, extent, back_period, duty,
+                P._DIFFRACTION_ACCENT_ANGLE_DEG + P.ACCENT_MOIRE_OFFSET_DEG,
                 0.0, back_rects_parts, back_angled,
             )
 

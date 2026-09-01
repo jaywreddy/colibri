@@ -296,6 +296,7 @@ from .patterns.effects.gratings import (  # noqa: E402
     DIFFRACTION_ACCENT_ANGLE_DEG as _DIFFRACTION_ACCENT_ANGLE_DEG,
     DIFFRACTION_ACCENT_DUTY as _DIFFRACTION_ACCENT_DUTY,
     DIFFRACTION_ACCENT_PERIOD_UM as _DIFFRACTION_ACCENT_PERIOD_UM,
+    INTERLEAVE_BAND_PITCH_UM as _INTERLEAVE_BAND_PITCH_UM,
 )
 
 # Frame-band angle-bucket palette. Levels live strictly inside the shader's
@@ -317,7 +318,16 @@ N_FRAME_BUCKETS = 6
 # ORIENTATIONS barely differed and, combined with the coarse 340 µm carrier,
 # the fringes did not travel with tilt. See CARRIER_ANGLE_OFFSET_DEG /
 # PREVIEW_BACK_PERIOD_UM notes for the travel fix.)
-FRAME_ANGLE_SPAN_DEG = 3.5
+# Retuned from 3.5 deg. The per-species fan is added ON TOP of
+# CARRIER_ANGLE_OFFSET_DEG, so 3.0 + (b-2.5)*3.5 spanned -5.75..+11.75 deg and
+# the outer buckets (fern, heliconia, wax palm - 17% of frame gold) beat at
+# 103-137 um = 1.2-1.6 arcmin, BELOW the ~2 arcmin an eye resolves at 300 mm:
+# those species were fabricated with a shimmer nobody would ever see. Because
+# the beat depends on |crossing|, the fix is to centre the fan low rather than
+# merely narrow it - 2.5 +/- 2.5*1.0 gives crossings 0..5 deg, keeping all six
+# species in the 187-266 um (2.15-3.05 arcmin) band with six DISTINCT
+# treatments. Pinned by tests/test_readability.py.
+FRAME_ANGLE_SPAN_DEG = 1.0
 
 
 def frame_level(bucket: int) -> int:
@@ -373,7 +383,7 @@ BACK_CARRIER_PERIOD_UM = 22.0     # back uniform grating period (fab)
 # 22 µm fab carrier the 1.06→1.09 change is a sub-µm shift in the baked front
 # period — negligible for fab.
 FRONT_GRATING_RATIO = 1.09
-CARRIER_ANGLE_OFFSET_DEG = 3.0    # relative rotation between the two gratings
+CARRIER_ANGLE_OFFSET_DEG = 2.5    # fan centre; see FRAME_ANGLE_SPAN_DEG
 GRATING_DUTY = 0.5                # gold-line fraction of a period
 # Preview (shader) grating period, in µm of PLATE surface. The shader draws the
 # gratings ANALYTICALLY (fwidth-AA), so this is a resolution-independent visual
@@ -480,6 +490,20 @@ SWITCH_INTERLACE_SLUGS = frozenset(
 # the REAL slit barrier + interleaved ripple frames into the box back plate.
 WATER_SCAN_FAB_PITCH_UM = 60.0
 WATER_SCAN_FAB_CARRIER_UM = 24.0
+
+# --- diffraction / moiré interleave in the accent zone ------------------------
+# The accent used to be PURE 4.4 µm diffraction, so it could flash a rainbow but
+# never shimmer, while the moiré louvre lived only in the frame band — two
+# effects at two scales in two places that never met. The accent zone now
+# carries BOTH, spatially interleaved in sub-acuity bands (see
+# effects.gratings.INTERLEAVE_BAND_PITCH_UM for why interleaving beats nesting).
+#
+# Both front gratings are written at the SAME 45° accent axis so they share one
+# grating-local frame and the band lattice is a scalar test in it; the moiré
+# then comes from the PITCH difference against a dedicated back patch laid under
+# the accent at a small crossing, rather than from the frame's per-species fan.
+ACCENT_MOIRE_OFFSET_DEG = 2.5   # accent back patch vs its 45° front bands
+# ---------------------------------------------------------------------------
 
 # --- glass-derived fab periods ------------------------------------------------
 # The 60 µm barrier periods above are TILT targets, not absolute pitches: the
@@ -725,6 +749,11 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         # this in the accent zone so the spectrum REPLACES that energy instead
         # of being painted on top of a full-strength metal.
         "rainbow_zero_order": float(_DIFFRACTION_ACCENT_DUTY ** 2),
+        # Interleave parameters — the SAME numbers the fab bake uses, so the
+        # preview draws the construction that is actually written.
+        "accent_interleave_pitch_um": float(_INTERLEAVE_BAND_PITCH_UM),
+        "accent_moire_period_um": float(front_pitch),
+        "accent_moire_offset_deg": float(ACCENT_MOIRE_OFFSET_DEG),
         # Fab (SVG/GDS) — true fine gratings baked as clipped rect arrays. These
         # are the user-tunable pitch (== carrier_period_um / slit_period_um): the
         # fab path (ensure_plate_svg, export_fine.build_plate_fine) reads these,
@@ -1419,7 +1448,7 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 #     ``_centerpiece_masks`` already carved the band and the plate pitch is keyed to
 #     the pattern's unchanged ``pixel_pitch_um``. Without the bump a warm plate slot
 #     keeps advertising the pre-carve measured minimums next to a re-baked SVG.
-PLATE_COMPOSE_VERSION = 10
+PLATE_COMPOSE_VERSION = 11
 
 
 def frame_scene_for_plate(
@@ -2341,7 +2370,7 @@ _SVG_BAKE_KEYS = (
 #     bars across the animal, back.svg no longer interleaves ripple crests under
 #     it, and the plain back carrier is kept over the submerged body instead of
 #     being cleared for the band. Only the capybara face changes.
-PLATE_SVG_VERSION = "plate-svg-v9"
+PLATE_SVG_VERSION = "plate-svg-v10"
 
 
 def _svg_is_current(svg_path: Path) -> bool:
