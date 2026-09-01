@@ -230,6 +230,233 @@ def cut_list(
     return out
 
 
+# -----------------------------------------------------------------------------
+# BONDED (two-ply) construction — thick-stock variant of the box.
+#
+# With thick sheet stock (e.g. 1.5 mm soda lime) each face is TWO single-side
+# chrome plates glued face-to-face (UV optical adhesive): the OUTER ply carries
+# the front layer at the bond line, the INNER ply carries the back layer toward
+# the box interior, and the optical parallax gap is ONE ply of glass. The wall
+# the box is built from is the bonded stack, 2 x ply.
+#
+# Geometrically the box is TWO NESTED TIFFANY BOXES, each cut at the PLY
+# thickness: the outer shell at (W, D, H) and the inner shell at
+# (W - 2p, D - 2p, H - 2p), shifted inward by p on every axis. That single rule
+# yields, per face, an inner ply inset exactly p on all four edges (centered on
+# its outer ply — the bond alignment is trivially "centered"), corners that
+# interleave as a two-step staircase approximating a 45 deg miter with no ply
+# collisions, and a lid whose inner ply nests INSIDE the wall rim — a
+# registration lip that keys the closed lid in place.
+#
+# Foil: the tape wraps a STEPPED edge — across the outer ply edge (p), the
+# exposed step ledge (p), and the inner ply edge (p) — consuming 3p of width
+# before any fold-over remains:
+#
+#     bonded_overlap_um = max(0, (tape_width_um - 3p) / 2)
+#
+# The fold lands on the outer face measured from the OUTER ply edge, and on
+# the interior face measured from the INNER ply edge.
+# -----------------------------------------------------------------------------
+
+
+def bonded_wall_um(ply_um: float) -> float:
+    """Effective wall thickness of a bonded two-ply face."""
+    return 2.0 * ply_um
+
+
+def bonded_overlap_um(foil: FoilSpec, ply_um: float) -> float:
+    """Foil fold-over per face of the bonded stack (stepped-edge wrap)."""
+    return max(0.0, (foil.tape_width_um - 3.0 * ply_um) / 2.0)
+
+
+def bonded_keepout_um(foil: FoilSpec, ply_um: float) -> float:
+    """Front-art keep-out rim, measured from the OUTER ply edge."""
+    return bonded_overlap_um(foil, ply_um) + foil.safety_um
+
+
+def bonded_back_window_um(foil: FoilSpec, ply_um: float) -> float:
+    """Back-layer keep-out rim, measured from the INNER ply edge.
+
+    The interior foil fold starts at the inner ply edge (the fold conforms over
+    the staircase), so — like the single-ply ``back_window_um`` — the back
+    carrier insets by the fold alone, no safety margin.
+    """
+    return bonded_overlap_um(foil, ply_um)
+
+
+def bonded_face_cut_dims(
+    face_id: str,
+    width_um: float,
+    depth_um: float,
+    height_um: float,
+    ply_um: float,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """((outer_w, outer_h), (inner_w, inner_h)) for one bonded face.
+
+    Outer ply = the outer nested shell cut at the PLY thickness; inner ply =
+    the shell nested one ply in on every axis. The inner ply always comes out
+    exactly ``2 * ply`` smaller on both sides — inset one ply per edge.
+    """
+    p = ply_um
+    outer = face_cut_dims(face_id, width_um, depth_um, height_um, p)
+    inner = face_cut_dims(
+        face_id, width_um - 2.0 * p, depth_um - 2.0 * p, height_um - 2.0 * p, p
+    )
+    return outer, inner
+
+
+def bonded_cut_list(
+    width_um: float,
+    depth_um: float,
+    height_um: float,
+    ply_um: float,
+) -> list[dict[str, Any]]:
+    """Full 12-plate bonded cut list: per face, outer ply then inner ply.
+
+    ``inset_um`` on the inner entry is the per-edge inset relative to its outer
+    ply (always one ply) — the bench bond alignment target is "centered".
+    """
+    out: list[dict[str, Any]] = []
+    for fid in ("bottom", "top", "front", "back", "left", "right"):
+        (ow, oh), (iw, ih) = bonded_face_cut_dims(
+            fid, width_um, depth_um, height_um, ply_um
+        )
+        out.append(
+            {
+                "face": fid,
+                "ply": "outer",
+                "width_um": ow,
+                "height_um": oh,
+                "width_mm": round_mm3(ow),
+                "height_mm": round_mm3(oh),
+            }
+        )
+        out.append(
+            {
+                "face": fid,
+                "ply": "inner",
+                "width_um": iw,
+                "height_um": ih,
+                "width_mm": round_mm3(iw),
+                "height_mm": round_mm3(ih),
+                "inset_um": ply_um,
+            }
+        )
+    return out
+
+
+def validate_bonded_assembly(
+    width_um: float,
+    depth_um: float,
+    height_um: float,
+    ply_um: float,
+    foil: FoilSpec,
+    hinge: HingeSpec,
+) -> None:
+    """Bonded-construction validation — the two-ply sibling of
+    ``validate_assembly``. Raises ``ValueError`` with actionable messages.
+
+    Checks the NESTED geometry (inner shell must exist: H > 4p, D > 4p), the
+    foil sanity shared with the single-ply path, the patternable aperture on
+    BOTH plies (front art on the outer ply behind ``bonded_keepout_um``, back
+    art on the inner ply behind ``bonded_back_window_um``), and the hinge.
+    Predicates keep the exact arrangement of ``validate_assembly`` (see the
+    ULP note there) — the frontend mirrors them term for term.
+    """
+    p = ply_um
+    if p <= 0:
+        raise ValueError(f"Ply thickness must be positive (got {p} um).")
+    if width_um <= 0 or depth_um <= 0 or height_um <= 0:
+        raise ValueError(
+            f"Box dimensions must be positive (got W={width_um}, D={depth_um}, "
+            f"H={height_um} um)."
+        )
+    if height_um <= 4.0 * p:
+        raise ValueError(
+            f"Box height {height_um / 1000:.1f} mm leaves no room for the bonded "
+            f"walls: the INNER wall ply is H - 4p = "
+            f"{(height_um - 4 * p) / 1000:.1f} mm tall with {p / 1000:.1f} mm "
+            "plies. Increase height or use thinner stock."
+        )
+    if depth_um <= 4.0 * p:
+        raise ValueError(
+            f"Box depth {depth_um / 1000:.1f} mm leaves no room for the bonded "
+            f"left/right walls: the INNER ply is D - 4p = "
+            f"{(depth_um - 4 * p) / 1000:.1f} mm wide with {p / 1000:.1f} mm "
+            "plies. Increase depth or use thinner stock."
+        )
+    if foil.tape_width_um <= 0:
+        raise ValueError(f"Foil tape width must be positive (got {foil.tape_width_um} um).")
+    if foil.safety_um < 0:
+        raise ValueError(f"Foil safety margin cannot be negative (got {foil.safety_um} um).")
+
+    ko = bonded_keepout_um(foil, p)
+    bw = bonded_back_window_um(foil, p)
+    for entry in bonded_cut_list(width_um, depth_um, height_um, p):
+        rim = ko if entry["ply"] == "outer" else bw
+        min_side = min(entry["width_um"], entry["height_um"])
+        if min_side <= 2.0 * rim + MIN_APERTURE_UM:
+            raise ValueError(
+                f"Foil keep-out swallows the {entry['face']} {entry['ply']} ply: "
+                f"the ply is {entry['width_mm']} x {entry['height_mm']} mm but its "
+                f"keep-out rim is {rim / 1000:.2f} mm per edge, leaving under "
+                f"{MIN_APERTURE_UM / 1000:.0f} mm of patternable aperture. Use "
+                "narrower foil tape, thinner stock, or enlarge the box."
+            )
+
+    if hinge.segments < 3 or hinge.segments % 2 == 0:
+        raise ValueError(
+            f"Hinge segments must be an odd number >= 3 (got {hinge.segments}): "
+            "the tube alternates body,lid,body,... with body at both ends."
+        )
+    if not (0.0 < hinge.coverage <= 1.0):
+        raise ValueError(
+            f"Hinge coverage must be in (0, 1] of the box width (got {hinge.coverage})."
+        )
+    layout = hinge_layout(hinge, width_um)
+    if layout["segment_length_um"] <= hinge.tube_od_um:
+        raise ValueError(
+            f"Hinge tube segments come out {layout['segment_length_um'] / 1000:.2f} mm "
+            f"long — shorter than the tube OD ({hinge.tube_od_um / 1000:.2f} mm) and "
+            "uncuttable. Reduce the segment count or increase hinge coverage."
+        )
+    if hinge.rod_od_um >= hinge.tube_od_um:
+        raise ValueError(
+            f"Hinge rod OD ({hinge.rod_od_um} um) must be smaller than the tube OD "
+            f"({hinge.tube_od_um} um) so the rod can pass through the tube."
+        )
+
+
+def bonded_assembly_summary(
+    width_um: float,
+    depth_um: float,
+    height_um: float,
+    ply_um: float,
+    foil: FoilSpec,
+    hinge: HingeSpec,
+) -> dict[str, Any]:
+    """The ``assembly`` block of a bonded box manifest.
+
+    Seams follow the OUTER shell at the ply thickness: the visible bottom
+    joint line sits one ply up, and the corner seams span the outer wall ply
+    (H - 2p) — the inner plies are hidden behind them.
+    """
+    return {
+        "construction": "bonded",
+        "ply_um": ply_um,
+        "wall_um": bonded_wall_um(ply_um),
+        "keepout_um": bonded_keepout_um(foil, ply_um),
+        "back_window_um": bonded_back_window_um(foil, ply_um),
+        "overlap_um": bonded_overlap_um(foil, ply_um),
+        "cut_list": bonded_cut_list(width_um, depth_um, height_um, ply_um),
+        "seams": seam_list(width_um, depth_um, height_um, ply_um),
+        "hinge": {
+            **hinge.to_dict(),
+            **hinge_layout(hinge, width_um),
+        },
+    }
+
+
 def hinge_layout(hinge: HingeSpec, width_um: float) -> dict[str, Any]:
     """Tube run + segment lengths for the back-edge hinge.
 

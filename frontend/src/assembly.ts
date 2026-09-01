@@ -62,14 +62,29 @@ export function roundMm3(valueUm: number): number {
 // Foil overlap + pattern keep-out
 // -----------------------------------------------------------------------------
 
-/** Copper tape overlap onto each plate face: (tape_width - t) / 2, floored at 0. */
-export function overlapUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
-  return Math.max(0, (spec.foil.tape_width_um - spec.glass.thickness_um) / 2);
+type FoilGlassSpec = Pick<BoxSpec, 'foil' | 'glass'> & { bonded?: boolean };
+
+/** Effective wall thickness: one plate, or the bonded two-ply stack. */
+export function wallUm(spec: Pick<BoxSpec, 'glass'> & { bonded?: boolean }): number {
+  return spec.bonded ? 2 * spec.glass.thickness_um : spec.glass.thickness_um;
+}
+
+/**
+ * Copper tape overlap onto each plate face: (tape_width - t) / 2, floored at 0.
+ *
+ * BONDED construction wraps a STEPPED edge — outer ply edge (p), the exposed
+ * step ledge (p), inner ply edge (p) — so the tape consumes 3p before any
+ * fold-over remains. Mirrors backend ``assembly.py::bonded_overlap_um``.
+ */
+export function overlapUm(spec: FoilGlassSpec): number {
+  const consumed = spec.bonded ? 3 * spec.glass.thickness_um : spec.glass.thickness_um;
+  return Math.max(0, (spec.foil.tape_width_um - consumed) / 2);
 }
 
 /** Pattern keep-out margin per edge: foil overlap + safety.
- * Bounds the FRONT artwork (foliage silhouette). */
-export function keepoutUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
+ * Bounds the FRONT artwork (foliage silhouette). Measured from the OUTER ply
+ * edge in bonded construction. */
+export function keepoutUm(spec: FoilGlassSpec): number {
   return overlapUm(spec) + spec.foil.safety_um;
 }
 
@@ -81,8 +96,12 @@ export function keepoutUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
  * shimmer reads edge-to-edge behind the front foliage. Only constraint: the
  * grating must not run under the foil. Mirrors backend
  * ``assembly.py::back_window_um``; always <= keepoutUm since safety >= 0.
+ *
+ * In BONDED construction this rim is measured from the INNER ply edge (the
+ * interior fold starts there); note stampFaces converts it into the shared
+ * outer frame by adding one ply (mirrors backend boxes.normalize_face_dims).
  */
-export function backWindowUm(spec: Pick<BoxSpec, 'foil' | 'glass'>): number {
+export function backWindowUm(spec: FoilGlassSpec): number {
   return overlapUm(spec);
 }
 
@@ -100,6 +119,10 @@ export type CutPlate = {
 };
 
 export function cutList(spec: BoxSpec): CutPlate[] {
+  // In BONDED construction these are the OUTER ply dims: the outer nested
+  // shell is cut at the PLY thickness, so the same expressions apply verbatim
+  // (mirrors backend face_cut_dims called with the ply). The inner plies come
+  // from bondedCutList below.
   const t = spec.glass.thickness_um;
   const W = spec.width_um;
   const D = spec.depth_um;
@@ -120,6 +143,39 @@ export function cutList(spec: BoxSpec): CutPlate[] {
     mk('left', D - 2 * t, H - 2 * t),
     mk('right', D - 2 * t, H - 2 * t),
   ];
+}
+
+export type BondedCutPlate = CutPlate & {
+  ply: 'outer' | 'inner';
+  /** Inner ply only: per-edge inset relative to its outer ply (= one ply). */
+  inset_um?: number;
+};
+
+/**
+ * Full 12-plate bonded cut list — per face, outer ply then inner ply.
+ *
+ * The box is TWO NESTED shells each cut at the PLY thickness: outer at
+ * (W, D, H), inner at (W - 2p, D - 2p, H - 2p). Every inner ply comes out
+ * inset exactly one ply per edge, centered on its outer ply. Mirrors backend
+ * ``assembly.py::bonded_cut_list``.
+ */
+export function bondedCutList(spec: BoxSpec): BondedCutPlate[] {
+  const p = spec.glass.thickness_um;
+  const outer = cutList(spec);
+  const innerSpec: BoxSpec = {
+    ...spec,
+    width_um: spec.width_um - 2 * p,
+    depth_um: spec.depth_um - 2 * p,
+    height_um: spec.height_um - 2 * p,
+  };
+  const inner = new Map(cutList(innerSpec).map((c) => [c.face, c]));
+  const out: BondedCutPlate[] = [];
+  for (const o of outer) {
+    out.push({ ...o, ply: 'outer' });
+    const i = inner.get(o.face)!;
+    out.push({ ...i, ply: 'inner', inset_um: p });
+  }
+  return out;
 }
 
 /**
@@ -148,7 +204,12 @@ export function copperTapeLengthCm(spec: BoxSpec): number {
  */
 export function stampFaces(spec: BoxSpec): BoxSpec {
   const ko = keepoutUm(spec);
-  const bw = backWindowUm(spec);
+  // Bonded: the back layer lives on the INNER ply, whose edge is already one
+  // ply in — expressed in the shared outer-ply frame its window insets by
+  // ply + interior fold (mirrors backend boxes.normalize_face_dims).
+  const bw = spec.bonded
+    ? spec.glass.thickness_um + backWindowUm(spec)
+    : backWindowUm(spec);
   const cuts = new Map(cutList(spec).map((c) => [c.face, c]));
   // Keyed by string, not FaceId, because unknown keys survive the stamp.
   const faces: Record<string, PlateSpec> = {};
@@ -201,7 +262,10 @@ export type PlatePlacement = {
 };
 
 export function platePlacements(spec: BoxSpec): PlatePlacement[] {
-  const t = spec.glass.thickness_um;
+  // Placement centers sit at the mid-plane of the WALL (the bonded stack when
+  // spec.bonded); local plate dims stay the OUTER ply cut dims — the nested
+  // inner ply is concentric, so the stack's footprint IS the outer ply's.
+  const t = wallUm(spec);
   const hw = spec.width_um / 2;
   const hd = spec.depth_um / 2;
   const hh = spec.height_um / 2;
@@ -290,7 +354,9 @@ export type HingeLayout = {
 };
 
 export function hingeLayout(spec: BoxSpec): HingeLayout {
-  const t = spec.glass.thickness_um;
+  // The hinge axis rides the lid's mid-thickness — the bonded stack's when
+  // spec.bonded. (Backend hinge_layout carries no axis; frontend-only.)
+  const t = wallUm(spec);
   const r = spec.hinge.tube_od_um / 2;
   const n = spec.hinge.segments;
   const L = spec.hinge.coverage * spec.width_um;
@@ -331,6 +397,7 @@ export function hingeLayout(spec: BoxSpec): HingeLayout {
  * 400s on POST /boxes/generate is a contract bug.
  */
 export function validateBox(spec: BoxSpec): string[] {
+  if (spec.bonded) return validateBondedBox(spec);
   const errors: string[] = [];
   // Degenerate-input guards — mirror backend validate_assembly exactly:
   // non-positive glass/dims/tape and negative safety all reject there.
@@ -391,6 +458,92 @@ export function validateBox(spec: BoxSpec): string[] {
           `<= ${(MIN_APERTURE_UM / 1000).toFixed(1)} mm minimum ` +
           `(keep-out ${(ko / 1000).toFixed(1)} mm per edge).`
       );
+    }
+  }
+  const { segments: n, coverage, tube_od_um, rod_od_um } = spec.hinge;
+  if (n < 3 || n % 2 === 0) {
+    errors.push(`Hinge segments must be odd and >= 3 (got ${n}).`);
+  }
+  if (!(coverage > 0 && coverage <= 1)) {
+    errors.push(`Hinge coverage must be in (0, 1] of the box width (got ${coverage}).`);
+  }
+  if (rod_od_um >= tube_od_um) {
+    errors.push(
+      `Hinge rod OD (${(rod_od_um / 1000).toFixed(2)} mm) must be smaller than the tube OD ` +
+        `(${(tube_od_um / 1000).toFixed(2)} mm) so the rod can pass through the tube.`
+    );
+  }
+  if (n >= 3 && n % 2 === 1 && coverage > 0 && coverage <= 1) {
+    const h = hingeLayout(spec);
+    if (h.segment_length_um <= tube_od_um) {
+      errors.push(
+        `Hinge tube segments come out ${(h.segment_length_um / 1000).toFixed(2)} mm — ` +
+          `shorter than the tube OD (${(tube_od_um / 1000).toFixed(2)} mm) and uncuttable. ` +
+          'Reduce the segment count or increase hinge coverage.'
+      );
+    }
+  }
+  return errors;
+}
+
+/**
+ * Bonded-construction validator — the two-ply sibling of validateBox.
+ *
+ * MUST accept/reject exactly the same specs as the backend's
+ * ``validate_bonded_assembly`` (app/assembly.py): the inner nested shell must
+ * exist (H > 4p, D > 4p), foil sanity matches the single-ply path, the
+ * patternable aperture is checked on BOTH plies (front art on the outer ply
+ * behind keepoutUm, back art on the inner ply behind backWindowUm), and the
+ * hinge checks are shared. Predicates keep the backend's exact arrangement
+ * (see the ULP note in validateBox).
+ */
+export function validateBondedBox(spec: BoxSpec): string[] {
+  const errors: string[] = [];
+  const p = spec.glass.thickness_um;
+  if (p <= 0) {
+    errors.push(`Ply thickness must be positive (got ${p} um).`);
+  }
+  if (spec.width_um <= 0 || spec.depth_um <= 0 || spec.height_um <= 0) {
+    errors.push(
+      `Box dimensions must be positive (got W=${spec.width_um}, D=${spec.depth_um}, ` +
+        `H=${spec.height_um} um).`
+    );
+  }
+  if (spec.height_um <= 4.0 * p) {
+    errors.push(
+      `Box height ${(spec.height_um / 1000).toFixed(1)} mm leaves no room for the bonded ` +
+        `walls: the INNER wall ply is H - 4p = ${((spec.height_um - 4 * p) / 1000).toFixed(1)} mm ` +
+        `tall with ${(p / 1000).toFixed(1)} mm plies. Increase height or use thinner stock.`
+    );
+  }
+  if (spec.depth_um <= 4.0 * p) {
+    errors.push(
+      `Box depth ${(spec.depth_um / 1000).toFixed(1)} mm leaves no room for the bonded ` +
+        `left/right walls: the INNER ply is D - 4p = ${((spec.depth_um - 4 * p) / 1000).toFixed(1)} mm ` +
+        `wide with ${(p / 1000).toFixed(1)} mm plies. Increase depth or use thinner stock.`
+    );
+  }
+  if (spec.foil.tape_width_um <= 0) {
+    errors.push(`Foil tape width must be positive (got ${spec.foil.tape_width_um} um).`);
+  }
+  if (spec.foil.safety_um < 0) {
+    errors.push(`Foil safety margin cannot be negative (got ${spec.foil.safety_um} um).`);
+  }
+  const ko = keepoutUm(spec); // bonded-aware: stepped-edge overlap + safety
+  const bw = backWindowUm(spec); // from the INNER ply's own edge
+  if (p > 0 && spec.height_um > 4 * p && spec.depth_um > 4 * p) {
+    for (const cut of bondedCutList(spec)) {
+      const rim = cut.ply === 'outer' ? ko : bw;
+      const minSide = Math.min(cut.width_um, cut.height_um);
+      // Same arrangement as the backend predicate — see validateBox's ULP note.
+      if (minSide <= 2.0 * rim + MIN_APERTURE_UM) {
+        errors.push(
+          `Plate '${cut.face}' ${cut.ply} ply: patternable aperture ` +
+            `${((minSide - 2.0 * rim) / 1000).toFixed(1)} mm <= ` +
+            `${(MIN_APERTURE_UM / 1000).toFixed(1)} mm minimum ` +
+            `(keep-out ${(rim / 1000).toFixed(1)} mm per edge).`
+        );
+      }
     }
   }
   const { segments: n, coverage, tube_od_um, rod_od_um } = spec.hinge;

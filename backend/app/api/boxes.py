@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -40,6 +40,12 @@ class BoxSpecBody(BaseModel):
     # Box-level grating pitch (μm) — stamped onto every face by
     # normalize_face_dims. Default 22 µm (litho floor 4 µm, enforced UI-side).
     carrier_pitch_um: float = 22.0
+    # Bonded (two-ply) construction: glass.thickness_um is then the PLY, the
+    # wall is 2x, and cut dims / foil margins follow the nested-shell math.
+    bonded: bool = False
+    # Litho metal (preview material only — masks are identical):
+    # gold | chrome | chrome-ar.
+    metal: Literal["gold", "chrome", "chrome-ar"] = "gold"
     label: str = ""
 
     def to_spec(self) -> BoxSpec:

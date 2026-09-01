@@ -53,12 +53,17 @@ from app.assembly import (  # noqa: E402
     FoilSpec,
     HingeSpec,
     back_window_um,
+    bonded_back_window_um,
+    bonded_cut_list,
+    bonded_keepout_um,
+    bonded_overlap_um,
     cut_list,
     hinge_layout,
     keepout_um,
     overlap_um,
     seam_list,
     validate_assembly,
+    validate_bonded_assembly,
 )
 
 OUT = Path(__file__).resolve().parents[1] / "fixtures" / "assembly_golden.json"
@@ -72,9 +77,11 @@ def case(
     glass_thickness_um: float,
     foil: FoilSpec,
     hinge: HingeSpec,
+    bonded: bool = False,
 ) -> dict:
+    validator = validate_bonded_assembly if bonded else validate_assembly
     try:
-        validate_assembly(width_um, depth_um, height_um, glass_thickness_um, foil, hinge)
+        validator(width_um, depth_um, height_um, glass_thickness_um, foil, hinge)
         valid = True
         error = None
     except ValueError as e:
@@ -84,7 +91,25 @@ def case(
     expected: dict = {"valid": valid}
     if error is not None:
         expected["backend_error"] = error
-    if valid:
+    if valid and bonded:
+        # Bonded (two-ply) construction: glass_thickness_um is the PLY. The
+        # cut list is 12 entries (outer + inner ply per face), the foil rims
+        # follow the stepped-edge wrap (3p consumed), and the seams follow the
+        # OUTER shell at the ply thickness.
+        expected.update(
+            {
+                "overlap_um": bonded_overlap_um(foil, glass_thickness_um),
+                "keepout_um": bonded_keepout_um(foil, glass_thickness_um),
+                "back_window_um": bonded_back_window_um(foil, glass_thickness_um),
+                "cut_list": bonded_cut_list(width_um, depth_um, height_um, glass_thickness_um),
+                "seams": {
+                    s["id"]: s["length_um"]
+                    for s in seam_list(width_um, depth_um, height_um, glass_thickness_um)
+                },
+                "hinge": hinge_layout(hinge, width_um),
+            }
+        )
+    elif valid:
         expected.update(
             {
                 "overlap_um": overlap_um(foil, glass_thickness_um),
@@ -109,6 +134,7 @@ def case(
             "depth_um": depth_um,
             "height_um": height_um,
             "glass_thickness_um": glass_thickness_um,
+            "bonded": bonded,
             "foil": foil.to_dict(),
             "hinge": hinge.to_dict(),
         },
@@ -182,6 +208,72 @@ def main() -> None:
             50000.0, 50000.0, 40000.0, 500.0,
             FoilSpec(),
             HingeSpec(tube_od_um=2179.5, rod_od_um=1600.0, segments=5, coverage=0.25),
+        ),
+        # -- BONDED (two-ply) construction ------------------------------------
+        # The 5-inch-blank fab target: ~30 mm upright box from 1.5 mm soda-lime
+        # plies (3 mm bonded walls), 1/4" tape. overlap (6350-4500)/2 = 925,
+        # keep-out 1425. Pins bonded_cut_list's 12 nested-shell entries.
+        case(
+            "bonded-blank-target-box",
+            30000.0, 30000.0, 31000.0, 1500.0,
+            FoilSpec(),
+            HingeSpec(segments=3, coverage=0.7),
+            bonded=True,
+        ),
+        # Bonded with narrow (3/16") tape: the stepped edge consumes 3p = 4500
+        # of the 4763 um tape -> overlap 131.5, a fractional keep-out (631.5)
+        # exercising the float arrangement on the bonded aperture predicate.
+        case(
+            "bonded-narrow-tape-thin-fold",
+            32000.0, 32000.0, 26000.0, 1500.0,
+            FoilSpec(tape_width_um=4763.0),
+            HingeSpec(segments=3, coverage=0.7),
+            bonded=True,
+        ),
+        # Bonded overlap clamp: tape (4 mm) narrower than the 3p stepped edge
+        # (4.5 mm) -> overlap max(0,...) = 0, keep-out = safety alone.
+        case(
+            "bonded-tape-narrower-than-step-clamped",
+            34000.0, 34000.0, 30000.0, 1500.0,
+            FoilSpec(tape_width_um=4000.0),
+            HingeSpec(segments=3, coverage=0.7),
+            bonded=True,
+        ),
+        # Bonded height boundary: H EXACTLY 4p -> zero-height INNER wall ply.
+        case(
+            "invalid-bonded-height-equals-4p",
+            30000.0, 30000.0, 6000.0, 1500.0,
+            FoilSpec(),
+            HingeSpec(),
+            bonded=True,
+        ),
+        # Bonded depth boundary: D EXACTLY 4p -> zero-width inner left/right ply.
+        case(
+            "invalid-bonded-depth-equals-4p",
+            30000.0, 6000.0, 30000.0, 1500.0,
+            FoilSpec(),
+            HingeSpec(),
+            bonded=True,
+        ),
+        # Bonded aperture: the INNER ply (smaller, back-window rim) trips the
+        # floor first. left/right inner ply is D - 4p = 9.0 mm wide against
+        # 2*bw + MIN_APERTURE = 2*925 + 3000 = 4.85 mm -> still valid; shrink D
+        # until the INNER wall ply hits the edge: D = 4p + 2*bw + MIN_APERTURE
+        # = 6000 + 1850 + 3000 = 10850 -> min side EXACTLY on the <= edge.
+        case(
+            "invalid-bonded-inner-aperture-exactly-at-minimum",
+            30000.0, 10850.0, 30000.0, 1500.0,
+            FoilSpec(),
+            HingeSpec(),
+            bonded=True,
+        ),
+        # Bonded zero ply.
+        case(
+            "invalid-bonded-zero-ply",
+            30000.0, 30000.0, 30000.0, 0.0,
+            FoilSpec(),
+            HingeSpec(),
+            bonded=True,
         ),
         # -- INVALID: one per validation branch ------------------------------
         # Both validators must reject every case below. Only the validity bit

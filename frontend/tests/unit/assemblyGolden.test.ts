@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { defaultBoxSpec, type BoxSpec } from '../../src/api';
 import {
   backWindowUm,
+  bondedCutList,
   cutList,
   hingeLayout,
   keepoutUm,
@@ -27,6 +28,7 @@ type GoldenCase = {
     depth_um: number;
     height_um: number;
     glass_thickness_um: number;
+    bonded?: boolean;
     foil: BoxSpec['foil'];
     hinge: BoxSpec['hinge'];
   };
@@ -35,7 +37,15 @@ type GoldenCase = {
     overlap_um?: number;
     keepout_um?: number;
     back_window_um?: number;
-    cut_list?: { face: string; width_um: number; height_um: number; width_mm: number; height_mm: number }[];
+    cut_list?: {
+      face: string;
+      ply?: 'outer' | 'inner';
+      width_um: number;
+      height_um: number;
+      width_mm: number;
+      height_mm: number;
+      inset_um?: number;
+    }[];
     seams?: Record<string, number>;
     hinge?: {
       run_length_um: number;
@@ -56,6 +66,7 @@ function toBoxSpec(g: GoldenCase['spec']): BoxSpec {
     depth_um: g.depth_um,
     height_um: g.height_um,
     glass: { ...s.glass, thickness_um: g.glass_thickness_um },
+    bonded: g.bonded ?? false,
     foil: { ...g.foil },
     hinge: { ...g.hinge },
   };
@@ -84,14 +95,24 @@ describe('assembly contract golden fixture (shared with backend)', () => {
       // (assembly.py::back_window_um <-> assembly.ts::backWindowUm).
       expect(backWindowUm(spec)).toBeCloseTo(c.expected.back_window_um!, 6);
 
-      const cuts = new Map(cutList(spec).map((x) => [x.face, x]));
+      // Bonded cases carry the 12-entry nested cut list (face x outer/inner
+      // ply); single-plate cases the classic 6. Key by face:ply so both fit
+      // one comparison loop.
+      const gotCuts = c.spec.bonded
+        ? bondedCutList(spec).map((x) => ({ ...x, key: `${x.face}:${x.ply}` }))
+        : cutList(spec).map((x) => ({ ...x, key: `${x.face}:single`, inset_um: undefined }));
+      const cuts = new Map(gotCuts.map((x) => [x.key, x]));
       for (const e of c.expected.cut_list!) {
-        const got = cuts.get(e.face as never)!;
-        expect(got, `cut list missing face ${e.face}`).toBeDefined();
+        const key = `${e.face}:${e.ply ?? 'single'}`;
+        const got = cuts.get(key)!;
+        expect(got, `cut list missing ${key}`).toBeDefined();
         expect(got.width_um).toBeCloseTo(e.width_um, 6);
         expect(got.height_um).toBeCloseTo(e.height_um, 6);
         expect(got.width_mm).toBe(e.width_mm);
         expect(got.height_mm).toBe(e.height_mm);
+        if (e.inset_um !== undefined) {
+          expect(got.inset_um).toBeCloseTo(e.inset_um, 6);
+        }
       }
       expect(cuts.size).toBe(c.expected.cut_list!.length);
 

@@ -31,9 +31,13 @@ from .assembly import (
     HingeSpec,
     assembly_summary,
     back_window_um,
+    bonded_assembly_summary,
+    bonded_back_window_um,
+    bonded_keepout_um,
     face_cut_dims,
     keepout_um,
     validate_assembly,
+    validate_bonded_assembly,
 )
 from .plates import FrameSpec, GlassSpec, PlateSpec, materialize_plate
 from .service import DATA_ROOT
@@ -136,6 +140,18 @@ class BoxSpec:
     # 4 µm. Drives the real fringe spacing + tilt sensitivity of the leaf/back
     # carrier family (the 60 µm switch/comb barrier faces are NOT coupled to it).
     carrier_pitch_um: float = 22.0
+    # BONDED (two-ply) construction: each face is TWO single-side plates glued
+    # face-to-face — ``glass.thickness_um`` is then the PLY thickness (also the
+    # optical parallax gap), the wall is 2x, and cut dims / foil margins follow
+    # the nested-shell math (assembly.bonded_*). Default False = the classic
+    # single double-side plate.
+    bonded: bool = False
+    # Litho metal the masks will be written in — a PREVIEW material choice
+    # ("gold" | "chrome" | "chrome-ar"): the mask geometry is identical, only
+    # the renderer's conductor response (albedo/F0) follows it. "chrome" is
+    # standard bright chrome (platinum-line read), "chrome-ar" the
+    # low-reflective AR-coated mask grade (ink-black linework).
+    metal: str = "gold"
     label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -152,6 +168,8 @@ class BoxSpec:
             "hinge": self.hinge.to_dict(),
             "faces": {fid: p.to_dict() for fid, p in self.faces.items()},
             "carrier_pitch_um": self.carrier_pitch_um,
+            "bonded": self.bonded,
+            "metal": self.metal,
             "label": self.label,
         }
 
@@ -172,6 +190,8 @@ class BoxSpec:
             hinge=HingeSpec.from_dict(data.get("hinge")),
             faces={fid: PlateSpec.from_dict(p) for fid, p in (data.get("faces") or {}).items()},
             carrier_pitch_um=float(data.get("carrier_pitch_um", 22.0)),
+            bonded=bool(data.get("bonded", False)),
+            metal=str(data.get("metal", "gold")),
             label=str(data.get("label", "")),
         )
 
@@ -183,14 +203,26 @@ class BoxSpec:
         lands in ``weld_margin_um``, and the box glass spec replaces whatever
         the face carried — none of these are face-level choices in a box.
         """
-        ko = keepout_um(self.foil, self.glass.thickness_um)
-        bw = back_window_um(self.foil, self.glass.thickness_um)
+        t = self.glass.thickness_um
+        if self.bonded:
+            # Two-ply construction: masks are composed in the OUTER ply frame
+            # (its cut dims come from the nested outer shell at the PLY
+            # thickness). Front art insets by the bonded keep-out from the
+            # outer edge; back art lives on the INNER ply, whose edge is
+            # already one ply in — so, measured in the shared outer frame, its
+            # window insets by ply + the interior foil fold. That guarantees
+            # composed back geometry never overhangs the smaller inner plate.
+            ko = bonded_keepout_um(self.foil, t)
+            bw = t + bonded_back_window_um(self.foil, t)
+        else:
+            ko = keepout_um(self.foil, t)
+            bw = back_window_um(self.foil, t)
         for fid in FACE_IDS:
             plate = self.faces.get(fid)
             if plate is None:
                 continue
             w, h = face_cut_dims(
-                fid, self.width_um, self.depth_um, self.height_um, self.glass.thickness_um
+                fid, self.width_um, self.depth_um, self.height_um, t
             )
             plate.width_um = w
             plate.height_um = h
@@ -291,10 +323,16 @@ def materialize_box(spec: BoxSpec, *, box_id: str | None = None, force: bool = F
         )
 
     spec.normalize_face_dims()
-    validate_assembly(
-        spec.width_um, spec.depth_um, spec.height_um,
-        spec.glass.thickness_um, spec.foil, spec.hinge,
-    )
+    if spec.bonded:
+        validate_bonded_assembly(
+            spec.width_um, spec.depth_um, spec.height_um,
+            spec.glass.thickness_um, spec.foil, spec.hinge,
+        )
+    else:
+        validate_assembly(
+            spec.width_um, spec.depth_um, spec.height_um,
+            spec.glass.thickness_um, spec.foil, spec.hinge,
+        )
 
     BOXES_ROOT.mkdir(parents=True, exist_ok=True)
     bid = box_id or SCRATCH_BOX_ID
@@ -323,9 +361,16 @@ def materialize_box(spec: BoxSpec, *, box_id: str | None = None, force: bool = F
             "height": spec.height_um,
             "depth": spec.depth_um,
         },
-        "assembly": assembly_summary(
-            spec.width_um, spec.depth_um, spec.height_um,
-            spec.glass.thickness_um, spec.foil, spec.hinge,
+        "assembly": (
+            bonded_assembly_summary(
+                spec.width_um, spec.depth_um, spec.height_um,
+                spec.glass.thickness_um, spec.foil, spec.hinge,
+            )
+            if spec.bonded
+            else assembly_summary(
+                spec.width_um, spec.depth_um, spec.height_um,
+                spec.glass.thickness_um, spec.foil, spec.hinge,
+            )
         ),
         "content_hash": box_hash(spec),
     }

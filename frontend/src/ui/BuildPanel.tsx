@@ -12,6 +12,7 @@ import { useStore } from '../store';
 import { FACE_LABELS } from './FacesPanel';
 import {
   Button,
+  CheckRow,
   ChipRow,
   Disclosure,
   KIT,
@@ -277,7 +278,7 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           testId="box-height"
         />
         <SliderRow
-          label="Glass thickness"
+          label={boxSpec.bonded ? 'Ply thickness' : 'Glass thickness'}
           value={boxSpec.glass.thickness_um / 1000}
           min={0.3}
           max={2.0}
@@ -286,6 +287,12 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           decimals={2}
           onChange={(mm) => patchGlass({ thickness_um: Math.round(mm * 1000) })}
           testId="glass-thickness"
+        />
+        <CheckRow
+          label="Bonded 2-ply walls (bevel-step corners)"
+          checked={!!boxSpec.bonded}
+          onChange={(bonded) => patchBoxSpec({ bonded })}
+          testId="glass-bonded"
         />
         <SliderRow
           label="Refractive index n"
@@ -301,6 +308,21 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           value={boxSpec.glass.material}
           onChange={(material) => patchGlass({ material })}
           testId="glass-material"
+        />
+        <ChipRow
+          label="Litho metal (preview)"
+          chips={(
+            [
+              { value: 'gold', label: 'Gold' },
+              { value: 'chrome', label: 'Chrome' },
+              { value: 'chrome-ar', label: 'Chrome AR' },
+            ] as const
+          ).map((m) => ({ ...m, testId: `metal-${m.value}` }))}
+          value={boxSpec.metal ?? 'gold'}
+          onSelect={(metal) => {
+            log('metal_changed', { metal });
+            patchBoxSpec({ metal: metal as 'gold' | 'chrome' | 'chrome-ar' });
+          }}
         />
       </Section>
 
