@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any
 
 from .export_svg import to_svg
 from .patterns.base import ParamSpec, registry
-from .rasterize import make_thumbnail, rasterize
+from .rasterize import (
+    DEFAULT_THUMBNAIL_METAL,
+    THUMBNAIL_PALETTES,
+    make_thumbnail,
+    rasterize,
+)
 
 if TYPE_CHECKING:
     from PIL.Image import Image
@@ -338,9 +343,22 @@ def _materialize_locked(
             save_png_atomic(layer_png, out / f"{layer_name}.png")
             extra_layer_urls[f"{layer_name}_png"] = extra_layer_url(slug, variant, layer_name)
 
-        # Thumbnail
+        # Thumbnail — one chip per litho metal, so the catalog tiles can match
+        # the box's selected metal (the masks are metal-agnostic graylevel
+        # codes; the palette is the chip's only colour choice). The GOLD output
+        # is byte-identical to what this always wrote, so warm caches stay
+        # valid and PATTERN_GEN_VERSION does not move; the extra chips are
+        # additive, and the read-only thumbnail route composes them lazily for
+        # variants cached before this existed.
         thumb = make_thumbnail(front_png, back_png, size=256)
         save_png_atomic(thumb, out / "thumbnail.png")
+        for _metal in THUMBNAIL_PALETTES:
+            if _metal == DEFAULT_THUMBNAIL_METAL:
+                continue
+            save_png_atomic(
+                make_thumbnail(front_png, back_png, size=256, metal=_metal),
+                out / f"thumbnail_{_metal}.png",
+            )
 
         # Manifest — published last and by rename, so a readable manifest implies the
         # PNGs above are complete.

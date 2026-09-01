@@ -25,6 +25,7 @@ export default function FaceEditor() {
   const face = useStore((s) => s.boxSpec.faces[selectedFaceId]);
   const catalog = useStore((s) => s.catalog);
   const thumbnails = useStore((s) => s.thumbnails);
+  const metal = useStore((s) => s.boxSpec.metal ?? 'gold');
   const thumbnailErrors = useStore((s) => s.thumbnailErrors);
   const loadThumbnails = useStore((s) => s.loadThumbnails);
   const patchFace = useStore((s) => s.patchFace);
@@ -98,7 +99,17 @@ export default function FaceEditor() {
         >
           {catalog.map((c) => {
             const active = c.slug === face.pattern_slug;
-            const thumb = thumbnails[c.slug];
+            // Tint the catalog chip to the box's litho metal. The store's
+            // map records AVAILABILITY (the read-only route 404s a cold slug);
+            // the metal is a pure query on that same URL, and the route
+            // re-colours the already-cached masks, so a chrome tile costs no
+            // pattern generation. Gold needs no query — that is the route's
+            // default and keeps its URL byte-identical to before.
+            const base = thumbnails[c.slug];
+            const thumb =
+              typeof base === 'string' && metal !== 'gold'
+                ? `${base}?metal=${encodeURIComponent(metal)}`
+                : base;
             return (
               <button
                 key={c.slug}

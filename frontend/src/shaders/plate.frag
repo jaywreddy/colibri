@@ -88,6 +88,74 @@ uniform float uCenterPeriodUm;     // centerpiece stripe period (um)
 // transparent and the inner plane shows through the outer one.
 uniform float uLayer;              // 0 = outer/front plane, 1 = inner/back plane
 
+// --- litho metal (renderer-audit item 5) -------------------------------------
+// The fabricated masks are metal-agnostic; the CONDUCTOR RESPONSE is not. These
+// carry the per-box metal choice (spec.metal: gold | chrome | chrome-ar) into
+// the foliage_moire shading: diffuse-lobe albedo, its dim second-surface
+// sibling, and the Fresnel F0 that drives both the angular desaturation gain
+// and the specular lobe's spectral character. Defaults are EXACTLY the legacy
+// GOLD constants (bound at material creation), so a gold box renders
+// bit-identically to the pre-uniform build and the @effects gates are
+// untouched. Legacy single-plane recipes (0/1) keep the GOLD constants — they
+// preview standalone patterns, not the box's fab metal.
+uniform vec3 uMetalAlbedo;         // linear diffuse-lobe albedo (GOLD default)
+uniform vec3 uMetalAlbedoBack;     // dim second-surface sibling (GOLD_BACK default)
+uniform vec3 uMetalF0;             // normal-incidence Fresnel (GOLD_F0 default)
+
+// Per-metal ENERGY SPLIT + grazing behaviour. Colour alone does not make a
+// conductor read as itself: what separates mask chrome from gold is how the
+// reflected energy divides between the broad body lobe and the tight mirror
+// lobe, and how the reflectance climbs toward grazing.
+//
+//   uMetalBody    weight of the broad (rough-scatter) lobe. A near-mirror film
+//                 puts LESS energy here — the missing energy shows up in the
+//                 specular lobe instead. Grey body + weak highlight is exactly
+//                 what makes a metal read as PAINT.
+//   uMetalSpec    weight of the half-vector lobe.
+//   uMetalGloss   its exponent (surface smoothness proxy).
+//   uMetalGrazing reflectance the film approaches at 90° incidence. 1.0 for a
+//                 BARE conductor (gold, chrome — Fresnel really does go to
+//                 unity). An AR-coated mask chrome is NOT bare: its low
+//                 reflectance is a thin-film interference + absorption stack
+//                 that degrades toward grazing but never reaches unity, so it
+//                 gets a real ceiling. Without one, the normalized gain F/F0
+//                 blows a 0.06-F0 AR film up by up to 17x and it renders
+//                 IDENTICALLY to bright chrome — the bug this fixes.
+//   uMetalSheen   diffraction-accent efficiency, scaled by the film's own
+//                 reflectance (a rainbow blazing off near-black AR is wrong).
+//
+// Defaults are gold's numbers EXACTLY (1.0 / 0.5 / 80.0 / 1.0 / 1.0), so the
+// gold path is arithmetically unchanged and the @effects gates are untouched.
+uniform float uMetalBody;
+uniform float uMetalSpec;
+uniform float uMetalGloss;
+uniform float uMetalGrazing;
+uniform float uMetalSheen;
+
+// ENVIRONMENT REFLECTION weight (uMetalEnv) + the surround it reflects.
+//
+// Until now this shader lit the litho metal with a SINGLE directional light and
+// nothing else. Gold survives that because its identity lives in a warm broad
+// body lobe — but a smooth mirror film has almost no body, and a tight
+// half-vector lobe fires only in a narrow band, so chrome rendered as flat grey
+// paint no matter how its colour was set. What actually makes chrome read as
+// chrome is that it REFLECTS THE ROOM.
+//
+// uMetalEnv is the mirror-ness of the film — the same parameter family as
+// body/spec/gloss: energy this deposit returns as an environment reflection
+// rather than broad scatter. It is 0 for gold, whose look is already calibrated
+// around the body lobe (and whose pixels the @effects gates pin), and high for
+// the smooth chrome mask film. uSky/uGroundColor mirror the scene's
+// HemisphereLight, so the plate metal and the foil/solder/hinge read as lit by
+// one room instead of two.
+//
+// Honest by the renderer contract: view-dependent (it is the reflection
+// vector), time-invariant (no time term), litho-mask-driven (gated by
+// normalCov, so it exists only where metal exists) and geometric.
+uniform float uMetalEnv;
+uniform vec3 uSkyColor;
+uniform vec3 uGroundColor;
+
 // --- Pattern Scale (Task 1b) ------------------------------------------------
 // Multiplier applied to the MAGNIFIED-PREVIEW period family on BOTH planes: the
 // frame back carrier, the frame louvre, and the capybara body shimmer (the
@@ -186,6 +254,26 @@ uniform vec2 uArtBoxCenterUv;            // uv center of the art box
 // projection, gated to a narrow travelling highlight band. uRainbowLevel < 0
 // disables the whole feature so pre-accent manifests render identically.
 uniform float uRainbowLevel;       // L of the accent level, normalized 0..1 (<0 = off)
+
+// --- physically baked diffraction (see backend app/diffraction.py) ----------
+// The accent's colour is no longer invented here. The backend integrates the
+// grating equation, the square-wave order series and the CIE colour matching
+// functions into a 1-D table indexed by the OPTICAL PATH TERM
+//
+//     u = period * ( dot(V, g) + dot(L, g) )        [um]
+//
+// where g is the in-plane grating vector. Order m lands in the eye at
+// lambda = u/m, so u carries every geometric dependency and ONE table serves
+// any pitch. uRainbowPeriodUm / uRainbowAngleRad are the REAL fabricated
+// grating's parameters, published in recipe_data straight from the constants
+// the mask is baked with — change the fab grating and this preview changes
+// with it, which the old hand-tuned hue ramp could not do.
+uniform sampler2D uDiffLut;
+uniform float uDiffUMax;           // u (um) at the last table entry
+uniform float uDiffReady;          // 1 once the table has been uploaded
+uniform float uRainbowPeriodUm;    // fabricated accent-grating period
+uniform float uRainbowAngleRad;    // fabricated accent-grating orientation
+uniform float uRainbowZeroOrder;   // eta_0 = duty^2: share left in specular
 
 // ITEM 2b — these are LINEAR-LIGHT reflectances. They used to be sRGB display
 // codes multiplied by lighting terms and written straight to the framebuffer, i.e.
@@ -402,24 +490,26 @@ const float ART_MIN = 0.86;     // r above this = centerpiece art silhouette (1.
 // vector's tangent-space projection (so it travels as the piece tilts, like a
 // hologram-foil sticker); a narrow travelling band keeps it a tasteful moving
 // highlight rather than a flat rainbow wash. Returns an ADDITIVE colour.
-vec3 diffractionSheen(vec3 viewTangent, vec2 pUm, float ndl) {
-  // Drive the spectrum off the view vector's in-plane projection along the
-  // fixed 45° accent grating normal (matches the fab grating orientation).
-  vec2 gnorm = vec2(0.70710678, 0.70710678); // cos/sin 45°
-  float proj = dot(viewTangent.xy, gnorm);
-  // A little spatial term so the fan is not perfectly uniform across the zone
-  // (real first-order angle varies with position on a curved read-out).
-  float spatial = (pUm.x * gnorm.x + pUm.y * gnorm.y) * 0.0006;
-  float hue = fract(proj * 1.6 + spatial + 0.5);        // 0..1 rainbow ramp
-  // Narrow highlight band that travels with tilt: brightest where the first
-  // order would flash, fading fast to either side. fwidth AA on the band edge.
-  float band = 0.5 + 0.5 * cos((proj * 3.14159265) * 2.0);
-  band = pow(clamp(band, 0.0, 1.0), 6.0);               // narrow the peak
-  // HSV(hue,1,1) → RGB, saturated spectral colour.
-  vec3 rgb = clamp(abs(mod(hue * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
-  float lit = 0.35 + 0.65 * ndl;
-  return rgb * band * lit;
+vec3 diffractionSheen(vec3 viewTangent, vec3 lightTangent, vec2 pUm, float ndl) {
+  // Grating vector g in the surface tangent frame, from the FABRICATED angle.
+  vec2 g = vec2(cos(uRainbowAngleRad), sin(uRainbowAngleRad));
+
+  // Optical path term. viewTangent/lightTangent are unit directions in the
+  // tangent frame, so their .xy ARE the sines of the angles from the normal;
+  // projecting on g gives exactly the grating-equation terms. Because the
+  // camera is perspective, viewTangent varies per fragment, so u varies across
+  // the zone — that is what makes the spectrum SWEEP across the accent as the
+  // piece moves, rather than flashing it as one flat colour.
+  float u = uRainbowPeriodUm * (dot(viewTangent.xy, g) + dot(lightTangent.xy, g));
+
+  // |u|: order m and -m are mirror images about the specular direction (u = 0).
+  float idx = clamp(abs(u) / max(uDiffUMax, 1e-3), 0.0, 1.0);
+  vec3 spectral = texture2D(uDiffLut, vec2(idx, 0.5)).rgb;
+
+  // Lambertian-ish incidence falloff, matching the rest of the ambient branch.
+  return spectral * (0.35 + 0.65 * ndl) * uDiffReady;
 }
+
 
 // --- FLOWING-CURRENT water ripple (capybara back face) ----------------------
 // A field of long, undulating STREAMLINES (ridges along the flow/x axis) whose
@@ -575,7 +665,7 @@ float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
 // perspective projection of the two physical planes in the scene. Returns
 // straight colour + alpha (= gold coverage), so gaps are transparent and the
 // inner plane shows through the outer one.
-vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
+vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
   float mR = texture2D(uFront, vUv).r;   // THIS layer's own mask
   float oR = texture2D(uBack, vUv).r;    // the OTHER layer's mask (the switch's
                                          // second silhouette — see uSwitchInterlace)
@@ -675,13 +765,27 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
       vec2 uvArt = artBoxUV(vUv);
       float artWidthUm = uExtentUm.x * (2.0 * ((uArtBoxHalfUv.x > 0.0) ? uArtBoxHalfUv.x : 0.5));
       float coord = pUm.x / max(1.0, centerP);
-      float slotf = floor(fract(coord) * uWaterScanN);      // which phase this lane holds
-      float laneCrest = waterRippleCoverage(uvArt, uWaterRippleWavelengthUm, artWidthUm,
-                                            uWaterScanN, slotf);
-      float meanCrest = waterRippleCoverage(uvArt, uWaterRippleWavelengthUm, artWidthUm,
-                                            uWaterScanN, 0.0);
-      float collapse = smoothstep(0.35, 0.9, fwidth(coord));
-      float crestCov = art * mix(laneCrest, meanCrest, collapse);
+      // BAND-LIMITED slot mix (renderer-audit item 1, sibling of the interlace
+      // lane fix above). The old path hard-picked ONE phase slot with floor()
+      // and faded to the phase-0 pattern via the same retired smoothstep window
+      // — under-filtered lattice beating into rings, and the w→∞ limit was the
+      // WRONG pattern (phase 0, not the phase average). Slot k occupies
+      // fract(coord) ∈ [k/N, (k+1)/N), so its pixel-footprint occupancy is
+      // boxPulse(coord - k/N, 1/N, w); the occupancies partition the footprint
+      // (they sum to 1), so weighting each phase's crest field by its occupancy
+      // is the exact box-filtered selector. Fixed 4-iteration loop with a step()
+      // gate (N is 1..4; GLSL ES 1.00 wants constant bounds).
+      float wSlot = fwidth(coord);
+      float nPh = max(1.0, uWaterScanN);
+      float laneCrest = 0.0;
+      for (int k = 0; k < 4; k++) {
+        float fk = float(k);
+        float valid = step(fk + 0.5, nPh);
+        float occ = valid * boxPulse(coord - fk / nPh, 1.0 / nPh, wSlot);
+        laneCrest += occ * waterRippleCoverage(uvArt, uWaterRippleWavelengthUm, artWidthUm,
+                                               uWaterScanN, fk);
+      }
+      float crestCov = art * laneCrest;
       cov += crestCov;
       hotCov += crestCov;   // flowing water — display bright even though inner
     } else if (isInterlace) {
@@ -692,15 +796,24 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
       // Inner uFront = B (this layer's mask), uBack = A (the front silhouette). At the
       // default sub-pixel zoom the lanes collapse to both images half-shown (the
       // head-on interlace); zoom in and the discrete A|B lanes resolve.
+      //
+      // BAND-LIMITED lane parity (renderer-audit item 1). The old selector was a
+      // hard floor(laneCoord) mod 2 with an ad-hoc smoothstep(0.35, 0.9, fwidth)
+      // fade to the mean — the same tuned-guess construction ITEM 6 already
+      // retired for the gratings, and the last unfiltered lattice in the file.
+      // Under-filtered, it beat against the screen pixel grid into wood-grain
+      // interference rings across the whole centerpiece at mid zoom (screen-space
+      // aliasing masquerading as physical moiré). The odd-lane parity is a duty-0.5
+      // pulse train with period TWO lanes, so the exact pixel-footprint average is
+      // the same boxPulse machinery: fract((laneCoord - 1) / 2) in [0, 0.5) ⇔ the
+      // lane is odd. Hard lane pick as w → 0, EXACTLY the 50/50 mean at every
+      // integer window — monotone in w, no tuned window, no ring band.
       float aVal = artOther;            // A (front silhouette, via uBack)
       float bVal = art;                 // B (this back silhouette, via uFront)
       float lanePitch = 0.5 * centerP;
       float laneCoord = barrierPUm(pUm).x / max(1.0, lanePitch);
-      float isOdd = mod(floor(laneCoord), 2.0);   // 0 = even → A, 1 = odd → B
-      float laneCov = mix(aVal, bVal, isOdd);
-      float meanCov = 0.5 * (aVal + bVal);
-      float collapse = smoothstep(0.35, 0.9, fwidth(laneCoord));
-      float ic = mix(laneCov, meanCov, collapse);
+      float oddFrac = boxPulse(0.5 * (laneCoord - 1.0), 0.5, 0.5 * fwidth(laneCoord));
+      float ic = mix(aVal, bVal, oddFrac);
       cov += ic;
       hotCov += ic;   // the revealed image reads bright even on the inner plane
     } else {
@@ -717,7 +830,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // masks the gold, so tint the gold coverage instead for a consistent look.
     color = uLaserColor * cov * (0.5 + 0.5 * ndl);
   } else if (uIllumination == 2) {
-    color = GOLD_BACK * cov * 0.4;
+    color = uMetalAlbedoBack * cov * 0.4;
   } else {
     // Ambient. Both planes are the SAME gold under the same lighting; the inner one
     // is darker only by its physical two-interface transmission (item 5's T2), which
@@ -763,7 +876,11 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // and GLSL pow() is undefined for a negative base — NaN on some drivers.
     float ndv = clamp(viewTangent.z, 0.0, 1.0);
     float schlick = pow(1.0 - ndv, 5.0);
-    vec3 F = GOLD_F0 + (1.0 - GOLD_F0) * schlick;
+    // Metal-aware conductor response (item 5 of the renderer audit): the
+    // uniforms default to the GOLD constants, so gold is bit-identical.
+    // Grazing CEILING (uMetalGrazing): 1.0 reproduces the bare-conductor
+    // Schlick term exactly (gold, chrome); an AR stack tops out far lower.
+    vec3 F = uMetalF0 + (vec3(uMetalGrazing) - uMetalF0) * schlick;
     // NORMALIZED Fresnel for the diffuse-ish lobe: exactly 1.0 at normal incidence,
     // rising toward 1/F0 = (1.0, 1.31, 2.98) at grazing. Folding it in this way adds
     // gold's correct angular desaturation WITHOUT shifting the head-on brightness the
@@ -771,7 +888,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // runs 0 -> 0.031, so this gain runs 1.0 -> ~(1.00, 1.01, 1.06): a physically
     // correct term that is near-constant everywhere the tests look while varying
     // strongly at the 60-80° views a user actually orbits to.
-    vec3 fresnelGain = F / GOLD_F0;
+    vec3 fresnelGain = F / max(uMetalF0, vec3(1e-3));
     // A REAL half-vector specular lobe, carrying gold's own spectral character (F)
     // rather than the white highlight a naive rig would give — a white highlight on
     // gold is precisely what made the metal read as chrome.
@@ -782,7 +899,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // There is no specular lobe in that configuration anyway.
     vec3 hSum = lightTangent + viewTangent;
     float hLen = length(hSum);
-    float spec = (hLen > 1e-4) ? pow(max(0.0, hSum.z / hLen), 80.0) : 0.0;
+    float spec = (hLen > 1e-4) ? pow(max(0.0, hSum.z / hLen), uMetalGloss) : 0.0;
 
     // ITEM 5 — the inner plane's dimming is now REAL SECOND-SURFACE PHYSICS instead
     // of hand-picked numbers. It used to be tint = mix(GOLD_BACK, GOLD, 0.55) and a
@@ -818,15 +935,31 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // planes are the same gold under the same lighting, and the ONLY thing that makes
     // the inner one darker is now T2 below.
     float lift = 0.20 + 1.30 * ndl;
-    color = GOLD * normalCov * lift * fresnelGain;
-    color += F * spec * normalCov * 0.5 * ndl;
+    // ENERGY SPLIT in the accent zone. A lamellar grating leaves only
+    // eta_0 = duty^2 of its return in the zeroth (specular) order; the rest is
+    // redistributed into the diffracted orders — which is precisely the
+    // spectral term added below. So inside the accent the ordinary metal
+    // response is scaled down by eta_0 and the rainbow takes over, rather than
+    // being tinted on top of full-strength metal (which washed it out).
+    float zeroOrder = mix(1.0, uRainbowZeroOrder, rainbowHere);
+    color = uMetalAlbedo * normalCov * lift * uMetalBody * fresnelGain * zeroOrder;
+    color += F * spec * normalCov * uMetalSpec * ndl * zeroOrder;
+    // Environment reflection: a sky/ground hemisphere sampled along the mirror
+    // direction and tinted by the film's own Fresnel F, so it carries the
+    // metal's spectral character AND brightens toward grazing — the two cues
+    // that read as "polished conductor" rather than "grey paint". Exactly zero
+    // on gold (uMetalEnv = 0), so that path is untouched.
+    if (uMetalEnv > 0.0) {
+      vec3 envCol = mix(uGroundColor, uSkyColor, smoothstep(-0.55, 0.75, envUp));
+      color += F * envCol * uMetalEnv * normalCov * zeroOrder;
+    }
     // Recessed barrier: dim, so the flowing water behind it dominates the read.
-    color += mix(GOLD_BACK, GOLD, 0.15) * dimCov * (0.05 + 0.08 * ndl);
+    color += mix(uMetalAlbedoBack, uMetalAlbedo, 0.15) * dimCov * (0.05 + 0.08 * ndl);
     // Flowing water: bright first-surface gold regardless of plane.
-    color += GOLD * hotCov * (0.43 + 0.67 * ndl);
+    color += uMetalAlbedo * hotCov * (0.43 + 0.67 * ndl);
     // Diffraction accent: OUTER plane only, labelled angle-hue sheen.
     if (!isBack && rainbowHere > 0.0) {
-      color += diffractionSheen(viewTangent, pUm, ndl) * rainbowHere;
+      color += diffractionSheen(viewTangent, lightTangent, pUm, ndl) * rainbowHere * uMetalSheen;
     }
     // Ambient illuminant tint. uAmbientColor was bound by BoxScene but read by no
     // branch in any recipe — inert plumbing. Consume it here (rather than delete the
@@ -843,7 +976,23 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent) {
     // untouched by construction.
     color *= uAmbientColor * layerT;
   }
-  return vec4(color, clamp(cov, 0.0, 1.0));
+  // HASHED alpha-to-coverage (renderer-audit item 1, second half). The lattice
+  // functions above are exactly box-filtered, but a FRACTIONAL coverage still
+  // has to leave this shader as alpha, and alphaToCoverage quantizes it into
+  // the GPU's ORDERED per-pixel MSAA sample patterns — smooth coverage ramps
+  // then band into wood-grain interference rings across the sub-resolved combs
+  // (screen-space dither moiré masquerading as physical moiré). Standard fix:
+  // decorrelate with a static screen-space hash so the quantization error is
+  // fine uniform grain instead of structured rings. The hash has NO time term
+  // and no view term — bit-identical frame to frame, so time-invariance and
+  // the idle-frame contract hold. The 4·a·(1−a) gate is zero at a = 0 and
+  // a = 1: solid gold, bare glass, and the hard NEAREST-sampled mask edges are
+  // untouched; only interior fractional-coverage regions (exactly where the
+  // rings lived) are dithered.
+  float aCov = clamp(cov, 0.0, 1.0);
+  float hashA = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+  aCov = clamp(aCov + (hashA - 0.5) * (4.0 * aCov * (1.0 - aCov)) * 0.5, 0.0, 1.0);
+  return vec4(color, aCov);
 }
 
 void main() {
@@ -875,6 +1024,11 @@ void main() {
     dot(lightDirWorld, normalWorld)
   );
 
+  // Mirror direction for the environment term (uMetalEnv): where a specular ray
+  // leaving this fragment toward the eye came FROM. Only its world-up component
+  // is needed — the surround is a sky/ground hemisphere gradient.
+  float envUp = reflect(-viewDirWorld, normalWorld).y;
+
   // ITEM 2c — SINGLE exit point so every recipe runs the colour pipeline. The three
   // chunks below operate on `gl_FragColor` BY NAME, so the old recipe-3 early
   // `return` would have skipped them; hence the if/else-if/else shape rather than an
@@ -883,7 +1037,7 @@ void main() {
   // the legacy single-plane recipes (standalone-pattern previews) stay opaque.
   // (uRecipe == 2 no longer exists — phase_shift_overlay is retired.)
   if (uRecipe == 3) {
-    gl_FragColor = runFoliageMoireLayer(viewTangent, lightTangent);
+    gl_FragColor = runFoliageMoireLayer(viewTangent, lightTangent, envUp);
   } else if (uRecipe == 0) {
     gl_FragColor = vec4(runStereoLenticular(viewTangent, lightTangent), 1.0);
   } else {

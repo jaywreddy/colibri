@@ -51,15 +51,41 @@ def rasterize(
     return img
 
 
+# Thumbnail palettes per LITHO METAL (display sRGB). The masks themselves are
+# metal-agnostic graylevel codes, so the chip is the only place a thumbnail has
+# to make a colour choice — and it has to make the SAME one the 3D preview
+# makes, or a chrome box shows six gold chips beside a platinum-lined render.
+# (front layer, back layer, backdrop). The back layer is the dimmer
+# second-surface sibling, matching the renderer's two-plane recession.
+THUMBNAIL_PALETTES: dict[str, tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]] = {
+    "gold": ((230, 188, 80), (90, 72, 28), (12, 14, 18)),
+    # Mask-grade chrome: bright neutral silver, the platinum-line read.
+    "chrome": ((214, 219, 226), (84, 88, 95), (12, 14, 18)),
+    # Low-reflective AR chrome: dark graphite linework.
+    "chrome-ar": ((96, 100, 106), (38, 40, 44), (12, 14, 18)),
+}
+
+DEFAULT_THUMBNAIL_METAL = "gold"
+
+
 def make_thumbnail(
-    front: Image.Image, back: Image.Image, size: int = 256
+    front: Image.Image,
+    back: Image.Image,
+    size: int = 256,
+    metal: str = DEFAULT_THUMBNAIL_METAL,
 ) -> Image.Image:
-    """Compose a thumbnail showing front (gold) over back (muted gold) on a dark field."""
+    """Compose a thumbnail: front layer over the dimmer back layer on a dark field.
+
+    ``metal`` selects the palette (see THUMBNAIL_PALETTES); an unknown name
+    falls back to gold rather than raising, because a thumbnail is a chip and a
+    wrong-coloured chip beats a 500 on the plate route.
+    """
+    fg, bg_layer, backdrop = THUMBNAIL_PALETTES.get(
+        metal, THUMBNAIL_PALETTES[DEFAULT_THUMBNAIL_METAL]
+    )
     w, h = front.size
-    rgb = Image.new("RGB", (w, h), (12, 14, 18))
-    # back layer: muted gold
-    rgb.paste((90, 72, 28), mask=back)
-    # front layer: bright gold
-    rgb.paste((230, 188, 80), mask=front)
+    rgb = Image.new("RGB", (w, h), backdrop)
+    rgb.paste(bg_layer, mask=back)
+    rgb.paste(fg, mask=front)
     rgb.thumbnail((size, size), Image.Resampling.LANCZOS)
     return rgb

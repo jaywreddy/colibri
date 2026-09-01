@@ -17,6 +17,7 @@ import { validateBox } from './assembly';
 import { log } from './logger';
 import { useStore, LID_MAX_DEG } from './store';
 import BoxScene from './scene/BoxScene';
+import ProgressionView from './ui/ProgressionView';
 import BuildPanel from './ui/BuildPanel';
 import FacesPanel from './ui/FacesPanel';
 import PatternLab from './ui/PatternLab';
@@ -259,6 +260,9 @@ export default function App() {
   const setLayout = useStore((s) => s.setLayout);
   const autoRotate = useStore((s) => s.autoRotate);
   const setAutoRotate = useStore((s) => s.setAutoRotate);
+  const inspectMode = useStore((s) => s.inspectMode);
+  const setInspectMode = useStore((s) => s.setInspectMode);
+  const setProgressionOpen = useStore((s) => s.setProgressionOpen);
   const labOpen = useStore((s) => s.labOpen);
   const setLabOpen = useStore((s) => s.setLabOpen);
 
@@ -812,8 +816,9 @@ export default function App() {
             flexDirection: 'column',
           }}
         >
-          <div style={{ flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
             <BoxScene />
+            <ProgressionView />
           </div>
           <div
             style={{
@@ -867,6 +872,34 @@ export default function App() {
               }}
             >
               {autoRotate ? '◉ Auto-rotate' : '○ Auto-rotate'}
+            </button>
+            <button
+              data-testid="inspect-toggle"
+              aria-pressed={inspectMode}
+              title="Lock head-on to the selected face; drag rocks the view ±8° with a live tilt / parallax readout"
+              disabled={layout === 'flat'}
+              onClick={() => {
+                log('inspect_toggled', { on: !inspectMode });
+                setInspectMode(!inspectMode);
+              }}
+              style={{
+                ...BUTTON_STYLE,
+                borderColor: inspectMode ? KIT.accent : KIT.border,
+                opacity: layout === 'flat' ? 0.5 : 1,
+              }}
+            >
+              {inspectMode ? '◉ Inspect' : '○ Inspect'}
+            </button>
+            <button
+              data-testid="progression-toggle"
+              title="Render each face alone through a tilt sweep, supersampled, with an eye-visibility verdict"
+              onClick={() => {
+                log('progression_toggled', { on: true });
+                setProgressionOpen(true);
+              }}
+              style={BUTTON_STYLE}
+            >
+              Progression
             </button>
             <div style={{ flex: 1 }} />
             <div

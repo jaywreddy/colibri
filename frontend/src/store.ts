@@ -121,6 +121,30 @@ type State = {
   setIllumination: (i: Illumination) => void;
   setLaserColor: (c: 'red' | 'green' | 'blue') => void;
   setLight: (az: number, el: number) => void;
+
+  /**
+   * Presentation props: velvet cushion + a real-dimensioned ring (size-7 band)
+   * inside the assembled box. Pure display props — no fab meaning, and the
+   * ring's FIXED real size doubles as an honest fit check against the box
+   * interior. Default OFF so the pixel-metric harnesses see the same scene
+   * they always did.
+   */
+  showRing: boolean;
+  setShowRing: (on: boolean) => void;
+  /** Scene backdrop preset. Backlight illumination overrides it with the
+   * light-table field while active. */
+  backdrop: 'studio' | 'velvet' | 'daylight';
+  setBackdrop: (b: 'studio' | 'velvet' | 'daylight') => void;
+  /**
+   * Head-on tilt inspection of the selected face: the camera locks onto the
+   * face normal, dragging rocks the view ±INSPECT_MAX_DEG, and a HUD reads out
+   * tilt + back-layer parallax shift with the face's effect-peak angles.
+   */
+  inspectMode: boolean;
+  setInspectMode: (on: boolean) => void;
+  /** Tilt-progression view: per-face supersampled tilt sweeps + eye verdict. */
+  progressionOpen: boolean;
+  setProgressionOpen: (open: boolean) => void;
 };
 
 export const useStore = create<State>((set, get) => ({
@@ -140,6 +164,10 @@ export const useStore = create<State>((set, get) => ({
   laserColor: 'green',
   lightAzimuthDeg: 35,
   lightElevationDeg: 55,
+  showRing: false,
+  backdrop: 'studio',
+  inspectMode: false,
+  progressionOpen: false,
 
   setCatalog: (catalog) => set({ catalog }),
 
@@ -300,6 +328,10 @@ export const useStore = create<State>((set, get) => ({
   setPatternScale: (patternScale) => set({ patternScale }),
 
   setIllumination: (illumination) => set({ illumination }),
+  setShowRing: (showRing) => set({ showRing }),
+  setBackdrop: (backdrop) => set({ backdrop }),
+  setInspectMode: (inspectMode) => set({ inspectMode }),
+  setProgressionOpen: (progressionOpen) => set({ progressionOpen }),
   setLaserColor: (laserColor) => set({ laserColor }),
   setLight: (lightAzimuthDeg, lightElevationDeg) =>
     set({ lightAzimuthDeg, lightElevationDeg }),

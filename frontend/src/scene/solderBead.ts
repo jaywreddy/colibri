@@ -9,8 +9,11 @@ import * as THREE from 'three';
  * corner. This builds a tube-of-revolution BufferGeometry whose per-ring radius
  * is modulated by a seeded noise function so it never flickers across rebuilds.
  *
- * Efficiency: radialSeg ~ 14, lengthSeg scales with length but is capped, so a
- * typical 8-seam box stays well under the ~60k-triangle budget.
+ * Efficiency: radialSeg ~ 22, lengthSeg scales with length but is capped, so a
+ * typical 8-seam box stays well under the ~60k-triangle budget. (Raised from 14
+ * in the fidelity pass: a solder bead is a glossy rounded highlight-carrier,
+ * and 14 radial segments put visible polygon flats exactly where the clearcoat
+ * highlight rolls across it.)
  */
 
 function mulberry32(seed: number): () => number {
@@ -46,7 +49,7 @@ export type BeadParams = {
   length: number;
   /** Deterministic seed (derive from seam id). */
   seed: number;
-  /** Radial segments (default 14). */
+  /** Radial segments (default 22). */
   radialSeg?: number;
   /** Undulation amplitude as a fraction of radius (default 0.08). */
   undulation?: number;
@@ -64,12 +67,12 @@ export type BeadParams = {
 export function makeBeadGeometry(p: BeadParams): THREE.BufferGeometry {
   const radius = p.radius;
   const length = p.length;
-  const radialSeg = p.radialSeg ?? 14;
+  const radialSeg = p.radialSeg ?? 22;
   const und = p.undulation ?? 0.08;
 
-  // length segments: ~1 per 0.35mm, clamped 10..40
-  const lengthSeg = Math.max(10, Math.min(40, Math.round(length / 0.35)));
-  const capSeg = 4; // rings per hemispherical cap
+  // length segments: ~1 per 0.35mm, clamped 10..48
+  const lengthSeg = Math.max(10, Math.min(48, Math.round(length / 0.35)));
+  const capSeg = 6; // rings per hemispherical cap (smooth blobby lift-offs)
 
   const profile = makeProfile(p.seed, 7);
   const blob = makeProfile(p.seed ^ 0x5bd1, 5); // extra low-freq lumps
@@ -164,7 +167,7 @@ export function makeBeadGeometry(p: BeadParams): THREE.BufferGeometry {
  * corners read as accumulated solder rather than clean rod ends.
  */
 export function makeCornerBlob(radius: number, seed: number): THREE.BufferGeometry {
-  const geo = new THREE.IcosahedronGeometry(radius, 2);
+  const geo = new THREE.IcosahedronGeometry(radius, 3);
   const pos = geo.attributes.position as THREE.BufferAttribute;
   const rnd = mulberry32(seed);
   // Deterministic per-vertex lump: perturb along the normal by up to +/-18%.
@@ -174,7 +177,7 @@ export function makeCornerBlob(radius: number, seed: number): THREE.BufferGeomet
   const v = new THREE.Vector3();
   for (let i = 0; i < vcount; i++) {
     v.fromBufferAttribute(pos, i);
-    const lump = 1 + offsets[i] * 0.18;
+    const lump = 1 + offsets[i] * 0.14; // gentler at subdiv 3 — pooled, not rocky
     v.multiplyScalar(lump);
     pos.setXYZ(i, v.x, v.y, v.z);
   }

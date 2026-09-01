@@ -25,6 +25,18 @@ export default function ParameterPanel({ faceId }: { faceId: FaceId }) {
 
   return (
     <Section title="Pattern parameters" testId="parameter-panel" persistId="pattern-params">
+      <SelectRow
+        label="Carrier scaling"
+        value={face.carrier_scale_mode ?? 'gap'}
+        options={[
+          { value: 'gap', label: 'Scaled to glass (controlled reveal)' },
+          { value: 'fixed', label: 'Fine (refraction shimmer)' },
+        ]}
+        onChange={(mode) => {
+          log('face_carrier_scale_changed', { faceId, mode });
+          patchFace(faceId, { carrier_scale_mode: mode as 'gap' | 'fixed' });
+        }}
+      />
       {descriptor.params.map((p) => {
         const v =
           (face.pattern_params[p.name] as number | string | boolean | undefined) ??

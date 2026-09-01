@@ -101,6 +101,10 @@ export const EVENT_TYPES = [
   /** Bounded retry after a mask PNG failed to load. */
   'face_texture_retry',
   'face_texture_failed',
+  'diffraction_lut_loaded',
+  'progression_captured',
+  'progression_toggled',
+  'diffraction_lut_failed',
   /** Manifest asked for a recipe the two-plane renderer refuses to fake. */
   'face_recipe_unsupported',
   /** Geometry-critical recipe_data keys absent — face renders degraded. */

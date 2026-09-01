@@ -8,11 +8,17 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..patterns.base import registry
+from ..rasterize import (
+    DEFAULT_THUMBNAIL_METAL,
+    THUMBNAIL_PALETTES,
+    make_thumbnail,
+)
 from ..service import (
     catalog,
     ensure_pattern_svg,
     materialize,
     pattern_dir,
+    save_png_atomic,
     variant_key,
 )
 
@@ -61,7 +67,7 @@ def default_variant(slug: str) -> dict:
 
 
 @router.get("/{slug}/thumbnail")
-def default_thumbnail(slug: str) -> FileResponse:
+def default_thumbnail(slug: str, metal: str = DEFAULT_THUMBNAIL_METAL) -> FileResponse:
     """Serve the DEFAULT variant's CACHED thumbnail, or 404. Never generates.
 
     The pattern picker fires one request per catalog slug on mount. Pointed at
@@ -73,11 +79,33 @@ def default_thumbnail(slug: str) -> FileResponse:
     """
     if slug not in registry:
         raise HTTPException(404, f"Unknown pattern: {slug}")
+    if metal not in THUMBNAIL_PALETTES:
+        raise HTTPException(400, f"Unknown metal: {metal}")
     # Same merge + hash materialize(slug) would use for the default variant.
     variant = variant_key(registry[slug].defaults())
-    thumb = pattern_dir(slug, variant) / "thumbnail.png"
+    vdir = pattern_dir(slug, variant)
+    name = (
+        "thumbnail.png"
+        if metal == DEFAULT_THUMBNAIL_METAL
+        else f"thumbnail_{metal}.png"
+    )
+    thumb = vdir / name
     if not thumb.is_file():
-        raise HTTPException(404, f"No cached thumbnail for {slug} yet")
+        # Lazily TINT a variant cached before per-metal chips existed. This
+        # stays inside the route's cache-only contract: it never runs a
+        # generator (a cold slug still 404s below) — it only re-colours the
+        # front/back masks this variant already has, which is two pastes on a
+        # 256 px image, not a compute that could collide with a box regen.
+        front_p, back_p = vdir / "front.png", vdir / "back.png"
+        if not (front_p.is_file() and back_p.is_file()):
+            raise HTTPException(404, f"No cached thumbnail for {slug} yet")
+        from PIL import Image
+
+        with Image.open(front_p) as fim, Image.open(back_p) as bim:
+            tinted = make_thumbnail(
+                fim.convert("L"), bim.convert("L"), size=256, metal=metal
+            )
+        save_png_atomic(tinted, thumb)
     return FileResponse(thumb, media_type="image/png")
 
 

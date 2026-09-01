@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { buildStudioEnvScene } from './studioEnv';
 import {
   makeFoilMaps,
@@ -45,6 +46,20 @@ const RESTORE_GRACE_MS = 5000;
 /** Face mask loads: total attempts (1 initial + retries) and the retry delay. */
 const FACE_TEXTURE_ATTEMPTS = 2;
 const FACE_TEXTURE_RETRY_MS = 1200;
+/**
+ * Diffraction-LUT fetch: retry budget for a COLD BACKEND START.
+ *
+ * The renderer mounts with the page, but `just dev` needs ~40 s on this host to
+ * import numpy/shapely/klayout and bind :8765 — until then the vite proxy
+ * answers ECONNREFUSED (surfaced to the client as a 500). A 9 s window missed
+ * that entirely and the spectral accent stayed silently dead for the session.
+ * Backoff from 1 s to a 5 s cap over 15 attempts is ~68 s of cover, and each
+ * miss costs one failed fetch. This runs once per renderer — nothing else
+ * would ever retry it.
+ */
+const DIFF_LUT_ATTEMPTS = 15;
+const DIFF_LUT_RETRY_BASE_MS = 1000;
+const DIFF_LUT_RETRY_MAX_MS = 5000;
 /**
  * Dirty-flag render loop.
  *
@@ -105,6 +120,14 @@ type FinishPbr = {
   oxidation: number;
   /** Solder micro-relief strength (mm). */
   bumpScale: number;
+  /**
+   * Brushed-metal ANISOTROPY of the rolled foil (MeshPhysicalMaterial
+   * .anisotropy): rolled copper tape has a strongly directional micro-groove
+   * structure, so its highlight stretches along the roll axis — the single
+   * strongest "this is real rolled tape" cue. Oxidation buries the grooves,
+   * so the dark finishes carry much less.
+   */
+  foilAniso: number;
 };
 const FINISH_PBR: Record<FinishKey, FinishPbr> = {
   bright: {
@@ -119,6 +142,7 @@ const FINISH_PBR: Record<FinishKey, FinishPbr> = {
     env: 2.4,
     oxidation: 0.12,
     bumpScale: 0.012,
+    foilAniso: 0.55,
   },
   copper: {
     foilRough: 0.36,
@@ -130,6 +154,7 @@ const FINISH_PBR: Record<FinishKey, FinishPbr> = {
     env: 2.2,
     oxidation: 0.3,
     bumpScale: 0.016,
+    foilAniso: 0.45,
   },
   patina: {
     foilRough: 0.62,
@@ -141,6 +166,7 @@ const FINISH_PBR: Record<FinishKey, FinishPbr> = {
     env: 1.7,
     oxidation: 0.95,
     bumpScale: 0.02,
+    foilAniso: 0.15,
   },
   gold: {
     foilRough: 0.22,
@@ -152,6 +178,7 @@ const FINISH_PBR: Record<FinishKey, FinishPbr> = {
     env: 2.6,
     oxidation: 0.08,
     bumpScale: 0.01,
+    foilAniso: 0.55,
   },
   rose: {
     foilRough: 0.3,
@@ -163,6 +190,7 @@ const FINISH_PBR: Record<FinishKey, FinishPbr> = {
     env: 2.4,
     oxidation: 0.18,
     bumpScale: 0.012,
+    foilAniso: 0.5,
   },
   gunmetal: {
     foilRough: 0.44,
@@ -174,8 +202,96 @@ const FINISH_PBR: Record<FinishKey, FinishPbr> = {
     env: 2.0,
     oxidation: 0.5,
     bumpScale: 0.016,
+    foilAniso: 0.35,
   },
 };
+
+/**
+ * Linear conductor response per litho metal (renderer-audit item 5). The masks
+ * are metal-agnostic; only the preview shading follows this. `gold` is the
+ * legacy plate.frag constants EXACTLY (GOLD / GOLD_BACK / GOLD_F0), so a gold
+ * box renders bit-identically to the pre-uniform build and the @effects gates
+ * see the same pixels. `chrome` is bright standard chrome (measured Cr F0 —
+ * near-neutral, the platinum-line read); `chrome-ar` the low-reflective
+ * AR-coated mask grade (ink-black linework, a few percent reflectance).
+ */
+type MetalLook = {
+  albedo: [number, number, number];
+  back: [number, number, number];
+  f0: [number, number, number];
+  /** Broad-lobe weight — a near-mirror film puts less energy here. */
+  body: number;
+  /** Half-vector lobe weight. */
+  spec: number;
+  /** Specular exponent (smoothness proxy). */
+  gloss: number;
+  /** Reflectance approached at grazing: 1.0 bare conductor, lower for AR. */
+  grazing: number;
+  /** Diffraction-accent efficiency, scaled by the film's reflectance. */
+  sheen: number;
+  /**
+   * Environment-reflection weight — how much of the film's return is a mirror
+   * image of the room rather than broad scatter. 0 keeps a metal on the
+   * single-light model it was calibrated against (gold); a smooth mask chrome
+   * needs this to read as metal at all.
+   */
+  env: number;
+};
+
+/** Hemisphere surround the plate metal reflects — matches the scene's
+ * HemisphereLight so plates and metalwork share one room. */
+const ENV_SKY: [number, number, number] = [0.72, 0.79, 0.9];
+const ENV_GROUND: [number, number, number] = [0.11, 0.09, 0.07];
+
+const METAL_LOOKS: Record<'gold' | 'chrome' | 'chrome-ar', MetalLook> = {
+  // Evaporated Au on quartz — the legacy constants; body/spec/gloss/grazing/
+  // sheen are gold's ORIGINAL hardcoded values, so this path is unchanged.
+  gold: {
+    albedo: [0.791, 0.503, 0.08],
+    back: [0.133, 0.084, 0.013],
+    f0: [1.0, 0.766, 0.336],
+    body: 1.0,
+    spec: 0.5,
+    gloss: 80,
+    grazing: 1.0,
+    sheen: 1.0,
+    env: 0.0,
+  },
+  // Mask-grade Cr on polished glass: R0 ~0.55 neutral and a very smooth film,
+  // so it is far more MIRROR than gold — most of its energy belongs in a tight
+  // bright lobe, not the body. Rendering it with gold's split is what made it
+  // read as grey paint.
+  chrome: {
+    albedo: [0.42, 0.427, 0.432],
+    back: [0.071, 0.072, 0.073],
+    f0: [0.549, 0.556, 0.554],
+    body: 0.62,
+    spec: 1.45,
+    gloss: 190,
+    grazing: 1.0,
+    sheen: 0.79,
+    env: 0.55,
+  },
+  // Low-reflective (AR chrome-oxide) mask grade: ~5-8% reflectance, and the
+  // coating exists specifically to KILL the specular return — so it is a dark
+  // near-matte absorber with a real grazing ceiling (see uMetalGrazing).
+  'chrome-ar': {
+    albedo: [0.048, 0.051, 0.055],
+    back: [0.01, 0.011, 0.012],
+    f0: [0.06, 0.065, 0.072],
+    body: 1.0,
+    spec: 0.12,
+    gloss: 32,
+    grazing: 0.32,
+    sheen: 0.09,
+    env: 0.05,
+  },
+};
+
+/** Max rocking angle (deg, each axis) in face-inspection mode. */
+const INSPECT_MAX_DEG = 8;
+/** Drag sensitivity in inspection mode (deg per CSS pixel). */
+const INSPECT_DEG_PER_PX = 0.045;
 
 type FaceRT = {
   faceId: FaceId;
@@ -220,11 +336,12 @@ type RebuildDisposables = {
  * each per-strip material needs to re-derive its own maps.
  */
 type FinishMats = {
-  foil: THREE.MeshStandardMaterial;
+  // Physical (not Standard) so the rolled-tape anisotropy is expressible.
+  foil: THREE.MeshPhysicalMaterial;
   solder: THREE.MeshPhysicalMaterial;
-  tin: THREE.MeshStandardMaterial;
+  tin: THREE.MeshPhysicalMaterial;
   strips: {
-    mat: THREE.MeshStandardMaterial;
+    mat: THREE.MeshPhysicalMaterial;
     heat: boolean;
     isVertical: boolean;
     seed: number;
@@ -259,8 +376,12 @@ type Ctx = {
   keyLight: THREE.DirectionalLight;
   pmrem: THREE.PMREMGenerator;
   envTex: THREE.Texture;
+  /** Baked diffraction colour table (null until the fetch lands). */
+  diffLut: THREE.DataTexture | null;
   /** Background gradient + soft ground-shadow textures (created once). */
   bgTex: THREE.CanvasTexture;
+  /** Backdrop presets incl. the backlight light-table field (created once). */
+  backdropTexs: Record<'studio' | 'velvet' | 'daylight' | 'lighttable', THREE.CanvasTexture>;
   shadowTex: THREE.CanvasTexture;
   lidCurrentDeg: number;
   lidTargetDeg: number;
@@ -335,21 +456,57 @@ function makeBlankTexture(): THREE.DataTexture {
   return blank;
 }
 
-/** Subtle vertical studio backdrop: very dark blue fading to near-black. */
-function makeBackgroundTexture(): THREE.CanvasTexture {
+/** Vertical two-stop gradient backdrop texture (sRGB). */
+function makeGradientTexture(stops: [number, string][]): THREE.CanvasTexture {
   const canvas = document.createElement('canvas');
   canvas.width = 2;
   canvas.height = 512;
   const c2d = canvas.getContext('2d')!;
   const grad = c2d.createLinearGradient(0, 0, 0, 512);
-  grad.addColorStop(0, '#161d30');
-  grad.addColorStop(0.55, '#0b0e16');
-  grad.addColorStop(1, '#06070b');
+  for (const [at, color] of stops) grad.addColorStop(at, color);
   c2d.fillStyle = grad;
   c2d.fillRect(0, 0, 2, 512);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
+}
+
+/**
+ * Backdrop presets (renderer-audit items 2/6): what the transmissive faces
+ * read AGAINST is half of how every effect looks. 'studio' is the classic dark
+ * gradient; 'velvet' a deep warm jeweler's ground; 'daylight' a soft bright
+ * cool field that turns the gold linework into silhouette-and-glint.
+ * 'lighttable' is not user-selectable — it is what the backlight illumination
+ * mode swaps in: a bright warm-white diffuse field (the mask-inspection view),
+ * so the gold reads as dark silhouette lines in transmission, which is exactly
+ * how you would proof these masks on a real light table.
+ */
+function makeBackdropTextures(): Record<
+  'studio' | 'velvet' | 'daylight' | 'lighttable',
+  THREE.CanvasTexture
+> {
+  return {
+    studio: makeGradientTexture([
+      [0, '#161d30'],
+      [0.55, '#0b0e16'],
+      [1, '#06070b'],
+    ]),
+    velvet: makeGradientTexture([
+      [0, '#301218'],
+      [0.5, '#180a0e'],
+      [1, '#0a0406'],
+    ]),
+    daylight: makeGradientTexture([
+      [0, '#dde5ef'],
+      [0.6, '#b9c5d4'],
+      [1, '#97a4b5'],
+    ]),
+    lighttable: makeGradientTexture([
+      [0, '#f6f3ea'],
+      [0.6, '#efe9dc'],
+      [1, '#ddd6c6'],
+    ]),
+  };
 }
 
 /** Radial soft-shadow blob laid flat under the box (no shadow mapping). */
@@ -502,13 +659,38 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       uFrameBucket0: { value: 96.0 / 255.0 },
       uFrameBucketStep: { value: 14.0 / 255.0 },
       uFrameBucketCount: { value: 6.0 },
-      uFrameAngleSpan: { value: (11.0 * Math.PI) / 180.0 },
+      // Backend ships 3.5 deg (frame_angle_span_deg); the bind path overwrites
+      // this, but a default that disagrees with the producer is a trap for any
+      // face that renders before its manifest lands.
+      uFrameAngleSpan: { value: (3.5 * Math.PI) / 180.0 },
       // Diffraction rainbow accent: normalized graylevel of the reserved accent
       // level, or < 0 to disable (default off so pre-accent manifests are
       // unchanged). Bound from recipe_data.rainbow_level when present.
       uRainbowLevel: { value: -1.0 },
       // 0 = OUTER plane (front layer), 1 = INNER plane (back layer).
       uLayer: { value: layer },
+      // Litho-metal conductor response (renderer-audit item 5). Defaults are
+      // the legacy GOLD constants; the metal effect rebinds them per spec.metal.
+      uMetalAlbedo: { value: new THREE.Color().setRGB(...METAL_LOOKS.gold.albedo, THREE.LinearSRGBColorSpace) },
+      uMetalAlbedoBack: { value: new THREE.Color().setRGB(...METAL_LOOKS.gold.back, THREE.LinearSRGBColorSpace) },
+      uMetalF0: { value: new THREE.Color().setRGB(...METAL_LOOKS.gold.f0, THREE.LinearSRGBColorSpace) },
+      uMetalBody: { value: METAL_LOOKS.gold.body },
+      uMetalSpec: { value: METAL_LOOKS.gold.spec },
+      uMetalGloss: { value: METAL_LOOKS.gold.gloss },
+      uMetalGrazing: { value: METAL_LOOKS.gold.grazing },
+      uMetalSheen: { value: METAL_LOOKS.gold.sheen },
+      uMetalEnv: { value: METAL_LOOKS.gold.env },
+      // Baked diffraction table (backend app/diffraction.py). uDiffReady stays
+      // 0 until the fetch lands, so a failed/slow load simply shows no accent
+      // rather than a wrong colour or a dangling sampler.
+      uDiffLut: { value: blank },
+      uDiffUMax: { value: 10.0 },
+      uDiffReady: { value: 0.0 },
+      uRainbowPeriodUm: { value: 4.4 },
+      uRainbowAngleRad: { value: Math.PI / 4 },
+      uRainbowZeroOrder: { value: 0.25 },
+      uSkyColor: { value: new THREE.Color().setRGB(...ENV_SKY, THREE.LinearSRGBColorSpace) },
+      uGroundColor: { value: new THREE.Color().setRGB(...ENV_GROUND, THREE.LinearSRGBColorSpace) },
       // Pattern Scale (Task 1b): multiplies the preview-MAGNIFIED period family
       // (frame carrier + louvre, capybara body shimmer) on both planes. The
       // centerpiece barrier/comb pitch is excluded — scaling it would scale the
@@ -555,7 +737,12 @@ function makeGlassMaterial(): THREE.MeshPhysicalMaterial {
     // displacement in the scene (see the rebuild loop's g.thickness note).
     thickness: 0,
     side: THREE.DoubleSide,
-    envMapIntensity: 1.0,
+    // Renderer-audit item 6: at 1.0 the broad studio bounce panels paint a
+    // milky white sheen across the whole low-roughness slab and the plates
+    // read as frosted acrylic. Halving the GLASS env pickup (metals keep their
+    // own per-finish envMapIntensity) keeps the crisp hero-streak highlights
+    // while letting the pattern layers, not the sheen, carry the face.
+    envMapIntensity: 0.55,
   });
 }
 
@@ -700,6 +887,10 @@ function applyFinishMats(mats: FinishMats, finishKey: FinishKey): void {
   mats.foil.roughnessMap = foilMaps.rough;
   mats.foil.metalness = pbr.metalness;
   mats.foil.envMapIntensity = pbr.env;
+  // Rolled-tape anisotropy: the flat-layout shared foil brushes along U
+  // (horizontal); per-strip materials orient it below.
+  mats.foil.anisotropy = pbr.foilAniso;
+  mats.foil.anisotropyRotation = 0;
 
   // Solder bead: flowed metal with a satin clearcoat sheen + blotchy roughness
   // and a micro-relief bump — the clearcoat + blotch is what separates a real
@@ -717,6 +908,8 @@ function applyFinishMats(mats: FinishMats, finishKey: FinishKey): void {
   mats.tin.metalness = pbr.metalness;
   mats.tin.roughness = pbr.tinRough;
   mats.tin.envMapIntensity = pbr.env;
+  // A tinned wipe is re-flowed, not rolled — barely directional.
+  mats.tin.anisotropy = 0.12;
 
   // Base tint as 0..255 RGB for the heat-patina colour maps.
   const tintRgb: [number, number, number] = [
@@ -743,7 +936,132 @@ function applyFinishMats(mats: FinishMats, finishKey: FinishKey): void {
     }
     s.mat.metalness = pbr.metalness;
     s.mat.envMapIntensity = pbr.env;
+    // Brushed highlight stretches along the strip's PHYSICAL long axis: the
+    // roll direction is U for horizontal strips, V (rotate 90°) for vertical
+    // ones — matching the pre-rotated roughness streak maps above.
+    s.mat.anisotropy = pbr.foilAniso;
+    s.mat.anisotropyRotation = s.isVertical ? Math.PI / 2 : 0;
   }
+}
+
+/**
+ * Presentation props (renderer-audit item 2): a velvet cushion pair and a
+ * REAL-DIMENSIONED ring standing in the slot between them. Pure display
+ * objects — no fab meaning, never raycast targets, no census tags — but the
+ * ring's FIXED real size (size-7: 17.3 mm bore, 1.7 mm band, ~20.7 mm OD)
+ * makes it an honest fit check: when the interior can't give a standing ring
+ * its headroom, the pose falls back to lying flat, exactly the compromise the
+ * real box would force. Default OFF (store.showRing) so the pixel-metric
+ * harnesses keep seeing the exact scene they always did.
+ */
+function addPresentationProps(
+  group: THREE.Group,
+  W: number,
+  Dep: number,
+  H: number,
+  wallMm: number,
+  geo: <T extends THREE.BufferGeometry>(g: T) => T,
+  mat: <T extends THREE.Material>(m: T) => T
+): void {
+  const iw = W - 2 * wallMm;
+  const id = Dep - 2 * wallMm;
+  const ih = H - 2 * wallMm;
+  if (iw < 12 || id < 12 || ih < 4) return; // no room for any prop at all
+
+  // Ring: size-7 band in mm — REAL dimensions, never scaled with the box.
+  const bore = 17.3;
+  const bandTube = 0.85; // circular approximation of a 1.7 mm band
+  const R = bore / 2 + bandTube; // torus major radius (9.5)
+  const ringOD = 2 * (R + bandTube); // 20.7
+  const stoneGirdle = 2.2;
+  const standingH = ringOD + 2.6; // band + stone crown headroom
+
+  const velvet = mat(
+    new THREE.MeshPhysicalMaterial({
+      color: 0x5c1622,
+      roughness: 0.95,
+      metalness: 0.0,
+      sheen: 1.0,
+      sheenColor: new THREE.Color(0xb26775),
+      sheenRoughness: 0.55,
+    })
+  );
+  const bandGold = mat(
+    new THREE.MeshPhysicalMaterial({
+      color: 0xc9a24b,
+      metalness: 1.0,
+      roughness: 0.16,
+      clearcoat: 0.35,
+      clearcoatRoughness: 0.35,
+      envMapIntensity: 2.2,
+    })
+  );
+  const gem = mat(
+    new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      metalness: 0.0,
+      roughness: 0.03,
+      transmission: 0.9,
+      ior: 2.417,
+      thickness: 2.2,
+      envMapIntensity: 3.0,
+      flatShading: true,
+    })
+  );
+  // Chromatic dispersion (the fire) shipped in newer three; harmless to skip.
+  if ('dispersion' in gem) (gem as unknown as { dispersion: number }).dispersion = 0.2;
+
+  const floorY = -H / 2 + wallMm;
+  const standing = ih >= standingH + 2.5; // needs cushion sink + lid clearance
+  const cushH = standing
+    ? THREE.MathUtils.clamp(ih - standingH - 1.0, 2.5, 12)
+    : THREE.MathUtils.clamp(ih * 0.35, 2.0, 8);
+
+  // Cushion pair with the classic ring slot between the halves.
+  const slot = 2.6;
+  const cw = iw * 0.96;
+  const cd = (id * 0.96 - slot) / 2;
+  if (cd > 2) {
+    const r = Math.min(1.4, cushH / 2.5, cd / 2.5);
+    for (const sz of [-1, 1]) {
+      const half = new THREE.Mesh(geo(new RoundedBoxGeometry(cw, cushH, cd, 3, r)), velvet);
+      half.position.set(0, floorY + cushH / 2, sz * (slot / 2 + cd / 2));
+      half.userData.prop = true;
+      group.add(half);
+    }
+  }
+
+  // Ring group: band torus + a small bezel + faceted stone at the top.
+  const ring = new THREE.Group();
+  const band = new THREE.Mesh(geo(new THREE.TorusGeometry(R, bandTube, 24, 64)), bandGold);
+  ring.add(band);
+  const bezel = new THREE.Mesh(geo(new THREE.TorusGeometry(stoneGirdle * 0.72, 0.38, 12, 24)), bandGold);
+  bezel.rotation.x = Math.PI / 2;
+  bezel.position.y = R + bandTube + 0.15;
+  ring.add(bezel);
+  const crown = new THREE.Mesh(
+    geo(new THREE.CylinderGeometry(stoneGirdle * 0.55, stoneGirdle, 0.95, 8, 1)),
+    gem
+  );
+  crown.position.y = R + bandTube + 1.05;
+  ring.add(crown);
+  const pavilion = new THREE.Mesh(
+    geo(new THREE.CylinderGeometry(stoneGirdle, 0.02, 1.8, 8, 1)),
+    gem
+  );
+  pavilion.position.y = R + bandTube - 0.35;
+  ring.add(pavilion);
+  for (const o of ring.children) o.userData.prop = true;
+
+  if (standing) {
+    // Standing in the slot, sunk ~2.2 mm into the cushion, facing the front.
+    ring.position.set(0, floorY + cushH - 2.2 + R + bandTube, 0);
+  } else {
+    // Not enough headroom: the honest fallback — the ring lies flat.
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(0, floorY + cushH + bandTube + 0.1, 0);
+  }
+  group.add(ring);
 }
 
 /**
@@ -782,6 +1100,9 @@ export default function BoxScene() {
   const laserColor = useStore((s) => s.laserColor);
   const lightAz = useStore((s) => s.lightAzimuthDeg);
   const lightEl = useStore((s) => s.lightElevationDeg);
+  const showRing = useStore((s) => s.showRing);
+  const backdrop = useStore((s) => s.backdrop);
+  const inspectMode = useStore((s) => s.inspectMode);
 
   // GPU / texture health, surfaced over the canvas. 'lost' = context died and
   // the browser owes us a restore; 'stalled' = the restore never came, so the
@@ -794,6 +1115,19 @@ export default function BoxScene() {
   const [rebindTick, setRebindTick] = useState(0);
   /** Faces whose masks failed every load attempt (see bind effect). */
   const [failedFaces, setFailedFaces] = useState<FaceId[]>([]);
+  /** Live tilt readout for the inspection HUD (deg, face-local axes). */
+  const [inspectTilt, setInspectTilt] = useState({ x: 0, y: 0 });
+  /** Camera rig of the active face inspection (null = not inspecting). */
+  const inspectRig = useRef<{
+    center: THREE.Vector3;
+    normal: THREE.Vector3;
+    right: THREE.Vector3;
+    up: THREE.Vector3;
+    dist: number;
+    savedPos: THREE.Vector3;
+    savedTarget: THREE.Vector3;
+    tilt: { x: number; y: number };
+  } | null>(null);
 
   const markFaceFailed = (fid: FaceId): void =>
     setFailedFaces((prev) => (prev.includes(fid) ? prev : [...prev, fid]));
@@ -858,6 +1192,11 @@ export default function BoxScene() {
     const Dep = mm(spec.depth_um);
     const H = mm(spec.height_um);
     const T = mm(spec.glass.thickness_um);
+    // BONDED (two-ply) construction: T is then the PLY thickness — which is
+    // what the entire outer-shell metalwork below (rims, lid edges, seams,
+    // hinge axis) is cut at, so those formulas hold verbatim; only buildPlate
+    // branches (two slabs, stack surfaces at ±T instead of ±T/2).
+    const bonded = !!spec.bonded;
     // 2x3 fab grid cell size (also drives the flat-layout scale).
     const cellW = Math.max(W, Dep) + 8;
     const cellH = Math.max(H, Dep) + 12;
@@ -895,7 +1234,7 @@ export default function BoxScene() {
     // inner-border strips read from inside the open box too.
     const finishMats: FinishMats = {
       foil: mat(
-        new THREE.MeshStandardMaterial({
+        new THREE.MeshPhysicalMaterial({
           color: 0xffffff, // tint carried by the colour map
           roughness: 1.0, // scaled by the roughnessMap
           side: THREE.DoubleSide,
@@ -907,7 +1246,7 @@ export default function BoxScene() {
           roughness: 1.0,
         })
       ),
-      tin: mat(new THREE.MeshStandardMaterial({})),
+      tin: mat(new THREE.MeshPhysicalMaterial({})),
       strips: [],
     };
     ctx.finishMats = finishMats;
@@ -916,7 +1255,7 @@ export default function BoxScene() {
     const tinMat = finishMats.tin;
 
     const buildFoilStripMat = (heat: boolean) => (isVertical: boolean, seed: number) => {
-      const m = new THREE.MeshStandardMaterial({
+      const m = new THREE.MeshPhysicalMaterial({
         color: 0xffffff,
         roughness: 1.0,
         side: THREE.DoubleSide,
@@ -926,14 +1265,18 @@ export default function BoxScene() {
     };
 
     // Brass hinge hardware: warm metal, lightly lacquered (thin clearcoat).
+    // Drawn brass tube is machined ALONG its axis, so the highlight stretches
+    // lengthwise — cylinder UVs run V along the axis, hence rotation π/2.
     const brassMat = mat(
       new THREE.MeshPhysicalMaterial({
         color: BRASS_COLOR,
         metalness: 1.0,
-        roughness: 0.3,
+        roughness: 0.28,
         clearcoat: 0.25,
         clearcoatRoughness: 0.4,
-        envMapIntensity: 1.4,
+        envMapIntensity: 1.5,
+        anisotropy: 0.45,
+        anisotropyRotation: Math.PI / 2,
       })
     );
 
@@ -951,11 +1294,35 @@ export default function BoxScene() {
       const h = mm(cut.height_um);
       const rt = ctx.faces[fid];
       const pg = new THREE.Group();
-      // (a) the fused-silica slab
-      const slab = new THREE.Mesh(geo(new THREE.BoxGeometry(w, h, T)), rt.glassMat);
-      slab.userData.faceId = fid;
-      pg.add(slab);
-      ctx.raycastTargets.push(slab);
+      // (a) the glass — one slab, or the BONDED two-ply stack.
+      //
+      // Bonded construction (spec.bonded): each face is TWO plies of thickness
+      // T glued face-to-face, the inner ply inset exactly one ply per edge
+      // (the nested-shell cut list — see assembly.ts::bondedCutList). Local
+      // frame: the stack spans z in [-T, +T]; the outer ply [0, T] carries the
+      // front chrome at its inner surface (the bond line), the inner ply
+      // [-T, 0] carries the back chrome on its interior surface. The visible
+      // step at the edges IS the 45-deg-approximating staircase the corners
+      // interleave with.
+      if (bonded) {
+        const outerSlab = new THREE.Mesh(geo(new THREE.BoxGeometry(w, h, T)), rt.glassMat);
+        outerSlab.position.z = T / 2;
+        outerSlab.userData.faceId = fid;
+        pg.add(outerSlab);
+        ctx.raycastTargets.push(outerSlab);
+        const iw = Math.max(1e-3, w - 2 * T);
+        const ih = Math.max(1e-3, h - 2 * T);
+        const innerSlab = new THREE.Mesh(geo(new THREE.BoxGeometry(iw, ih, T)), rt.glassMat);
+        innerSlab.position.z = -T / 2;
+        innerSlab.userData.faceId = fid;
+        pg.add(innerSlab);
+        ctx.raycastTargets.push(innerSlab);
+      } else {
+        const slab = new THREE.Mesh(geo(new THREE.BoxGeometry(w, h, T)), rt.glassMat);
+        slab.userData.faceId = fid;
+        pg.add(slab);
+        ctx.raycastTargets.push(slab);
+      }
       // (b) TWO real gold-pattern surfaces — the physical second-surface object.
       // OUTER plane just outside the front face carries the front layer; INNER
       // plane just outside the inner face carries the back layer. They are
@@ -969,7 +1336,16 @@ export default function BoxScene() {
         new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shader),
         'plate-outer'
       );
-      outer.position.z = T / 2 + EPS_PATTERN_MM;
+      // Bonded: the front chrome physically sits at the bond line, one ply
+      // below the outer surface. Both layers' apparent depths shift by the
+      // same paraxial amount, so the LAYER-TO-LAYER gap — the quantity every
+      // moiré/switch/scanimation crossing depends on, and what the @effects
+      // suite scales — is T/n in both constructions. We keep the front plane
+      // at the stack surface (its burial only affects parallax against the
+      // glass edge, not against the back layer) and place the back plane T/n
+      // below it, exactly as in the single-plate build.
+      const surfaceZ = (bonded ? T : T / 2) + EPS_PATTERN_MM;
+      outer.position.z = surfaceZ;
       outer.userData.faceId = fid;
       outer.renderOrder = 2;
       pg.add(outer);
@@ -978,39 +1354,48 @@ export default function BoxScene() {
         new THREE.Mesh(geo(new THREE.PlaneGeometry(w, h)), rt.shaderBack),
         'plate-inner'
       );
-      // TASK 2 — apparent-depth gap. The back gold layer physically sits on the
-      // far (−T/2) surface, but refraction lifts its APPARENT position toward the
-      // viewer: a paraxial ray exits the slab as if the back surface were only
-      // T/n below the front. Placing the inner plane at that paraxial-equivalent
-      // air gap (separation T/n below the outer plane, not the full T) makes the
+      // TASK 2 — apparent-depth gap. The back gold layer physically sits one
+      // GLASS thickness below the front layer (the far surface of the single
+      // plate, or the bonded stack's interior surface one ply below the bond
+      // line), but refraction lifts its APPARENT position toward the viewer: a
+      // paraxial ray exits the glass as if the back layer were only T/n below
+      // the front. Placing the inner plane at that paraxial-equivalent air gap
+      // (separation T/n below the outer plane, not the full T) makes the
       // straight-ray parallax the camera sees match the physical Snell rate
       // (~5.98 µm/deg through 500 µm fused silica at n=1.46), so the switch /
       // scanimation crossings land at their true tilt angles. The glass slab
       // geometry is unchanged; only the pattern plane moves.
       const nGlass = spec.glass.n > 1.0 ? spec.glass.n : 1.46;
-      const outerZ = T / 2 + EPS_PATTERN_MM;
+      const outerZ = surfaceZ;
       inner.position.z = outerZ - T / nGlass;
       inner.userData.faceId = fid;
       inner.renderOrder = 0;
       pg.add(inner);
       ctx.raycastTargets.push(inner);
-      // (c) copper foil overlap strips, outer AND inner borders
-      const ov = Math.min(overlapMm, Math.min(w, h) / 2);
+      // (c) copper foil overlap strips, outer AND inner borders. Bonded: the
+      // outer fold lands on the outer ply's face (its edge = the stack edge),
+      // the interior fold on the INNER ply's face — measured from the inner
+      // ply's own (inset) edge, so that frame is built at the inner dims.
+      const zOut = (bonded ? T : T / 2) + EPS_FOIL_MM;
+      const zIn = -zOut;
+      const iw2 = bonded ? Math.max(1e-3, w - 2 * T) : w;
+      const ih2 = bonded ? Math.max(1e-3, h - 2 * T) : h;
+      const ov = Math.min(overlapMm, Math.min(iw2, ih2) / 2);
       if (ov > 1e-4) {
         if (sceneLayout === 'assembled') {
           // Outer frame: brushed + heat-patina near the welded edge.
           addFoilFrameRealistic(
-            pg, w, h, ov, T / 2 + EPS_FOIL_MM, true,
+            pg, w, h, ov, zOut, true,
             buildFoilStripMat(true), geo, mat
           );
           // Inner frame: brushed only (no patina inside the box).
           addFoilFrameRealistic(
-            pg, w, h, ov, -(T / 2 + EPS_FOIL_MM), false,
+            pg, iw2, ih2, ov, zIn, false,
             buildFoilStripMat(false), geo, mat
           );
         } else {
-          addFoilFrame(pg, w, h, ov, T / 2 + EPS_FOIL_MM, foilMat, geo);
-          addFoilFrame(pg, w, h, ov, -(T / 2 + EPS_FOIL_MM), foilMat, geo);
+          addFoilFrame(pg, w, h, ov, zOut, foilMat, geo);
+          addFoilFrame(pg, iw2, ih2, ov, zIn, foilMat, geo);
         }
       }
       return pg;
@@ -1035,6 +1420,9 @@ export default function BoxScene() {
       // ITEM 7 — pose it from the CURRENT light immediately (rotation.x included), so a
       // fresh build is never briefly wrong before the light effect first runs.
       ctx.groundShadow = shadow;
+      // Light-table (backlight) mode hides the blob — a contact shadow on a
+      // luminous field reads as a smudge on the light box.
+      shadow.visible = useStore.getState().illumination !== 'backlight';
       // Carry the two build-time scalars poseGroundShadow needs so the light effect,
       // which has no access to this closure, can re-pose the blob on its own.
       shadow.userData.casterH = H / 2;
@@ -1082,6 +1470,11 @@ export default function BoxScene() {
           pg.position.copy(c);
           group.add(pg);
         }
+      }
+
+      // --- presentation props (cushion + ring) — display only ----------------
+      if (useStore.getState().showRing) {
+        addPresentationProps(group, W, Dep, H, bonded ? 2 * T : T, geo, mat);
       }
 
       // --- organic solder seam beads + corner junction blobs ----------------
@@ -1167,7 +1560,7 @@ export default function BoxScene() {
       for (const seg of hinge.segments) {
         const tube = tag(
           new THREE.Mesh(
-            geo(new THREE.CylinderGeometry(tubeR, tubeR, mm(seg.length_um), 20)),
+            geo(new THREE.CylinderGeometry(tubeR, tubeR, mm(seg.length_um), 32)),
             brassMat
           ),
           'hinge-tube'
@@ -1186,7 +1579,7 @@ export default function BoxScene() {
       }
       const rod = tag(
         new THREE.Mesh(
-          geo(new THREE.CylinderGeometry(rodR, rodR, mm(hinge.rod_length_um), 16)),
+          geo(new THREE.CylinderGeometry(rodR, rodR, mm(hinge.rod_length_um), 24)),
           brassMat
         ),
         'hinge-rod'
@@ -1194,6 +1587,17 @@ export default function BoxScene() {
       rod.rotation.z = Math.PI / 2;
       rod.position.set(0, pivotPos.y, pivotPos.z);
       group.add(rod);
+      // Peened rod ends — the real assembly caps the rod so it cannot walk.
+      // Deliberately UNTAGGED: the census pins exactly one 'hinge-rod'.
+      for (const sx of [-1, 1]) {
+        const cap = new THREE.Mesh(
+          geo(new THREE.SphereGeometry(rodR * 1.5, 16, 12)),
+          brassMat
+        );
+        cap.scale.x = 0.55; // squashed dome, like a peened head
+        cap.position.set(sx * (mm(hinge.rod_length_um) / 2), pivotPos.y, pivotPos.z);
+        group.add(cap);
+      }
     }
 
     // Finish pass — the ONLY writer of finish-derived material state, shared
@@ -1235,8 +1639,10 @@ export default function BoxScene() {
   useEffect(() => {
     const mount = mountRef.current!;
     const scene = new THREE.Scene();
-    // Subtle dark blue-to-black gradient backdrop (replaces flat 0x0b0d10).
-    const bgTex = makeBackgroundTexture();
+    // Backdrop preset set; the classic dark studio gradient is the default and
+    // doubles as ctx.bgTex (legacy name kept for the restore paths).
+    const backdropTexs = makeBackdropTextures();
+    const bgTex = backdropTexs.studio;
     scene.background = bgTex;
     const shadowTex = makeShadowTexture();
 
@@ -1341,10 +1747,18 @@ export default function BoxScene() {
     const frontFill = new THREE.DirectionalLight(0xf2f4f8, 1.05);
     frontFill.position.set(0.6, 0.9, 3.2);
     scene.add(frontFill);
-    // Raised ambient (was 0.25) so every foil facet keeps a tinted floor no
-    // matter which way it points — the flat lift that stops off-axis strips
-    // crushing to black.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    // Ambient floor + a hemisphere pair (fidelity pass): the old flat 0.5
+    // ambient lifted every facet identically, which is exactly what makes CG
+    // metal look like paint — real ambient light is sky-tinted from above and
+    // ground-tinted from below. Splitting the same total irradiance into a
+    // 0.28 floor + a 0.45 hemisphere keeps off-axis foil strips out of the
+    // black crush (the reason the flat lift existed) while giving every curved
+    // metal surface (beads, hinge, ring band) a vertical color gradient to
+    // read its shape by. The plate planes ignore scene lights entirely (their
+    // shader owns its own light model), so the @effects surfaces see only the
+    // small change in the glass slab's 6% diffuse term.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.28));
+    scene.add(new THREE.HemisphereLight(0xdde6f5, 0x2e2620, 0.45));
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -1399,7 +1813,9 @@ export default function BoxScene() {
       keyLight,
       pmrem,
       envTex,
+      diffLut: null,
       bgTex,
+      backdropTexs,
       shadowTex,
       lidCurrentDeg: 0,
       lidTargetDeg: useStore.getState().lidTargetDeg,
@@ -1427,6 +1843,77 @@ export default function BoxScene() {
     };
     (window as unknown as { __studio: StudioHandle }).__studio = studio;
 
+    // --- baked diffraction table ------------------------------------------
+    // Fetched once per renderer and shared by all twelve plate materials. The
+    // physics lives in the backend (app/diffraction.py, unit-tested against
+    // closed forms); this is a dumb upload of the result.
+    (async () => {
+      // BOUNDED RETRY. The renderer mounts as soon as the page loads, which can
+      // beat the backend to listening — and this fetch runs exactly once per
+      // renderer, so a single lost race used to leave uDiffReady at 0 and the
+      // spectral accent silently dead for the whole session. Same shape as the
+      // mask-bind retry (FACE_TEXTURE_ATTEMPTS), for the same reason: a
+      // transient startup blip must not be indistinguishable from "this design
+      // has no accent".
+      const attempt = async (): Promise<Response> => {
+        let lastErr: unknown = null;
+        for (let i = 0; i < DIFF_LUT_ATTEMPTS; i++) {
+          try {
+            const res = await fetch('/sim/diffraction/lut?duty=0.5&size=1024&u_max_um=10');
+            if (res.ok) return res;
+            lastErr = new Error(`HTTP ${res.status}`);
+          } catch (e) {
+            lastErr = e;
+          }
+          const wait = Math.min(
+            DIFF_LUT_RETRY_MAX_MS,
+            DIFF_LUT_RETRY_BASE_MS * Math.pow(1.5, i)
+          );
+          await new Promise((r) => setTimeout(r, wait));
+        }
+        throw lastErr instanceof Error ? lastErr : new Error('diffraction LUT unavailable');
+      };
+      try {
+        const r = await attempt();
+        const payload = (await r.json()) as { size: number; u_max_um: number; rgb: number[] };
+        const n = payload.size;
+        // RGBA float: RGB float textures are not universally filterable.
+        const data = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) {
+          data[i * 4] = payload.rgb[i * 3];
+          data[i * 4 + 1] = payload.rgb[i * 3 + 1];
+          data[i * 4 + 2] = payload.rgb[i * 3 + 2];
+          data[i * 4 + 3] = 1;
+        }
+        const tex = new THREE.DataTexture(data, n, 1, THREE.RGBAFormat, THREE.FloatType);
+        tex.colorSpace = THREE.LinearSRGBColorSpace; // values are already linear
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.wrapS = THREE.ClampToEdgeWrapping;
+        tex.wrapT = THREE.ClampToEdgeWrapping;
+        tex.generateMipmaps = false;
+        tex.needsUpdate = true;
+        const c = ctxRef.current;
+        if (!c) {
+          tex.dispose();
+          return;
+        }
+        c.diffLut = tex;
+        for (const fid of FACE_IDS) {
+          for (const sh of [c.faces[fid].shader, c.faces[fid].shaderBack]) {
+            sh.uniforms.uDiffLut.value = tex;
+            sh.uniforms.uDiffUMax.value = payload.u_max_um;
+            sh.uniforms.uDiffReady.value = 1.0;
+          }
+        }
+        requestRender();
+        log('diffraction_lut_loaded', { size: n, u_max_um: payload.u_max_um });
+      } catch (e) {
+        // No accent rather than a wrong one — uDiffReady stays 0.
+        log('diffraction_lut_failed', { error: (e as Error).message });
+      }
+    })();
+
     const canvas = renderer.domElement;
     // GPU context loss. preventDefault() opts into browser restoration; three's
     // own listeners (registered in the WebGLRenderer ctor, so they run before
@@ -1453,6 +1940,7 @@ export default function BoxScene() {
         setMetalTextureAnisotropy(c.renderer.capabilities.getMaxAnisotropy());
         c.envTex.dispose();
         c.pmrem.dispose();
+        c.diffLut?.dispose();
         const env = makeStudioEnv(c.renderer);
         c.pmrem = env.pmrem;
         c.envTex = env.envTex;
@@ -1496,6 +1984,9 @@ export default function BoxScene() {
     };
     const onPointerUp = (e: PointerEvent) => {
       if (dragMoved) return;
+      // Inspection mode owns the pointer: a sub-5px drag must not re-select a
+      // face out from under the locked camera.
+      if (useStore.getState().inspectMode) return;
       const c = ctxRef.current;
       if (!c) return;
       const rect = canvas.getBoundingClientRect();
@@ -1511,6 +2002,7 @@ export default function BoxScene() {
     };
     // Double-click on the box toggles the lid open/closed.
     const onDoubleClick = (e: MouseEvent) => {
+      if (useStore.getState().inspectMode) return;
       const c = ctxRef.current;
       if (!c) return;
       const rect = canvas.getBoundingClientRect();
@@ -1621,7 +2113,8 @@ export default function BoxScene() {
         }
         c.envTex.dispose();
         c.pmrem.dispose();
-        c.bgTex.dispose();
+        c.diffLut?.dispose();
+        for (const t of Object.values(c.backdropTexs)) t.dispose();
         c.shadowTex.dispose();
       }
       blank.dispose();
@@ -1647,6 +2140,9 @@ export default function BoxScene() {
         d: boxSpec.depth_um,
         h: boxSpec.height_um,
         glass: boxSpec.glass,
+        // Bonded moves every slab and rim — it MUST rebuild geometry. (It used
+        // to ride along only when thickness changed in the same edit.)
+        bonded: !!boxSpec.bonded,
         foil: {
           tape_width_um: boxSpec.foil.tape_width_um,
           safety_um: boxSpec.foil.safety_um,
@@ -1654,8 +2150,10 @@ export default function BoxScene() {
         },
         hinge: boxSpec.hinge,
         layout,
+        // Presentation props are built in rebuild(), so the toggle re-keys it.
+        ring: showRing,
       }),
-    [boxSpec, layout]
+    [boxSpec, layout, showRing]
   );
   useEffect(() => {
     scheduleRebuild();
@@ -1896,6 +2394,14 @@ export default function BoxScene() {
               }
               u.uRainbowLevel.value =
                 rd.rainbow_level != null ? (Number(rd.rainbow_level) || 0) / 255 : -1.0;
+              // The FABRICATED accent grating, straight from recipe_data (which
+              // reads the same constants the mask is baked with). Fallbacks are
+              // the shipping values, so a manifest cached before these keys
+              // existed still renders the right grating.
+              u.uRainbowPeriodUm.value = Number(rd.rainbow_period_um ?? 4.4) || 4.4;
+              u.uRainbowAngleRad.value =
+                ((Number(rd.rainbow_angle_deg ?? 45) || 45) * Math.PI) / 180;
+              u.uRainbowZeroOrder.value = Number(rd.rainbow_zero_order ?? 0.25) || 0.25;
             };
             applyShared(rt.shader.uniforms);
             applyShared(rt.shaderBack.uniforms);
@@ -2024,6 +2530,160 @@ export default function BoxScene() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patternScale, reinitTick]);
 
+  // --- litho metal (renderer-audit item 5) ------------------------------------
+  const metalKey = (boxSpec.metal ?? 'gold') as keyof typeof METAL_LOOKS;
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    const look = METAL_LOOKS[metalKey] ?? METAL_LOOKS.gold;
+    for (const fid of FACE_IDS) {
+      for (const sh of [ctx.faces[fid].shader, ctx.faces[fid].shaderBack]) {
+        (sh.uniforms.uMetalAlbedo.value as THREE.Color).setRGB(
+          look.albedo[0], look.albedo[1], look.albedo[2], THREE.LinearSRGBColorSpace);
+        (sh.uniforms.uMetalAlbedoBack.value as THREE.Color).setRGB(
+          look.back[0], look.back[1], look.back[2], THREE.LinearSRGBColorSpace);
+        (sh.uniforms.uMetalF0.value as THREE.Color).setRGB(
+          look.f0[0], look.f0[1], look.f0[2], THREE.LinearSRGBColorSpace);
+        sh.uniforms.uMetalBody.value = look.body;
+        sh.uniforms.uMetalSpec.value = look.spec;
+        sh.uniforms.uMetalGloss.value = look.gloss;
+        sh.uniforms.uMetalGrazing.value = look.grazing;
+        sh.uniforms.uMetalSheen.value = look.sheen;
+        sh.uniforms.uMetalEnv.value = look.env;
+      }
+    }
+    requestRender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [metalKey, reinitTick]);
+
+  // --- backdrop preset / light-table field -------------------------------------
+  // Backlight illumination overrides the user backdrop with the bright
+  // light-table field (mask-inspection view) and hides the contact-shadow blob
+  // (a shadow ON a light box reads as a smudge).
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    ctx.scene.background =
+      illumination === 'backlight' ? ctx.backdropTexs.lighttable : ctx.backdropTexs[backdrop];
+    if (ctx.groundShadow) ctx.groundShadow.visible = illumination !== 'backlight';
+    requestRender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backdrop, illumination, reinitTick]);
+
+  // --- face tilt-inspection (renderer-audit item 4) ----------------------------
+  // Head-on lock on the selected face; dragging rocks the view +/-INSPECT_MAX_DEG
+  // about the face axes while the HUD reads out tilt, the paraxial back-layer
+  // shift it produces, and where this face's effects peak. Pure camera work over
+  // the honest geometry -- nothing in the shading path changes.
+  const applyInspectPose = (): void => {
+    const ctx = ctxRef.current;
+    const rig = inspectRig.current;
+    if (!ctx || !rig) return;
+    const tx = THREE.MathUtils.degToRad(rig.tilt.x);
+    const ty = THREE.MathUtils.degToRad(rig.tilt.y);
+    const dir = rig.normal.clone().applyAxisAngle(rig.up, tx).applyAxisAngle(rig.right, -ty);
+    ctx.camera.position.copy(rig.center).addScaledVector(dir, rig.dist);
+    ctx.camera.up.copy(rig.up);
+    ctx.camera.lookAt(rig.center);
+    requestRender();
+  };
+
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    const restore = (): void => {
+      const rig = inspectRig.current;
+      if (!rig) return;
+      ctx.camera.position.copy(rig.savedPos);
+      ctx.camera.up.set(0, 1, 0);
+      ctx.controls.target.copy(rig.savedTarget);
+      ctx.controls.enabled = true;
+      inspectRig.current = null;
+      requestRender();
+    };
+    if (!inspectMode || layout !== 'assembled') {
+      restore();
+      return;
+    }
+    const spec = useStore.getState().boxSpec;
+    const p = platePlacements(spec).find((x) => x.face === selectedFaceId);
+    if (!p) return;
+    // The lid swings the top face away -- close it before locking head-on.
+    if (selectedFaceId === 'top' && useStore.getState().lidTargetDeg !== 0) {
+      useStore.getState().setLidTargetDeg(0);
+    }
+    const sc = ctx.root.scale.x;
+    const mmv = (um: number): number => (um / 1000) * sc;
+    const center = new THREE.Vector3(mmv(p.center_um[0]), mmv(p.center_um[1]), mmv(p.center_um[2]));
+    const euler = new THREE.Euler(p.rotation[0], p.rotation[1], p.rotation[2], 'XYZ');
+    const right = new THREE.Vector3(1, 0, 0).applyEuler(euler);
+    const up = new THREE.Vector3(0, 1, 0).applyEuler(euler);
+    const normal = new THREE.Vector3(p.outward[0], p.outward[1], p.outward[2]);
+    const span = (Math.max(p.width_um, p.height_um) / 1000) * sc;
+    const dist = Math.max(0.9, span * 1.5);
+    inspectRig.current = {
+      center,
+      normal,
+      right,
+      up,
+      dist,
+      savedPos: ctx.camera.position.clone(),
+      savedTarget: ctx.controls.target.clone(),
+      tilt: { x: 0, y: 0 },
+    };
+    setInspectTilt({ x: 0, y: 0 });
+    ctx.controls.enabled = false;
+    ctx.camTween = null;
+    applyInspectPose();
+    log('inspect_mode', { face: selectedFaceId, on: true });
+
+    const canvas = ctx.renderer.domElement;
+    let dragging = false;
+    let sx = 0;
+    let sy = 0;
+    let bx = 0;
+    let by = 0;
+    const down = (e: PointerEvent): void => {
+      dragging = true;
+      sx = e.clientX;
+      sy = e.clientY;
+      const rig = inspectRig.current;
+      if (rig) {
+        bx = rig.tilt.x;
+        by = rig.tilt.y;
+      }
+    };
+    const move = (e: PointerEvent): void => {
+      if (!dragging) return;
+      const rig = inspectRig.current;
+      if (!rig) return;
+      rig.tilt.x = THREE.MathUtils.clamp(
+        bx + (e.clientX - sx) * INSPECT_DEG_PER_PX, -INSPECT_MAX_DEG, INSPECT_MAX_DEG);
+      rig.tilt.y = THREE.MathUtils.clamp(
+        by + (e.clientY - sy) * INSPECT_DEG_PER_PX, -INSPECT_MAX_DEG, INSPECT_MAX_DEG);
+      setInspectTilt({ x: rig.tilt.x, y: rig.tilt.y });
+      applyInspectPose();
+    };
+    const upHandler = (): void => {
+      dragging = false;
+    };
+    const keyHandler = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') useStore.getState().setInspectMode(false);
+    };
+    canvas.addEventListener('pointerdown', down);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', upHandler);
+    window.addEventListener('keydown', keyHandler);
+    return () => {
+      canvas.removeEventListener('pointerdown', down);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', upHandler);
+      window.removeEventListener('keydown', keyHandler);
+      restore();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inspectMode, selectedFaceId, layout, geomKey, reinitTick]);
+
   // --- illumination / laser color --------------------------------------------
   useEffect(() => {
     const ctx = ctxRef.current;
@@ -2069,6 +2729,45 @@ export default function BoxScene() {
     requestRender();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lightAz, lightEl, reinitTick]);
+
+  // Inspection HUD numbers: paraxial back-layer shift for the current tilt
+  // (Snell, matching sim2d/_axis_shift_um), plus where THIS face's effects peak
+  // — derived from the manifest's fab periods and the spec's real glass, so the
+  // HUD always states the numbers of the box being edited, never defaults.
+  const inspectHud = useMemo(() => {
+    if (!inspectMode) return null;
+    const t = boxSpec.glass.thickness_um;
+    const n = boxSpec.glass.n > 1 ? boxSpec.glass.n : 1.46;
+    const shiftUm = (deg: number): number => {
+      const sinSub = Math.sin((Math.abs(deg) * Math.PI) / 180) / n;
+      const cosSub = Math.sqrt(Math.max(0, 1 - sinSub * sinSub));
+      return (t * sinSub) / Math.max(0.05, cosSub);
+    };
+    const tiltForShift = (sUm: number): number | null => {
+      const v = n * Math.sin(Math.atan2(sUm, t));
+      if (v >= 1) return null;
+      return (Math.asin(v) * 180) / Math.PI;
+    };
+    const rd = (boxManifest?.faces?.[selectedFaceId]?.recipe_data ?? {}) as Record<string, unknown>;
+    const num = (k: string): number => Number(rd[k] ?? 0) || 0;
+    const lines: string[] = [];
+    if (rd.switch_interlace) {
+      const pp = num('switch_interlace_period_um') || num('fab_center_period_um');
+      const swap = pp > 0 ? tiltForShift(pp / 4) : null;
+      const alias = pp > 0 ? tiltForShift(pp) : null;
+      if (swap != null) lines.push(`A↔B swap peaks at ±${swap.toFixed(1)}°`);
+      if (alias != null) lines.push(`replays every ~${alias.toFixed(1)}°`);
+    } else if (num('water_scan_n') > 0) {
+      const pp = num('fab_center_period_um');
+      const step = pp > 0 ? tiltForShift(pp / Math.max(1, num('water_scan_n'))) : null;
+      if (step != null) lines.push(`ripple advances one frame per ~${step.toFixed(1)}°`);
+    } else {
+      const pp = num('carrier_period_um');
+      const peak = pp > 0 ? tiltForShift(pp / 2) : null;
+      if (peak != null) lines.push(`carrier reveal peaks at ±${peak.toFixed(1)}°`);
+    }
+    return { shiftUm, lines };
+  }, [inspectMode, boxSpec, boxManifest, selectedFaceId]);
 
   return (
     // The mount div keeps its own box so ResizeObserver still measures the
@@ -2118,6 +2817,45 @@ export default function BoxScene() {
               </div>
             </>
           )}
+        </div>
+      )}
+      {gpuStatus === 'ok' && inspectMode && inspectHud && (
+        <div
+          data-testid="inspect-hud"
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 3,
+            padding: '8px 12px',
+            borderRadius: 6,
+            border: `1px solid ${KIT.border}`,
+            background: 'rgba(12,15,21,0.88)',
+            color: KIT.text,
+            fontSize: 12,
+            pointerEvents: 'none',
+            textAlign: 'center',
+          }}
+        >
+          <div style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1, fontSize: 11 }}>
+            Inspecting {selectedFaceId}
+          </div>
+          <div style={{ fontVariantNumeric: 'tabular-nums' }}>
+            tilt {inspectTilt.x.toFixed(1)}° / {inspectTilt.y.toFixed(1)}°
+            {' · '}
+            back-layer shift {inspectHud.shiftUm(inspectTilt.x).toFixed(1)} /{' '}
+            {inspectHud.shiftUm(inspectTilt.y).toFixed(1)} µm
+          </div>
+          {inspectHud.lines.map((l) => (
+            <div key={l} style={{ opacity: 0.75 }}>{l}</div>
+          ))}
+          <div style={{ opacity: 0.5, fontSize: 11 }}>
+            drag rocks ±{INSPECT_MAX_DEG}° · Esc exits
+          </div>
         </div>
       )}
       {gpuStatus === 'ok' && failedFaces.length > 0 && (

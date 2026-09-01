@@ -60,6 +60,9 @@ export type PatternManifest = {
     front_svg: string;
     back_svg: string;
     thumbnail: string;
+    /** Per-litho-metal chips (gold | chrome | chrome-ar). Absent on manifests
+     * written before per-metal thumbnails existed — fall back to `thumbnail`. */
+    thumbnails?: Record<string, string>;
   };
 };
 
@@ -269,6 +272,13 @@ export type PlateSpec = {
   /** Fabricated grating pitch (μm) of the back carrier + leaf louvre family.
    * Stamped from the box level; the louvre is this × 1.09. Litho floor 4 µm. */
   carrier_pitch_um: number;
+  /** Per-face carrier scaling policy vs the plate's real glass: 'gap'
+   * (default) scales the fabricated carrier family with the paraxial gap t/n,
+   * preserving the designed reveal tilt on any stock (no-op at the 500 µm
+   * baseline); 'fixed' keeps the literal pitch — on thick stock the reveals
+   * compress into sub-degree refraction shimmer. Barrier switch periods scale
+   * with the gap regardless. */
+  carrier_scale_mode?: 'gap' | 'fixed';
   label: string;
 };
 
@@ -292,6 +302,9 @@ export type PlateManifest = {
     front_svg: string;
     back_svg: string;
     thumbnail: string;
+    /** Per-litho-metal chips (gold | chrome | chrome-ar). Absent on manifests
+     * written before per-metal thumbnails existed — fall back to `thumbnail`. */
+    thumbnails?: Record<string, string>;
   };
 };
 
@@ -310,6 +323,15 @@ export type BoxSpec = {
   /** Box-level fabricated grating pitch (μm) — stamped onto every face by
    * stampFaces (mirrors backend normalize_face_dims). Default 22 µm. */
   carrier_pitch_um: number;
+  /** Bonded (two-ply) construction: each face is TWO single-side plates glued
+   * face-to-face. glass.thickness_um is then the PLY (also the optical
+   * parallax gap); the wall is 2x; cut dims / foil margins follow the
+   * nested-shell math. Default false (classic single double-side plate). */
+  bonded?: boolean;
+  /** Litho metal for the PREVIEW's conductor response (masks are identical):
+   * 'gold' | 'chrome' (bright, platinum-line read) | 'chrome-ar' (AR-coated
+   * mask grade, ink-black linework). */
+  metal?: 'gold' | 'chrome' | 'chrome-ar';
   label: string;
 };
 
@@ -422,6 +444,7 @@ export function defaultPlateSpec(
     weld_margin_um: 1000,
     back_margin_um: null,
     carrier_pitch_um: 22.0,
+    carrier_scale_mode: 'gap',
     label: '',
   };
 }
@@ -446,6 +469,8 @@ export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxS
     hinge: defaultHingeSpec(),
     faces,
     carrier_pitch_um: 22.0,
+    bonded: false,
+    metal: 'gold',
     label: '',
   };
   // Stamp glass / cut dims / keep-out into the faces so the spec is

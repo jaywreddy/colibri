@@ -25,6 +25,7 @@ export const FACE_LABELS: Record<FaceId, string> = {
  */
 export default function FacesPanel() {
   const boxManifest = useStore((s) => s.boxManifest);
+  const metal = useStore((s) => s.boxSpec.metal ?? 'gold');
   const selectedFaceId = useStore((s) => s.selectedFaceId);
   const setSelectedFace = useStore((s) => s.setSelectedFace);
 
@@ -37,6 +38,7 @@ export default function FacesPanel() {
         >
           {FACE_IDS.map((fid) => {
             const fm = boxManifest?.faces[fid];
+            const thumbUrl = fm?.files.thumbnails?.[metal] ?? fm?.files.thumbnail;
             const active = fid === selectedFaceId;
             return (
               <button
@@ -64,7 +66,13 @@ export default function FacesPanel() {
                     aspectRatio: '1 / 1',
                     background: '#0b0d10',
                     borderRadius: 3,
-                    backgroundImage: fm?.files.thumbnail ? `url(${fm.files.thumbnail})` : 'none',
+                    // The backend renders one chip PER LITHO METAL (the masks
+                    // are metal-agnostic graylevel codes, so the palette is the
+                    // chip's only colour choice). Picking the matching chip
+                    // keeps the rail consistent with the 3D preview instead of
+                    // showing gold beside a platinum-lined render; older
+                    // manifests without the map fall back to the gold chip.
+                    backgroundImage: thumbUrl ? `url(${thumbUrl})` : 'none',
                     backgroundSize: 'cover',
                     backgroundPosition: 'center',
                   }}
