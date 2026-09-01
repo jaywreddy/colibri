@@ -27,6 +27,27 @@ The diffracted wavelength at a given view is ``lambda_m = d*(V.g + L.g)/m``, so:
   control, because the etch depth is wavelength-dependent. That needs an etch
   step this build does not have.)
 
+Lighting is the third variable, and it is not optional
+------------------------------------------------------
+The specular order and the diffracted orders leave in DIFFERENT directions, so
+which of them reaches an eye is a question about the lighting geometry. At 50%
+duty the specular carries ``eta_0 = 0.25`` against ``eta_1 = 0.101``, so a
+gratinged band is mostly still a gold mirror with a spectrum riding on top —
+which is exactly how ``plate.frag`` composites it (``color += sheen``). Render
+only the diffracted part and the region collapses to black wherever the first
+order leaves the visible band; render only the specular and the colour vanishes.
+
+Source WIDTH then decides saturation. Angular dispersion is
+``dlambda/dtheta = d*cos(theta)``, so a coarse grating packs the whole visible
+band into a few degrees and any wide source smears it to white:
+
+    d = 2.0 um -> the visible spans 11.2 deg, a 6 deg room source covers 54%
+    d = 4.4 um -> it spans  5.1 deg, and a 6 deg room source covers ALL of it
+
+At the 4-5 um periods the litho floor allows, ordinary room light washes the
+colour out and you need a lamp or sunlight to see it. Finer periods hold their
+colour under softer light — one more reason the resolution ladder matters.
+
 The two costs
 -------------
 1. A gratinged band reflects roughly ``duty`` of what a solid band does, so to
@@ -217,6 +238,27 @@ def screen_with_colour(
     report["all_zones_printable"] = all(z["clears_litho_floor"] for z in report["zones"])
     report["coverage"] = round(float(mask.mean()), 4)
     return mask, report
+
+
+def source_width_for_saturation_deg(
+    period_um: float,
+    incidence_deg: float = 26.0,
+    fraction: float = 0.5,
+) -> float:
+    """Widest source, in degrees, that still keeps a spectrum saturated.
+
+    Dispersion is ``dlambda/dtheta = d*cos(theta)``, so the visible band (about
+    350 nm) occupies ``350 / (d*cos(theta))`` radians of source angle. A source
+    covering more than ``fraction`` of that is mixing wavelengths toward white.
+
+    A 4.4 um grating gives about 2.5 deg, which is a lamp — not a window, and
+    not an overcast sky.
+    """
+    if period_um <= 0.0:
+        raise ValueError(f"period_um must be > 0 (got {period_um})")
+    nm_per_deg = period_um * math.cos(math.radians(incidence_deg)) * 1000.0 * math.radians(1.0)
+    span_deg = 350.0 / nm_per_deg
+    return float(fraction * span_deg)
 
 
 def min_base_period_um(

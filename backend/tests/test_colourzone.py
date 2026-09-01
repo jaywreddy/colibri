@@ -9,6 +9,7 @@ from app.patterns.bitmap.colourzone import (
     ColourZone,
     hue_ladder,
     min_base_period_um,
+    source_width_for_saturation_deg,
     min_tone_for_colour,
     screen_with_colour,
     tone_cap,
@@ -127,6 +128,17 @@ def test_the_report_measures_how_much_of_a_zone_is_too_dark_for_colour():
     )
     frac = rep["zones"][0]["frac_band_too_narrow"]
     assert 0.0 < frac < 1.0, "a full tonal ramp must be partly too dark for colour"
+
+
+def test_a_coarse_grating_needs_a_narrow_source_to_stay_saturated():
+    """Dispersion is d*cos(theta), so a COARSE grating packs the visible band
+    into few degrees and any wide source mixes it toward white. At the 4-5 um
+    the litho floor allows, that means a lamp rather than a window."""
+    assert source_width_for_saturation_deg(4.4) == pytest.approx(2.5, abs=0.3)
+    # finer holds its colour under softer light
+    assert source_width_for_saturation_deg(2.0) > source_width_for_saturation_deg(4.4)
+    with pytest.raises(ValueError):
+        source_width_for_saturation_deg(0.0)
 
 
 # --- the mask it builds -----------------------------------------------------
