@@ -189,3 +189,82 @@ def test_defaults_stay_inside_budget():
     n_lines = int(np.ceil(d["extent_um"] / d["line_period_um"]))
     assert n_grid <= halftone.MAX_GRID
     assert n_lines * n_grid < 400_000
+
+
+# --- tone depth -------------------------------------------------------------
+
+
+class TestToneSteps:
+    """Grey levels are capped by the LITHO FLOOR, not by the screen.
+
+    The finest gold band a line can hold is period/steps, and that has to clear
+    the 2 um DRC minimum. So tone depth is a property of how coarse a screen you
+    are willing to use — and 8 (the old fixed value) was a graphics setting that
+    posterized any photograph, wasting depth the linewidth could have carried.
+    """
+
+    def test_steps_are_clamped_to_the_two_micron_band(self):
+        from app.patterns.bitmap.halftone import MIN_BAND_UM, _resolve_steps
+
+        for period in (12.0, 20.0, 44.0, 60.0):
+            got = _resolve_steps(period, 999)
+            assert period / got >= MIN_BAND_UM - 1e-9, f"{period}um gave a sub-floor band"
+            # ...and it is the LARGEST such count, not a conservative one.
+            assert period / (got + 1) < MIN_BAND_UM
+
+    def test_a_coarser_screen_buys_more_tones(self):
+        from app.patterns.bitmap.halftone import _resolve_steps
+
+        assert _resolve_steps(20.0, 999) == 10
+        assert _resolve_steps(44.0, 999) == 22
+        assert _resolve_steps(60.0, 999) == 30
+
+    def test_a_modest_request_is_honoured_verbatim(self):
+        from app.patterns.bitmap.halftone import _resolve_steps
+
+        assert _resolve_steps(44.0, 12) == 12
+        assert _resolve_steps(44.0, 22) == 22
+
+    def test_the_default_still_matches_the_old_fixed_constant(self):
+        """Back-compat: every existing variant hashed at 8 steps."""
+        from app.patterns.bitmap.halftone import (
+            CELLS_PER_LINE,
+            DEFAULT_TONE_STEPS,
+            _resolve_steps,
+        )
+
+        assert DEFAULT_TONE_STEPS == CELLS_PER_LINE == 8
+        assert _resolve_steps(20.0, None) == 8
+        assert _resolve_steps(20.0, 8) == 8
+
+    def test_grid_tracks_the_realized_step_count(self):
+        from app.patterns.bitmap.halftone import _resolve_grid, _resolve_steps
+
+        for period, want in ((20.0, 8), (44.0, 22), (44.0, 999)):
+            steps = _resolve_steps(period, want)
+            n, cell = _resolve_grid(period, 2000.0, want)
+            # one working cell per tone step per line, so the band quantizes exactly
+            assert cell == pytest.approx(period / steps, rel=0.02)
+
+    def test_generate_reports_the_depth_it_actually_used(self):
+        from app.patterns.bitmap.halftone import BitmapHalftone, available_bitmaps
+
+        if not available_bitmaps():
+            pytest.skip("no bitmap assets installed")
+        img = available_bitmaps()[0]
+        g = BitmapHalftone.generate(image=img, line_period_um=44.0,
+                                    extent_um=2000.0, tone_steps=22)
+        assert g.extra["tone_steps"] == 22
+        assert g.extra["finest_band_um"] == pytest.approx(2.0, abs=0.01)
+        assert g.min_feature_um >= 1.99
+
+    def test_an_over_ambitious_request_does_not_break_the_floor(self):
+        """Asking for 40 tones on a 20 um screen must not emit 0.5 um bands."""
+        from app.patterns.bitmap.halftone import BitmapHalftone, available_bitmaps
+
+        if not available_bitmaps():
+            pytest.skip("no bitmap assets installed")
+        g = BitmapHalftone.generate(image=available_bitmaps()[0], line_period_um=20.0,
+                                    extent_um=2000.0, tone_steps=40)
+        assert g.extra["tone_steps"] == 10
+        assert g.min_feature_um >= 1.99

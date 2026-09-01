@@ -46,11 +46,28 @@ ASSETS_DIR = Path(__file__).resolve().parents[3] / "assets" / "bitmaps"
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 
-# Working-grid sizing: 8 cells per halftone line resolves the triangular
-# duty profile (band heights quantize to 1/8 of the period), capped so the
-# resampled darkness grid never exceeds ~2M float32 cells of numpy work.
-CELLS_PER_LINE = 8
+# Working-grid sizing: TONE STEPS per halftone line. The band height quantizes
+# to 1/steps of the period, so this IS the number of grey levels the screen can
+# render, and 8 is a graphics setting, not a photographic one — a face banded
+# into 8 tones posterizes visibly.
+#
+# What actually caps it is the litho floor, not the screen: the finest gold band
+# a line can hold is period/steps, and that must clear the 2 um DRC minimum. So
+#
+#     steps <= line_period_um / 2.0
+#
+# which makes tone depth a property of how coarse a screen you are willing to
+# use. A 20 um screen tops out at 10 levels; 44 um carries 22 at a 2.0 um band
+# and still subtends only 0.50 arcmin at 300 mm, so the lines stay invisible
+# while the tones nearly triple. ``tone_steps`` is clamped to that bound in
+# _resolve_steps rather than trusted from the caller.
+DEFAULT_TONE_STEPS = 8
+MIN_BAND_UM = 2.0          # DRC min gold width; also the min gap by symmetry
+MAX_TONE_STEPS = 48
 MAX_GRID = 1400
+
+# Back-compat alias: the old module constant is still the default step count.
+CELLS_PER_LINE = DEFAULT_TONE_STEPS
 
 
 def available_bitmaps() -> list[str]:
@@ -109,15 +126,30 @@ def _min_gold_band_duty(mask: np.ndarray, cell_um: float, line_period_um: float)
 _BITMAP_CHOICES = available_bitmaps()
 
 
-def _resolve_grid(line_period_um: float, extent_um: float) -> tuple[int, float]:
+def _resolve_steps(line_period_um: float, tone_steps: int | None = None) -> int:
+    """Grey levels this screen can actually hold, clamped to the litho floor.
+
+    A request for more steps than ``line_period_um / MIN_BAND_UM`` would ask for
+    gold bands finer than the process can write, so it is clamped rather than
+    honoured — the mask must not promise tones the plate cannot carry.
+    """
+    want = DEFAULT_TONE_STEPS if tone_steps is None else int(tone_steps)
+    ceiling = max(2, int(line_period_um / MIN_BAND_UM))
+    return max(2, min(MAX_TONE_STEPS, min(want, ceiling)))
+
+
+def _resolve_grid(
+    line_period_um: float, extent_um: float, tone_steps: int | None = None
+) -> tuple[int, float]:
     """``(n_grid, cell_um)`` for the halftone working grid.
 
-    CELLS_PER_LINE cells per halftone line (duty resolves in 1/8 steps), capped at
-    MAX_GRID for coarse-but-huge requests. Module-level because both ``generate``
-    and ``pixel_pitch_um`` need it and the plate compositor reads the pitch WITHOUT
-    generating — one expression, so they cannot disagree.
+    One cell per tone step per line, capped at MAX_GRID for coarse-but-huge
+    requests. Module-level because both ``generate`` and ``pixel_pitch_um`` need
+    it and the plate compositor reads the pitch WITHOUT generating — one
+    expression, so they cannot disagree.
     """
-    n_grid = int(round(extent_um / (line_period_um / CELLS_PER_LINE)))
+    steps = _resolve_steps(line_period_um, tone_steps)
+    n_grid = int(round(extent_um / (line_period_um / steps)))
     n_grid = max(64, min(MAX_GRID, n_grid))
     return n_grid, extent_um / n_grid
 
@@ -162,6 +194,10 @@ class BitmapHalftone(Pattern):
             choices=["none", "carrier", "complement", "phase_reveal"],
         ),
         ParamSpec("invert", "Invert tones", "bool", False),
+        # Grey levels. Clamped to line_period/2 um so the finest gold band never
+        # drops under the litho floor — ask for 24 on a 20 um screen and you get
+        # 10, because that is all a 2 um band allows.
+        ParamSpec("tone_steps", "Tone steps", "int", 8, 2, 48, 1),
     ]
 
     # --- metadata (no geometry) — see Pattern.metadata ----------------------
@@ -179,8 +215,9 @@ class BitmapHalftone(Pattern):
         extent_um: float = 2000.0,
         back_mode: str = "carrier",
         invert: bool = False,
+        tone_steps: int = 8,
     ) -> float:
-        return _resolve_grid(line_period_um, extent_um)[1]
+        return _resolve_grid(line_period_um, extent_um, tone_steps)[1]
 
     @classmethod
     def generate(
@@ -191,10 +228,11 @@ class BitmapHalftone(Pattern):
         extent_um: float = 2000.0,
         back_mode: str = "carrier",
         invert: bool = False,
+        tone_steps: int = 8,
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        n_grid, cell_um = _resolve_grid(line_period_um, extent_um)
+        n_grid, cell_um = _resolve_grid(line_period_um, extent_um, tone_steps)
         n_lines = int(math.ceil(extent_um / line_period_um))
         n_halftone_layers = 2 if back_mode in ("complement", "phase_reveal") else 1
 
@@ -276,6 +314,10 @@ class BitmapHalftone(Pattern):
             "cell_um": float(cell_um),
             "n_lines": int(n_lines),
             "min_duty_realized": float(min_duty),
+            "tone_steps": int(_resolve_steps(line_period_um, tone_steps)),
+            "finest_band_um": round(
+                line_period_um / _resolve_steps(line_period_um, tone_steps), 3
+            ),
         }
         if back_mode == "complement":
             # Barrier switch geometry (straddle registration): the positive /

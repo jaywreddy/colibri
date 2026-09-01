@@ -142,7 +142,7 @@ heavy_compute_gate = threading.BoundedSemaphore(1)
 # v3: capybara water band carved to `below & ~capy` (the submerged body keeps
 #     its carrier; ripples never print on the animal) — polygons, measured
 #     min_feature_um and the min_*_gold_um extras all move.
-PATTERN_GEN_VERSION = 5
+PATTERN_GEN_VERSION = 6
 
 
 def _params_hash(params: dict[str, Any]) -> str:
