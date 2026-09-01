@@ -16,7 +16,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, Sequence
 
 import numpy as np
 
@@ -69,6 +69,16 @@ class CellArt:
 
     front: np.ndarray = field(default_factory=lambda: np.empty((0, 4)))
     back: np.ndarray = field(default_factory=lambda: np.empty((0, 4)))
+    polys: list[np.ndarray] = field(default_factory=list)
+    """Rotated METAL geometry: a list of ``(k, 2)`` vertex arrays.
+
+    Rotational moire needs real rotated polygons — staircasing a 1 degree
+    rotation onto the writer grid would add a periodic error at exactly the
+    scale the cell exists to measure — and clipping them to the cell makes the
+    vertex count variable, so this cannot be a single array."""
+    free_polys: list[np.ndarray] = field(default_factory=list)
+    """Variable-vertex polygons, each ``(k, 2)``. Only the boolean clear-field
+    inverter produces these: a box minus a grating is not a rectangle."""
     arrays: list[dict[str, Any]] = field(default_factory=list)
     """Periodic sub-gratings, deferred as array references rather than
     polygons. Each entry is one band: ``x0/x1/y0/y1`` of the parent band,
@@ -97,6 +107,13 @@ class Cell:
     two_layer: bool = False
     axis: str = ""
     """Which DoE axis this cell is a rung of, empty for a one-off."""
+    block: str = ""
+    """Which physics block: metrology, diffraction, moire, parallax, halftone."""
+    takes_polarity: bool = False
+    """True if ``build`` accepts ``polarity=`` and knows its own clear-field
+    inverse analytically. False means the plate inverts it with a per-cell
+    boolean instead — exact and trivial while the cell is small, which every
+    cell that sets this False is."""
     level: str = ""
     """This cell's value on that axis."""
 
@@ -146,7 +163,8 @@ def _grating_rects(
 
 
 def _text_rects(
-    text: str, cx: float, cy: float, height_um: float, *, cell_um: float | None = None
+    text: str, cx: float, cy: float, height_um: float, *,
+    cell_um: float | None = None, anchor: str = "center",
 ) -> np.ndarray:
     """Gold cell-ID text, rasterized coarsely and run-merged into rectangles.
 
@@ -178,7 +196,7 @@ def _text_rects(
     d = np.diff(padded, axis=1)
     rows, starts = np.nonzero(d == 1)
     _, ends = np.nonzero(d == -1)
-    x0 = cx - w * cell / 2.0
+    x0 = (cx if anchor == "left" else cx - w * cell / 2.0)
     y1 = cy + h * cell / 2.0
     out = np.empty((rows.size, 4), dtype=np.float64)
     out[:, 0] = x0 + starts * cell
@@ -186,6 +204,92 @@ def _text_rects(
     out[:, 2] = y1 - (rows + 1) * cell
     out[:, 3] = y1 - rows * cell
     return out
+
+
+# --- polarity ---------------------------------------------------------------
+#
+# The plate is written as a DARKFIELD mask with positive resist: the write
+# defines where the chrome comes OFF, so the file must contain the CLEAR
+# regions, not the metal ones. Every builder therefore has to be able to hand
+# back the complement of its own features within its own cell.
+#
+# The complement is always computed ANALYTICALLY, never as a boolean. A
+# whole-plate `box - features` over twelve million polygons is precisely the
+# GEOS-style operation CLAUDE.md forbids on this host — an eight-minute run that
+# had to be killed proved the point. Each structure here knows its own inverse
+# in closed form: a lamellar grating's complement is the grating at duty 1-c
+# shifted by c*d, a centred band's is the two strips either side of it, and a
+# pinhole field's is the pinholes.
+
+CLEAR = "clear"
+METAL = "metal"
+
+
+def invert_grating(
+    cx: float, cy: float, w: float, h: float, period_um: float, duty: float,
+    *, phase_um: float = 0.0, vertical: bool = True,
+) -> np.ndarray:
+    """The clear complement of :func:`_grating_rects` with the same arguments.
+
+    Metal lines sit at ``[k*d, k*d + c*d]``, so the gaps are the grating at duty
+    ``1 - c`` shifted by ``c*d``. Both are clipped to the same box, so their
+    union is the box exactly.
+    """
+    return _grating_rects(
+        cx, cy, w, h, period_um, 1.0 - duty,
+        phase_um=phase_um + period_um * duty, vertical=vertical,
+    )
+
+
+def outside_boxes(
+    cx: float, cy: float, w: float, h: float,
+    boxes: Sequence[tuple[float, float, float, float]],
+) -> np.ndarray:
+    """Cell minus a few VERTICALLY DISJOINT boxes, as rectangles.
+
+    For cells whose features do not fill their cell — the vernier's two combs,
+    say. In metal polarity the space around them is bare glass and needs no
+    geometry; in clear polarity it is chrome unless something says otherwise, so
+    it has to be written.
+
+    ``boxes`` are ``(x0, x1, y0, y1)`` and must not overlap in y.
+    """
+    x0c, x1c = cx - w / 2.0, cx + w / 2.0
+    y0c, y1c = cy - h / 2.0, cy + h / 2.0
+    bs = sorted(boxes, key=lambda b: b[2])
+    parts: list[np.ndarray] = []
+    y = y0c
+    for bx0, bx1, by0, by1 in bs:
+        if by0 > y + 1e-9:
+            parts.append(_rect(x0c, y, x1c, by0))
+        if bx0 > x0c + 1e-9:
+            parts.append(_rect(x0c, max(by0, y0c), bx0, min(by1, y1c)))
+        if bx1 < x1c - 1e-9:
+            parts.append(_rect(bx1, max(by0, y0c), x1c, min(by1, y1c)))
+        y = max(y, by1)
+    if y < y1c - 1e-9:
+        parts.append(_rect(x0c, y, x1c, y1c))
+    return _cat(*parts)
+
+
+def column_complement(
+    rects: np.ndarray, y_lo: float, y_hi: float
+) -> np.ndarray:
+    """For rects that TILE x within a row, the strips above and below each.
+
+    Used by the lane-based cells (the barrier's back die, the scanimation's
+    frames): every lane owns an x interval and a bar inside it, so the clear
+    part of that lane is whatever the bar does not cover.
+    """
+    r = np.asarray(rects, dtype=np.float64)
+    if not len(r):
+        return np.empty((0, 4), dtype=np.float64)
+    out = np.empty((2 * len(r), 4), dtype=np.float64)
+    out[:, 0] = np.concatenate((r[:, 0], r[:, 0]))
+    out[:, 1] = np.concatenate((r[:, 1], r[:, 1]))
+    out[:, 2] = np.concatenate((np.full(len(r), y_lo), r[:, 3]))
+    out[:, 3] = np.concatenate((r[:, 2], np.full(len(r), y_hi)))
+    return out[out[:, 3] - out[:, 2] > 1e-9]
 
 
 def _frame_rects(cx: float, cy: float, w: float, h: float, t: float = 60.0) -> np.ndarray:

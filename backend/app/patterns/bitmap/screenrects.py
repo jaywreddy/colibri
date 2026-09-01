@@ -91,8 +91,26 @@ def screen_bands(
     period_id: np.ndarray | None = None,
     cols_per_line: int | None = None,
     origin: tuple[float, float] = (0.0, 0.0),
+    emit: str = "metal",
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Screen a darkness map into centred band rectangles.
+
+    ``emit`` selects POLARITY, and it changes what the rectangles MEAN:
+
+      metal  the gold/chrome bands themselves — what the optics are made of.
+      clear  the complement: the GAPS above and below each band, which is what
+             a darkfield mask with positive resist has to contain, because the
+             write defines where the chrome comes OFF.
+
+    The complement is computed analytically rather than by a boolean. It is
+    exact — within a line the band is centred, so the gap is simply the two
+    strips either side of it, and the lines tile the cell — and it costs about
+    two rectangles per band instead of a whole-plate GEOS operation over twelve
+    million polygons, which this host will not survive.
+
+    In ``clear`` mode a band that carries a colour period is ALSO returned (with
+    its pid) so the caller can lay the COMPLEMENTARY sub-grating inside it;
+    bands with no colour are pure chrome and are not emitted at all.
 
     ``dark`` is darkness in [0, 1] at whatever resolution the asset has (larger
     means more gold, matching ``imageprep.prep_darkness``). ``period_id`` is an
@@ -135,12 +153,17 @@ def screen_bands(
         pid_grid = _sample_rows(period_id.astype(np.float32), n_lines, n_cols)
         pid_grid = pid_grid.astype(np.int32)
 
+    if emit not in ("metal", "clear"):
+        raise ValueError(f"emit must be 'metal' or 'clear' (got {emit!r})")
+
     n_pid = int(pid_grid.max()) + 1
     rows, starts, ends = _runs(level * n_pid + pid_grid)
 
     lvl = level[rows, starts]
-    keep = lvl > 0
-    rows, starts, ends, lvl = rows[keep], starts[keep], ends[keep], lvl[keep]
+    if emit == "metal":
+        # A zero-level run has no band, so in metal polarity it emits nothing.
+        keep = lvl > 0
+        rows, starts, ends, lvl = rows[keep], starts[keep], ends[keep], lvl[keep]
     pid = pid_grid[rows, starts]
 
     ox, oy = origin
@@ -150,17 +173,40 @@ def screen_bands(
     # Line j occupies [j*P, (j+1)*P) measured DOWN from the top edge, so the
     # emitted y matches an image whose first row is the top one.
     cy = (half - (rows + 0.5) * line_period_um) + oy
+    x0 = starts * col_um - half + ox
+    x1 = ends * col_um - half + ox
 
-    rects = np.empty((rows.size, 4), dtype=np.float64)
-    rects[:, 0] = starts * col_um - half + ox
-    rects[:, 1] = ends * col_um - half + ox
-    rects[:, 2] = cy - band_h / 2.0
-    rects[:, 3] = cy + band_h / 2.0
+    if emit == "metal":
+        rects = np.empty((rows.size, 4), dtype=np.float64)
+        rects[:, 0], rects[:, 1] = x0, x1
+        rects[:, 2] = cy - band_h / 2.0
+        rects[:, 3] = cy + band_h / 2.0
+    else:
+        half_p = line_period_um / 2.0
+        gaps = np.empty((2 * rows.size, 4), dtype=np.float64)
+        gaps[:, 0] = np.concatenate((x0, x0))
+        gaps[:, 1] = np.concatenate((x1, x1))
+        # above the band, then below it
+        gaps[:, 2] = np.concatenate((cy + band_h / 2.0, cy - half_p))
+        gaps[:, 3] = np.concatenate((cy + half_p, cy - band_h / 2.0))
+        gaps = gaps[gaps[:, 3] - gaps[:, 2] > 1e-9]
+        # A coloured band is returned too, so the caller can put the
+        # COMPLEMENTARY sub-grating inside it; an uncoloured one is solid chrome
+        # and contributes nothing to a clear-field file.
+        col = pid > 0
+        keep_band = np.empty((int(col.sum()), 4), dtype=np.float64)
+        keep_band[:, 0], keep_band[:, 1] = x0[col], x1[col]
+        keep_band[:, 2] = (cy - band_h / 2.0)[col]
+        keep_band[:, 3] = (cy + band_h / 2.0)[col]
+        rects = np.concatenate((gaps, keep_band), axis=0)
+        pid = np.concatenate((np.zeros(len(gaps), dtype=pid.dtype), pid[col]))
 
     report = {
+        "emit": emit,
         "n_lines": int(n_lines),
         "n_cols": int(n_cols),
         "n_band_rects": int(rects.shape[0]),
+        "n_runs": int(rows.size),
         "tone_steps": steps,
         "line_period_um": float(line_period_um),
         "cell_um": float(line_period_um / steps),
@@ -179,7 +225,7 @@ def stripe_plan(
     period_um: np.ndarray | float,
     duty: np.ndarray | float,
     *,
-    phase_um: float = 0.0,
+    phase_um: np.ndarray | float = 0.0,
 ) -> dict[str, np.ndarray]:
     """Plan the vertical sub-grating of each band rectangle, without expanding it.
 
@@ -197,6 +243,10 @@ def stripe_plan(
         raise ValueError(f"rects must be (N, 4), got {rects.shape}")
     d = np.broadcast_to(np.asarray(period_um, dtype=np.float64), (rects.shape[0],))
     c = np.broadcast_to(np.asarray(duty, dtype=np.float64), (rects.shape[0],))
+    # Phase may vary per rectangle. It has to: the CLEAR complement of a stripe
+    # at duty c sits at phase c*d, and d differs from rung to rung of the hue
+    # ladder, so a scalar phase cannot describe the inverse of a colour cell.
+    ph = np.broadcast_to(np.asarray(phase_um, dtype=np.float64), (rects.shape[0],))
     if np.any(d <= 0.0):
         raise ValueError("period_um must be > 0 everywhere")
     if np.any((c <= 0.0) | (c >= 1.0)):
@@ -216,8 +266,8 @@ def stripe_plan(
     # change to where a tonal run ends. Centre-in rather than inward-snapping
     # keeps it UNBIASED: a band is as likely to gain a stripe as to lose one, so
     # mean coverage, and therefore tone, is preserved across the image.
-    k0 = np.ceil((x0 - phase_um - line / 2.0) / d).astype(np.int64)
-    k1 = np.floor((x1 - phase_um - line / 2.0) / d).astype(np.int64)
+    k0 = np.ceil((x0 - ph - line / 2.0) / d).astype(np.int64)
+    k1 = np.floor((x1 - ph - line / 2.0) / d).astype(np.int64)
     n = np.maximum(k1 - k0 + 1, 0)
     return {
         "k0": k0,
@@ -226,7 +276,7 @@ def stripe_plan(
         "period_um": d,
         "duty": c,
         "line_um": line,
-        "phase_um": np.float64(phase_um),
+        "phase_um": ph,
         "total": int(n.sum()),
     }
 
@@ -236,7 +286,7 @@ def stripe_rects(
     period_um: np.ndarray | float,
     duty: np.ndarray | float,
     *,
-    phase_um: float = 0.0,
+    phase_um: np.ndarray | float = 0.0,
     max_rects: int = MAX_RECTS,
 ) -> np.ndarray:
     """Materialize the sub-grating as rectangles, clipped to each band.
@@ -264,7 +314,7 @@ def stripe_rects(
     d = plan["period_um"][src]
     k = plan["k0"][src] + off
 
-    sx0 = phase_um + k * d
+    sx0 = plan["phase_um"][src] + k * d
     out = np.empty((total, 4), dtype=np.float64)
     out[:, 0] = sx0
     out[:, 1] = sx0 + plan["line_um"][src]

@@ -23,6 +23,8 @@ from .patterns.bitmap import imageprep as ip
 from .patterns.bitmap import screenrects as sr
 from .patterns.bitmap.colourzone import MIN_FEATURE_UM
 from .witness_geom import (
+    CLEAR,
+    METAL,
     PORTRAIT_CROP,
     REF_SCREEN_UM,
     REF_TONE_STEPS,
@@ -31,6 +33,9 @@ from .witness_geom import (
     _cat,
     _grating_rects,
     _rect,
+    column_complement,
+    invert_grating,
+    outside_boxes,
 )
 
 _SRC_CACHE: dict[int, tuple[np.ndarray, np.ndarray]] = {}
@@ -93,6 +98,7 @@ def build_halftone(
     line_period_um: float = REF_SCREEN_UM,
     tone_steps: int = REF_TONE_STEPS,
     defer_arrays: bool = True,
+    polarity: str = METAL,
 ) -> CellArt:
     """One halftone portrait cell, plain or colour-shaded.
 
@@ -117,27 +123,36 @@ def build_halftone(
         tone_steps=steps,
         period_id=None if plan.mode == "plain" else ids,
         origin=(cx, cy),
+        emit=polarity,
     )
     plain, coloured, per = sr.split_by_colour(bands, pid, periods)
+
+    # In CLEAR polarity the sub-grating inverts too: the clear stripes are the
+    # gaps of the metal ones, which is duty 1-c at phase c*d. The phase is
+    # per-rectangle because d differs from rung to rung.
+    sub_duty = plan.duty if polarity == METAL else 1.0 - plan.duty
+    sub_phase = 0.0 if polarity == METAL else per * plan.duty
 
     art = CellArt(front=plain)
     n_stripes = 0
     if len(coloured):
-        sp = sr.stripe_plan(coloured, per, plan.duty)
+        sp = sr.stripe_plan(coloured, per, sub_duty, phase_um=sub_phase)
         n_stripes = sp["total"]
         if defer_arrays:
             art.arrays.append(
                 {
                     "rects": coloured,
                     "period_um": per,
-                    "line_um": per * plan.duty,
-                    "phase_um": 0.0,
+                    "line_um": per * sub_duty,
+                    "phase_um": sub_phase,
                 }
             )
         else:
-            art.front = _cat(art.front, sr.stripe_rects(coloured, per, plan.duty))
+            art.front = _cat(art.front, sr.stripe_rects(
+                coloured, per, sub_duty, phase_um=sub_phase))
 
     art.stats = {
+        "polarity": polarity,
         "mode": plan.mode,
         "extent_um": round(min(w, h), 1),
         "asset_px": px,
@@ -166,15 +181,20 @@ def build_halftone(
 def build_grating_patch(
     cx: float, cy: float, w: float, h: float, *,
     period_um: float, duty: float = 0.5, angle_deg: float = 0.0,
+    polarity: str = METAL,
 ) -> CellArt:
-    """A bare lamellar patch — B1, D5, and every rung of C2 and C3."""
+    """A bare lamellar patch — the rungs of every period and duty ladder."""
     vertical = abs(angle_deg) < 1e-9
+    emit_duty = duty if polarity == METAL else 1.0 - duty
+    phase = 0.0 if polarity == METAL else period_um * duty
     if vertical or abs(angle_deg - 90.0) < 1e-9:
-        r = _grating_rects(cx, cy, w, h, period_um, duty, vertical=vertical)
+        r = _grating_rects(cx, cy, w, h, period_um, emit_duty,
+                           phase_um=phase, vertical=vertical)
     else:
         # Off-axis patches are cut on the projected axis and clipped, so the
         # writer never has to handle a rotated polygon for a test structure.
-        r = _grating_rects(cx, cy, w * 1.6, h, period_um, duty, vertical=True)
+        r = _grating_rects(cx, cy, w * 1.6, h, period_um, emit_duty,
+                           phase_um=phase, vertical=True)
         r = r[(r[:, 1] > cx - w / 2) & (r[:, 0] < cx + w / 2)]
         r[:, 0] = np.clip(r[:, 0], cx - w / 2, cx + w / 2)
         r[:, 1] = np.clip(r[:, 1], cx - w / 2, cx + w / 2)
@@ -182,6 +202,7 @@ def build_grating_patch(
     return CellArt(
         front=r,
         stats={
+            "polarity": polarity,
             "period_um": period_um,
             "duty": duty,
             "line_um": round(line, 3),
