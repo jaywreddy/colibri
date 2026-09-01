@@ -1,0 +1,191 @@
+"""Witness-plate primitives: constants, the cell contract, and rect utilities.
+
+Split from ``export_witness`` (which lays the plate out and writes it) so the
+geometry builders in ``witness_cells`` can import these without a cycle. The
+import order is witness_geom -> witness_cells -> export_witness.
+
+Geometry is built in RECT SPACE throughout - ``(N, 4)`` ``[x0, x1, y0, y1]``
+arrays of micrometres, plate-centred, +y up - never as a full-plate raster. A
+127 mm plate at the 2 um halftone cell would be 3.6 x 10^9 lattice cells; see
+``patterns.bitmap.screenrects`` for why that number never gets built.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Sequence
+
+import numpy as np
+
+from .patterns.bitmap import colourplan as cp
+from .patterns.bitmap import imageprep as ip
+from .patterns.bitmap import screenrects as sr
+from .patterns.bitmap.colourzone import MIN_FEATURE_UM
+
+# --- plate constants --------------------------------------------------------
+
+PLATE_SIDE_UM = 127_000.0            # 5 inch square
+EDGE_MARGIN_UM = 4_000.0             # handling / chuck exclusion
+USABLE_UM = PLATE_SIDE_UM - 2.0 * EDGE_MARGIN_UM
+GUTTER_UM = 1_500.0
+LABEL_H_UM = 900.0                   # gold cell-ID text under each cell
+
+LAYER_FRONT = (10, 0)
+LAYER_BACK = (20, 0)
+LAYER_OUTLINE = (1, 0)
+LAYER_LABEL = (3, 0)                 # annotation text, not gold
+
+# The reference point every ladder brackets. These are the numbers the box
+# currently ships or the analysis settled on, so a sweep reads as "the
+# reference, plus or minus" rather than as an unanchored grid.
+REF_SCREEN_UM = 44.0
+REF_TONE_STEPS = 22
+REF_BASE_PERIOD_UM = 5.0
+REF_DUTY = 0.5
+REF_SPREAD = 1.45
+REF_COARSEN_PX = 7
+
+SOURCE_PHOTO = "PXL_20250920_201250581.jpg"
+PORTRAIT_CROP = (0.040, 0.165, 0.825)
+"""Crop of the source photo, as source-WIDTH fractions.
+
+Chosen to hold all three colour subjects at once: the flower carpet fills the
+left half, the sage sweater the right, and the teal spectacle frames sit high
+enough in the frame to stay above the sweater's bbox. A tighter portrait crop
+loses the carpet, which is the only region with enough distinct hues to show
+what a period ladder actually does.
+"""
+
+
+# --- cells ------------------------------------------------------------------
+
+
+@dataclass
+class CellArt:
+    """What one cell contributes, in plate-centred micrometres."""
+
+    front: np.ndarray = field(default_factory=lambda: np.empty((0, 4)))
+    back: np.ndarray = field(default_factory=lambda: np.empty((0, 4)))
+    arrays: list[dict[str, Any]] = field(default_factory=list)
+    """Periodic sub-gratings, deferred as array references rather than
+    polygons. Each entry is one band: ``x0/x1/y0/y1`` of the parent band,
+    ``period_um``, ``line_um``. See :func:`_emit_arrays`."""
+    stats: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Cell:
+    cid: str
+    title: str
+    group: str
+    w_um: float
+    h_um: float
+    build: Callable[[float, float, float, float], CellArt]
+    """``build(cx, cy, w, h) -> CellArt``."""
+    note: str = ""
+    two_layer: bool = False
+    axis: str = ""
+    """Which DoE axis this cell is a rung of, empty for a one-off."""
+    level: str = ""
+    """This cell's value on that axis."""
+
+
+# --- small rect utilities ---------------------------------------------------
+
+
+def _rect(x0: float, y0: float, x1: float, y1: float) -> np.ndarray:
+    return np.array([[x0, x1, y0, y1]], dtype=np.float64)
+
+
+def _cat(*parts: np.ndarray) -> np.ndarray:
+    """Concatenate rect arrays. Never a GEOS union — see CLAUDE.md geometry perf."""
+    live = [p for p in parts if p is not None and len(p)]
+    return np.concatenate(live, axis=0) if live else np.empty((0, 4), dtype=np.float64)
+
+
+def _grating_rects(
+    cx: float, cy: float, w: float, h: float, period_um: float, duty: float = 0.5,
+    *, phase_um: float = 0.0, vertical: bool = True,
+) -> np.ndarray:
+    """A lamellar grating filling a box, as one rect per line.
+
+    Analytic, so a 2 um grating over a 12 mm patch costs 6000 rectangles and no
+    raster at all.
+    """
+    if period_um <= 0:
+        raise ValueError("period_um must be > 0")
+    span = w if vertical else h
+    a0 = (cx - w / 2.0) if vertical else (cy - h / 2.0)
+    n = int(math.ceil(span / period_um)) + 1
+    k = np.arange(n, dtype=np.float64)
+    s0 = a0 + phase_um + k * period_um
+    s1 = s0 + period_um * duty
+    s0 = np.clip(s0, a0, a0 + span)
+    s1 = np.clip(s1, a0, a0 + span)
+    keep = s1 - s0 > 1e-9
+    s0, s1 = s0[keep], s1[keep]
+    out = np.empty((s0.size, 4), dtype=np.float64)
+    if vertical:
+        out[:, 0], out[:, 1] = s0, s1
+        out[:, 2], out[:, 3] = cy - h / 2.0, cy + h / 2.0
+    else:
+        out[:, 0], out[:, 1] = cx - w / 2.0, cx + w / 2.0
+        out[:, 2], out[:, 3] = s0, s1
+    return out
+
+
+def _text_rects(
+    text: str, cx: float, cy: float, height_um: float, *, cell_um: float | None = None
+) -> np.ndarray:
+    """Gold cell-ID text, rasterized coarsely and run-merged into rectangles.
+
+    A witness plate is read under a microscope at 50x, where every cell looks
+    like every other cell; without a written ID beside each one the map is the
+    only way to know what you are looking at, and maps get separated from
+    plates. Deliberately coarse — this is signage, not a feature.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    cell = cell_um if cell_um is not None else max(4.0, height_um / 14.0)
+    px_h = max(7, int(round(height_um / cell)))
+    try:
+        font = ImageFont.truetype("arialbd.ttf", px_h)
+    except Exception:
+        font = ImageFont.load_default()
+    tmp = ImageDraw.Draw(Image.new("L", (1, 1)))
+    box = tmp.textbbox((0, 0), text, font=font)
+    w_px, h_px = max(1, box[2] - box[0]), max(1, box[3] - box[1])
+    img = Image.new("L", (w_px + 4, h_px + 4), 0)
+    ImageDraw.Draw(img).text((2 - box[0], 2 - box[1]), text, fill=255, font=font)
+    g = np.asarray(img) > 127
+    if not g.any():
+        return np.empty((0, 4), dtype=np.float64)
+
+    h, w = g.shape
+    padded = np.zeros((h, w + 2), dtype=np.int8)
+    padded[:, 1:-1] = g
+    d = np.diff(padded, axis=1)
+    rows, starts = np.nonzero(d == 1)
+    _, ends = np.nonzero(d == -1)
+    x0 = cx - w * cell / 2.0
+    y1 = cy + h * cell / 2.0
+    out = np.empty((rows.size, 4), dtype=np.float64)
+    out[:, 0] = x0 + starts * cell
+    out[:, 1] = x0 + ends * cell
+    out[:, 2] = y1 - (rows + 1) * cell
+    out[:, 3] = y1 - rows * cell
+    return out
+
+
+def _frame_rects(cx: float, cy: float, w: float, h: float, t: float = 60.0) -> np.ndarray:
+    """A hairline box around a cell, so the dice/inspect boundary is visible."""
+    hw, hh = w / 2.0, h / 2.0
+    return _cat(
+        _rect(cx - hw, cy + hh - t, cx + hw, cy + hh),
+        _rect(cx - hw, cy - hh, cx + hw, cy - hh + t),
+        _rect(cx - hw, cy - hh, cx - hw + t, cy + hh),
+        _rect(cx + hw - t, cy - hh, cx + hw, cy + hh),
+    )
