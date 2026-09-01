@@ -79,6 +79,9 @@ class CellArt:
     free_polys: list[np.ndarray] = field(default_factory=list)
     """Variable-vertex polygons, each ``(k, 2)``. Only the boolean clear-field
     inverter produces these: a box minus a grating is not a rectangle."""
+    back_arrays: list[dict[str, Any]] = field(default_factory=list)
+    """Array-referenced geometry belonging to the BACK die of a bonded pair;
+    the plate shifts it to the pair position."""
     arrays: list[dict[str, Any]] = field(default_factory=list)
     """Periodic sub-gratings, deferred as array references rather than
     polygons. Each entry is one band: ``x0/x1/y0/y1`` of the parent band,
@@ -270,6 +273,60 @@ def outside_boxes(
     if y < y1c - 1e-9:
         parts.append(_rect(x0c, y, x1c, y1c))
     return _cat(*parts)
+
+
+def grating_array(cx: float, cy: float, w: float, h: float, period_um: float,
+                  duty: float, *, phase_um: float = 0.0,
+                  vertical: bool = True) -> tuple[dict[str, Any], np.ndarray]:
+    """A lamellar grating as ONE array entry plus its two clipped edge stripes.
+
+    Same lattice as :func:`_grating_rects` (lines at ``phase + k*period``). The
+    interior — every stripe that lies wholly inside the band — is a single array
+    reference, which is how the writer already emits the colour sub-gratings; a
+    36 mm ladder of 2 um lines becomes one record instead of 18,000.
+
+    The two PARTIAL stripes at the band's edges are returned as explicit
+    rectangles, clipped to the band. Leaving them to the array's centre-in
+    selection was fine at 5 um (the documented half-period slop) and wrong at
+    173 um: a whole comb tooth protruded 86 um past the cell, and the metal and
+    clear versions of eight parallax cells overlapped by exactly one stripe.
+    With the band trimmed to whole stripes, centre-in and fully-inside coincide,
+    and metal + clear tile the box to the nanometre.
+    """
+    if not vertical:
+        raise ValueError("grating_array steps in x; use _grating_rects for horizontal")
+    d, L = float(period_um), float(period_um) * float(duty)
+    x0, x1 = cx - w / 2.0, cx + w / 2.0
+    y0, y1 = cy - h / 2.0, cy + h / 2.0
+    k_first = int(math.ceil((x0 - phase_um) / d - 1e-9))
+    k_last = int(math.floor((x1 - phase_um - L) / d + 1e-9))
+    edges: list[np.ndarray] = []
+    # partial stripe to the left of the first whole one
+    s0, s1 = phase_um + (k_first - 1) * d, phase_um + (k_first - 1) * d + L
+    if s1 > x0 + 1e-9:
+        edges.append(_rect(max(s0, x0), y0, min(s1, x1), y1))
+    # partial stripe to the right of the last whole one
+    s0, s1 = phase_um + (k_last + 1) * d, phase_um + (k_last + 1) * d + L
+    if s0 < x1 - 1e-9:
+        edges.append(_rect(max(s0, x0), min(s1, x1), y0, y1)[:, [0, 1, 2, 3]] if False
+                     else _rect(max(s0, x0), y0, min(s1, x1), y1))
+    if k_last < k_first:
+        # no whole stripe fits: the band is all edges
+        return ({"rects": np.empty((0, 4)), "period_um": np.empty(0),
+                 "line_um": np.empty(0), "phase_um": np.empty(0)}, _cat(*edges))
+    bx0, bx1 = phase_um + k_first * d, phase_um + k_last * d + L
+    band = _rect(bx0, y0, bx1, y1)
+    return ({"rects": band, "period_um": np.array([d]), "line_um": np.array([L]),
+             "phase_um": np.array([phase_um])}, _cat(*edges))
+
+
+def grating_array_inverse(cx: float, cy: float, w: float, h: float,
+                          period_um: float, duty: float, *,
+                          phase_um: float = 0.0) -> tuple[dict[str, Any], np.ndarray]:
+    """The clear complement of :func:`grating_array`: duty ``1-c`` at phase
+    ``c*d``. Together with the original it tiles the band exactly."""
+    return grating_array(cx, cy, w, h, period_um, 1.0 - duty,
+                         phase_um=phase_um + period_um * duty)
 
 
 def column_complement(

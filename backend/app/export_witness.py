@@ -208,28 +208,33 @@ def doe_cells() -> list[list[Cell]]:
         tag = "dense" if dense else "iso"
         m.append(_cell(
             f"M-CD-{tag}", f"CD ladder, {tag}", "metrology", 36.0, 5.0,
-            (lambda dense=dense: (lambda cx, cy, w, h: wm.build_ladder_strip(
-                cx, cy, w, h,
-                rungs=wm.cd_rungs(RESOLUTION_LADDER_UM, dense=dense))))(),
+            (lambda dense=dense: (lambda cx, cy, w, h, polarity=METAL:
+                wm.build_ladder_strip(
+                    cx, cy, w, h, polarity=polarity,
+                    rungs=wm.cd_rungs(RESOLUTION_LADDER_UM, dense=dense))))(),
             label=f"M-CD 0.8-8um {tag}", axis="M-CD resolution",
-            level="0.8 -> 8.0 um",
+            level="0.8 -> 8.0 um", takes_polarity=True,
             note="finest rung that resolves. Iso and dense do not print alike"))
     for pd in (10.0, 5.0):
         m.append(_cell(
             f"M-DUTY{pd:g}", f"duty ladder at {pd:g} um", "metrology",
             26.0, 5.0,
-            (lambda pd=pd: (lambda cx, cy, w, h: wm.build_ladder_strip(
-                cx, cy, w, h, rungs=wm.duty_rungs(pd, C3_DUTY_LADDER))))(),
+            (lambda pd=pd: (lambda cx, cy, w, h, polarity=METAL:
+                wm.build_ladder_strip(cx, cy, w, h, polarity=polarity,
+                                      rungs=wm.duty_rungs(pd, C3_DUTY_LADDER))))(),
             label=f"M-DUTY .30-.70 @{pd:g}um", axis="M-DUTY bias", level=f"{pd:g} um",
+            takes_polarity=True,
             note="the 0.50 rung must show no 2nd order; 0.40 vs 0.60 gives the sign"))
     B.append(m)
 
     # === DIFFRACTION ========================================================
     d_cells: list[Cell] = [
         _cell("D-PER", "period ladder", "diffraction", 36.0, 6.0,
-              lambda cx, cy, w, h: wm.build_ladder_strip(
-                  cx, cy, w, h, rungs=wm.period_rungs(PERIOD_LADDER_UM)),
+              lambda cx, cy, w, h, polarity=METAL: wm.build_ladder_strip(
+                  cx, cy, w, h, polarity=polarity,
+                  rungs=wm.period_rungs(PERIOD_LADDER_UM)),
               label="D-PER 2-20um", axis="D-PER period", level="2 -> 20 um",
+              takes_polarity=True,
               note="hue and fan width against period. Read under a lamp AND "
                    "under room light -- the difference is the source-width result"),
     ]
@@ -245,16 +250,19 @@ def doe_cells() -> list[list[Cell]]:
             note="2-D orders; also the cheapest check of the union identity"))
     d_cells.append(_cell(
         "D-CHIRP", "chirp 22 -> 3 um", "diffraction", 24.0, 6.0,
-        lambda cx, cy, w, h: wc.build_chirp(cx, cy, w, h),
-        label="D-CHIRP", note="graded fan; crosses the floor at 4.0 um"))
+        lambda cx, cy, w, h, polarity=METAL: wc.build_chirp(cx, cy, w, h,
+                                                             polarity=polarity),
+        label="D-CHIRP", note="graded fan; crosses the floor at 4.0 um",
+        takes_polarity=True))
     for bp in BASE_PERIOD_LADDER_UM:
         for sp in SPREAD_LADDER:
             d_cells.append(_cell(
                 f"SW{bp:g}/{sp:.2f}", f"swatch {bp:g} um x{sp:.2f}", "diffraction",
                 SWATCH_MM, SWATCH_MM,
-                (lambda bp=bp, sp=sp: (lambda cx, cy, w, h:
-                    wm.build_swatch(cx, cy, w, h, base_period_um=bp, spread=sp)))(),
-                label=f"SW {bp:g}/{sp:.2f}", axis="D-SWATCH ladder",
+                (lambda bp=bp, sp=sp: (lambda cx, cy, w, h, polarity=METAL:
+                    wm.build_swatch(cx, cy, w, h, base_period_um=bp, spread=sp,
+                                    polarity=polarity)))(),
+                label=f"SW {bp:g}/{sp:.2f}", axis="D-SWATCH ladder", takes_polarity=True,
                 level=f"base {bp:g} um, spread {sp:.2f}",
                 note="whole hue ladder side by side -- replaces 8 portraits"))
     for i, (t, per, ht) in enumerate([
@@ -331,16 +339,19 @@ def doe_cells() -> list[list[Cell]]:
         hf.append(_cell(
             f"WEDGE{sp:g}", f"step wedge, {sp:g} um screen", "halftone",
             WEDGE_W_MM, WEDGE_H_MM,
-            (lambda sp=sp: (lambda cx, cy, w, h:
+            (lambda sp=sp: (lambda cx, cy, w, h, polarity=METAL:
                 wm.build_step_wedge(cx, cy, w, h, line_period_um=sp,
-                                    tone_steps=min(22, int(sp / 2)))))(),
+                                    tone_steps=min(22, int(sp / 2)),
+                                    polarity=polarity)))(),
             label=f"WEDGE {sp:g}um", axis="H-WEDGE screen", level=f"{sp:g} um",
+            takes_polarity=True,
             note="THE dot-gain instrument; inverts into the prep's gain"))
     hf.append(_cell(
         "H-ACU", "acuity ladder", "halftone", 26.0, 5.0,
-        lambda cx, cy, w, h: wm.build_ladder_strip(
-            cx, cy, w, h, rungs=wm.period_rungs(SCREEN_LADDER_UM)),
+        lambda cx, cy, w, h, polarity=METAL: wm.build_ladder_strip(
+            cx, cy, w, h, polarity=polarity, rungs=wm.period_rungs(SCREEN_LADDER_UM)),
         label="H-ACU 20-60um", axis="H-ACU pitch", level="20 -> 60 um",
+        takes_polarity=True,
         note="at what pitch do you SEE the lines? 43.5 um is the calculation"))
     hf += [
         _halftone("PORT-P", "portrait / plain gold", PORTRAIT_MM, mode="plain",
@@ -363,52 +374,58 @@ def doe_cells() -> list[list[Cell]]:
     # === TWO-LAYER -- everything the bond is actually for ===================
     two: list[Cell] = [
         _cell("M-VERN", "registration vernier", "metrology", 6.0, 6.0,
-              lambda cx, cy, w, h: wc.build_vernier(cx, cy, w, h),
-              label="M-VERN", two_layer=True,
+              lambda cx, cy, w, h, polarity=METAL: wc.build_vernier(
+                  cx, cy, w, h, polarity=polarity),
+              label="M-VERN", two_layer=True, takes_polarity=True,
               note="80/88 um, 11x amplification. Read before anything else"),
         _cell("P-RULE", "parallax ruler", "parallax", SWEEP_MM, 6.0,
-              lambda cx, cy, w, h: wm.build_parallax_ruler(cx, cy, w, h),
-              label="P-RULE", two_layer=True,
+              lambda cx, cy, w, h, polarity=METAL: wm.build_parallax_ruler(
+                  cx, cy, w, h, polarity=polarity),
+              label="P-RULE", two_layer=True, takes_polarity=True,
               note="reads t*n directly: 2.2 deg per tooth at a 2.29 mm quartz pair"),
         _cell("B-MOVE", "beat, across the gap", "moire", _beat_w_mm(1635.0),
               BEAT_H_MM,
-              lambda cx, cy, w, h: wc.build_shading_moire(cx, cy, w, h),
-              label="B-MOVE", two_layer=True,
+              lambda cx, cy, w, h, polarity=METAL: wc.build_shading_moire(
+                  cx, cy, w, h, polarity=polarity),
+              label="B-MOVE", two_layer=True, takes_polarity=True,
               note="same geometry as BEAT1635 -- the ONLY difference is motion"),
     ]
     for p_um in NEAR_FIELD_LADDER_UM:
         two.append(_cell(
             f"NF{p_um:g}", f"near field {p_um:g} um", "moire", PAIR_MM, PAIR_MM,
-            (lambda p_um=p_um: (lambda cx, cy, w, h:
-                wm.build_near_field(cx, cy, w, h, period_um=p_um)))(),
+            (lambda p_um=p_um: (lambda cx, cy, w, h, polarity=METAL:
+                wm.build_near_field(cx, cy, w, h, period_um=p_um,
+                                    polarity=polarity)))(),
             label=f"NF {p_um:g}um", axis="E-NF pitch", level=f"{p_um:g} um",
-            two_layer=True,
+            two_layer=True, takes_polarity=True,
             note="Talbot: the shadow should die below about 50 um at this gap"))
     for comb in SWITCH_COMB_LADDER_UM:
         two.append(_cell(
             f"SWAP{comb:g}", f"switch, comb {comb:g} um", "parallax",
             PAIR_MM, PAIR_MM,
-            (lambda comb=comb: (lambda cx, cy, w, h:
-                wc.build_barrier_switch(cx, cy, w, h, comb_um=comb)))(),
+            (lambda comb=comb: (lambda cx, cy, w, h, polarity=METAL:
+                wc.build_barrier_switch(cx, cy, w, h, comb_um=comb,
+                                        polarity=polarity)))(),
             label=f"SWAP {comb:g}um", axis="P-SWAP comb", level=f"{comb:g} um",
-            two_layer=True,
+            two_layer=True, takes_polarity=True,
             note="quarter-period registered; witness angles, not box angles"))
     for n_ph in SCAN_PHASE_LADDER:
         two.append(_cell(
             f"SCAN{n_ph}", f"scanimation, {n_ph} phase", "parallax",
             PAIR_MM, PAIR_MM,
-            (lambda n_ph=n_ph: (lambda cx, cy, w, h:
-                wc.build_scanimation(cx, cy, w, h, phases=n_ph)))(),
+            (lambda n_ph=n_ph: (lambda cx, cy, w, h, polarity=METAL:
+                wc.build_scanimation(cx, cy, w, h, phases=n_ph,
+                                     polarity=polarity)))(),
             label=f"SCAN {n_ph}", axis="P-SCAN phases", level=str(n_ph),
-            two_layer=True, note=f"wants {n_ph}x the registration of a 2-phase switch"))
+            two_layer=True, takes_polarity=True, note=f"wants {n_ph}x the registration of a 2-phase switch"))
     for mag, ps in (("10", 66.0), ("30", 61.9)):
         two.append(_cell(
             f"MAG{mag}", f"magnifier M={mag}", "moire", SWEEP_MM, SWEEP_MM,
-            (lambda ps=ps: (lambda cx, cy, w, h:
+            (lambda ps=ps: (lambda cx, cy, w, h, polarity=METAL:
                 wc.build_moire_magnifier(cx, cy, w, h, sampler_um=60.0,
-                                         motif_um=ps)))(),
+                                         motif_um=ps, polarity=polarity)))(),
             label=f"MAG {mag}x", axis="B-MAG magnification", level=f"M={mag}",
-            two_layer=True, note="sampling genuinely needs two planes"))
+            two_layer=True, takes_polarity=True, note="sampling genuinely needs two planes"))
     B.append(two)
     return B
 
@@ -627,12 +644,19 @@ def build_plate(
                 q[:, 0] += dx
                 free.append(q)
             n_back += len(p.back_free)
+            for a in art.back_arrays:
+                rr = np.asarray(a["rects"], dtype=np.float64).copy()
+                rr[:, 0] += dx
+                rr[:, 1] += dx
+                arrays.append({**a, "rects": rr,
+                               "phase_um": np.asarray(a.get("phase_um", 0.0),
+                                                      dtype=np.float64) + dx})
             pair_marks.append(_frame_rects(p.pair_cx, p.cy, c.w_um, c.h_um))
             outline.append(_frame_rects(p.pair_cx, p.cy, c.w_um, c.h_um))
             labels.append(_text_rects(
                 (c.label or c.cid) + " B", p.pair_cx, p.cy + c.h_um / 2.0 + LABEL_H_UM * 0.5,
                 LABEL_H_UM * 0.62))
-        n_arr = sum(int(np.size(a["period_um"])) for a in art.arrays)
+        n_arr = sum(int(np.size(a["period_um"])) for a in art.arrays + art.back_arrays)
         dt = time.perf_counter() - t0
         manifest.append({
             "cid": c.cid, "title": c.title, "group": c.group,
@@ -893,8 +917,13 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out", default="data/witness/witness-5in",
                     help="output stem; the suffix comes from --formats")
-    ap.add_argument("--formats", default="oas",
-                    help="comma list of oas,gds (default oas: 6.5 MB vs 158)")
+    ap.add_argument("--formats", default="gds,oas",
+                    help="comma list of gds,oas. Both by default: GDSII is the "
+                         "primary deliverable, OASIS the 1 MB copy of it")
+    ap.add_argument("--writer", choices=("klayout", "gf"), default="klayout",
+                    help="klayout: flat-ish, 5 s, 40 MB GDS. gf: gdsfactory "
+                         "hierarchy with @cell-cached band cells, 100 s, 31 MB GDS. "
+                         "Measured; the floor is ~470k references either way")
     ap.add_argument("--flat", action="store_true",
                     help="expand array references into polygons (much larger)")
     ap.add_argument("--map", default="data/witness/witness-5in-map.svg")
@@ -917,7 +946,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if not a.dry_run:
         fmts = tuple("." + f.strip().lstrip(".") for f in a.formats.split(","))
-        paths = write_mask(plate, Path(a.out), flat=a.flat, formats=fmts)
+        if a.writer == "gf":
+            from .export_witness_gf import write_mask_gf
+            paths = write_mask_gf(plate, Path(a.out), formats=fmts)
+            plate["gds"] = {**plate.get("gds", {}), **plate["gds_gf"],
+                            "path": str(paths[0]), "writer": "gdsfactory",
+                            "size_mb": plate["gds_gf"]["size_mb_by_format"][
+                                paths[0].suffix.lstrip(".")]}
+        else:
+            paths = write_mask(plate, Path(a.out), flat=a.flat, formats=fmts)
+            plate["gds"]["writer"] = "klayout"
         for p_ in paths:
             mb_ = plate["gds"]["size_mb_by_format"][p_.suffix.lstrip(".")]
             print(f"mask {p_}  {mb_} MB")
@@ -931,6 +969,8 @@ def main(argv: list[str] | None = None) -> int:
             "plate_side_um": PLATE_SIDE_UM,
             "layout": lg,
             "gds": plate.get("gds", {}),
+            "polarity": plate["polarity"],
+            "n_boolean_polys": len(plate["free_polys"]),
             "flat_rect_count": n_flat,
             "cells": plate["manifest"],
         }, indent=2), encoding="utf-8")

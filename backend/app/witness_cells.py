@@ -34,6 +34,8 @@ from .witness_geom import (
     _grating_rects,
     _rect,
     column_complement,
+    grating_array,
+    grating_array_inverse,
     invert_grating,
     outside_boxes,
 )
@@ -219,6 +221,7 @@ def build_grating_patch(
 def build_chirp(
     cx: float, cy: float, w: float, h: float, *,
     period_start_um: float = 22.0, period_end_um: float = 3.0, duty: float = 0.5,
+    polarity: str = METAL,
 ) -> CellArt:
     """B2 — period swept along the patch, so the fan is graded, not flat.
 
@@ -245,12 +248,21 @@ def build_chirp(
     b = a + np.asarray(ws, dtype=np.float64)
     keep = b <= x1
     a, b = a[keep], b[keep]
-    r = np.empty((a.size, 4), dtype=np.float64)
-    r[:, 0], r[:, 1] = a, b
+    if polarity == METAL:
+        r = np.empty((a.size, 4), dtype=np.float64)
+        r[:, 0], r[:, 1] = a, b
+    else:
+        # the gaps: after each line up to the next, plus the two ends
+        g0 = np.concatenate(([x0], b))
+        g1 = np.concatenate((a, [x1]))
+        keep = g1 - g0 > 1e-9
+        r = np.empty((int(keep.sum()), 4), dtype=np.float64)
+        r[:, 0], r[:, 1] = g0[keep], g1[keep]
     r[:, 2], r[:, 3] = cy - h / 2.0, cy + h / 2.0
     return CellArt(
         front=r,
         stats={
+            "polarity": polarity,
             "period_start_um": period_start_um,
             "period_end_um": period_end_um,
             "crosses_floor_at_um": round(MIN_FEATURE_UM / duty, 2),
@@ -306,6 +318,7 @@ def build_colour_band(
 def build_vernier(
     cx: float, cy: float, w: float, h: float, *,
     front_pitch_um: float = 80.0, back_pitch_um: float = 88.0, n: int = 24,
+    polarity: str = METAL,
 ) -> CellArt:
     """C1 — two combs whose beat amplifies a real offset by p/(pb − p).
 
@@ -313,27 +326,32 @@ def build_vernier(
     decides whether Group A is viable at all.
     """
     bar_h = h * 0.40
-    f = _grating_rects(cx, cy + h * 0.25, min(w, front_pitch_um * n), bar_h,
-                       front_pitch_um, 0.5, vertical=True)
-    b = _grating_rects(cx, cy - h * 0.25, min(w, back_pitch_um * n), bar_h,
-                       back_pitch_um, 0.5, vertical=True)
-    return CellArt(
-        front=f, back=b,
-        stats={
-            "front_pitch_um": front_pitch_um,
-            "back_pitch_um": back_pitch_um,
-            "amplification": round(front_pitch_um / abs(back_pitch_um - front_pitch_um), 2),
-            "n_lines": n,
-            "n_rects": int(len(f) + len(b)),
-        },
-    )
+    fw, bw = min(w, front_pitch_um * n), min(w, back_pitch_um * n)
+    fcy, bcy = cy + h * 0.25, cy - h * 0.25
+    f = grating_array if polarity == METAL else grating_array_inverse
+    fe, fr = f(cx, fcy, fw, bar_h, front_pitch_um, 0.5)
+    be, br = f(cx, bcy, bw, bar_h, back_pitch_um, 0.5)
+    art = CellArt(front=fr, back=br, arrays=[fe], back_arrays=[be])
+    if polarity != METAL:
+        art.front = _cat(art.front, outside_boxes(
+            cx, cy, w, h, [(cx - fw / 2, cx + fw / 2, fcy - bar_h / 2, fcy + bar_h / 2)]))
+        art.back = _cat(art.back, outside_boxes(
+            cx, cy, w, h, [(cx - bw / 2, cx + bw / 2, bcy - bar_h / 2, bcy + bar_h / 2)]))
+    art.stats = {
+        "polarity": polarity,
+        "front_pitch_um": front_pitch_um, "back_pitch_um": back_pitch_um,
+        "amplification": round(front_pitch_um / abs(back_pitch_um - front_pitch_um), 2),
+        "n_lines": n, "n_rects": int(len(art.front) + len(art.back)), "n_arrays": 2,
+    }
+    return art
 
 
 # --- two-layer cells (need a bonded pair) -----------------------------------
 
 
 def build_barrier_switch(
-    cx: float, cy: float, w: float, h: float, *, comb_um: float = 173.0
+    cx: float, cy: float, w: float, h: float, *, comb_um: float = 173.0,
+    polarity: str = METAL,
 ) -> CellArt:
     """A1 test panel — two interlaced lane classes under a slit comb.
 
@@ -352,20 +370,27 @@ def build_barrier_switch(
     tall = (k % 2) == 0
     back[:, 2] = cy - h / 2.0
     back[:, 3] = np.where(tall, cy + h * 0.45, cy - h * 0.10)
-    front = _grating_rects(cx, cy, w, h, comb_um, 0.5,
-                           phase_um=comb_um * 0.25, vertical=True)
-    return CellArt(
-        front=front, back=back,
-        stats={
-            "comb_um": comb_um, "lane_um": lane, "peak_shift_um": comb_um / 4.0,
-            "quarter_period_registered": True,
-            "n_rects": int(len(front) + len(back)),
-        },
-    )
+    f = grating_array if polarity == METAL else grating_array_inverse
+    fe, fr = f(cx, cy, w, h, comb_um, 0.5, phase_um=comb_um * 0.25)
+    art = CellArt(front=fr, arrays=[fe])
+    if polarity == METAL:
+        art.back = back
+    else:
+        rem = _rect(x0[-1] + lane, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0) \
+            if x0[-1] + lane < cx + w / 2.0 - 1e-9 else np.empty((0, 4))
+        art.back = _cat(column_complement(back, cy - h / 2.0, cy + h / 2.0), rem)
+    art.stats = {
+        "polarity": polarity,
+        "comb_um": comb_um, "lane_um": lane, "peak_shift_um": comb_um / 4.0,
+        "quarter_period_registered": True,
+        "n_rects": int(len(art.back)), "n_arrays": 1,
+    }
+    return art
 
 
 def build_scanimation(
-    cx: float, cy: float, w: float, h: float, *, comb_um: float = 173.0, phases: int = 4
+    cx: float, cy: float, w: float, h: float, *, comb_um: float = 173.0,
+    phases: int = 4, polarity: str = METAL,
 ) -> CellArt:
     """A2 test panel — N-phase kinegram, N frames in 1/N-pitch lanes.
 
@@ -381,19 +406,27 @@ def build_scanimation(
     back[:, 0], back[:, 1] = x0, x0 + lane
     y = cy - h / 2.0 + (ph / float(phases)) * h * 0.78
     back[:, 2], back[:, 3] = y, y + h * 0.18
-    front = _grating_rects(cx, cy, w, h, comb_um, 1.0 / phases, vertical=True)
-    return CellArt(
-        front=front, back=back,
-        stats={"comb_um": comb_um, "phases": phases, "slot_um": round(lane, 2),
-               "n_rects": int(len(front) + len(back))},
-    )
+    f = grating_array if polarity == METAL else grating_array_inverse
+    fe, fr = f(cx, cy, w, h, comb_um, 1.0 / phases)
+    art = CellArt(front=fr, arrays=[fe])
+    if polarity == METAL:
+        art.back = back
+    else:
+        rem = _rect(x0[-1] + lane, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0) \
+            if x0[-1] + lane < cx + w / 2.0 - 1e-9 else np.empty((0, 4))
+        art.back = _cat(column_complement(back, cy - h / 2.0, cy + h / 2.0), rem)
+    art.stats = {"polarity": polarity, "comb_um": comb_um, "phases": phases,
+                 "slot_um": round(lane, 2), "n_rects": int(len(art.back)),
+                 "n_arrays": 1}
+    return art
 
 
 def build_shading_moire(
     cx: float, cy: float, w: float, h: float, *,
     back_period_um: float = 63.5, beat_um: float = 1635.0, duty: float = 0.5,
+    polarity: str = METAL,
 ) -> CellArt:
-    """A4 / C6 — two near-equal pitches whose drift paints bands.
+    """A4 / B-MOVE — two near-equal pitches on TWO plies whose drift paints bands.
 
     ``beat = p(p+delta)/delta``, so the front pitch is SOLVED from the beat you
     want rather than the other way round. Pinning delta instead is what made an
@@ -403,55 +436,78 @@ def build_shading_moire(
 
     delta = beat_delta_um(back_period_um, beat_um)
     front_period = back_period_um + delta
-    return CellArt(
-        front=_grating_rects(cx, cy, w, h, front_period, duty, vertical=True),
-        back=_grating_rects(cx, cy, w, h, back_period_um, duty, vertical=True),
-        stats={
-            "back_period_um": back_period_um,
-            "front_period_um": round(front_period, 4),
-            "delta_um": round(delta, 4),
-            "beat_um": beat_um,
-            "bands_across": round(w / beat_um, 2),
-        },
-    )
+    f = grating_array if polarity == METAL else grating_array_inverse
+    fe, fr = f(cx, cy, w, h, front_period, duty)
+    be, br = f(cx, cy, w, h, back_period_um, duty)
+    art = CellArt(front=fr, back=br, arrays=[fe], back_arrays=[be])
+    art.stats = {
+        "polarity": polarity,
+        "back_period_um": back_period_um,
+        "front_period_um": round(front_period, 4),
+        "delta_um": round(delta, 4), "beat_um": beat_um,
+        "bands_across": round(w / beat_um, 2), "n_rects": 0, "n_arrays": 2,
+    }
+    return art
 
 
 def build_moire_magnifier(
     cx: float, cy: float, w: float, h: float, *,
-    sampler_um: float = 60.0, motif_um: float = 62.0,
+    sampler_um: float = 60.0, motif_um: float = 62.0, polarity: str = METAL,
 ) -> CellArt:
     """A6 — a pinhole array over a slightly different motif pitch.
 
     Transmission is ``(1 − f)(1 − b)``, so the sampler must be GOLD WITH HOLES
     rather than sparse dots; the inverted version reads as a grey field and
     nothing floats.
+
+    Both plies are 2-D lattices, so both are written as one array per row: the
+    sampler's clear complement is its pinhole grid, and the dot field's clear
+    complement is the gaps between dots plus the strips between rows. As
+    booleans these two cells alone were 55,000 polygons.
     """
     mag = sampler_um / (sampler_um - motif_um)
     hole = max(MIN_FEATURE_UM * 2.0, sampler_um * 0.18)
-    nx, ny = max(1, int(w / sampler_um)), max(1, int(h / sampler_um))
-    gx = cx - w / 2.0 + (np.arange(nx) + 0.5) * sampler_um
-    gy = cy - h / 2.0 + (np.arange(ny) + 0.5) * sampler_um
-    parts: list[np.ndarray] = []
-    for yy in gy:
-        parts.append(_rect(cx - w / 2, yy - sampler_um / 2, cx + w / 2, yy - hole / 2))
-        xs = np.concatenate(([cx - w / 2], gx + hole / 2))
-        xe = np.concatenate((gx - hole / 2, [cx + w / 2]))
-        seg = np.empty((xs.size, 4), dtype=np.float64)
-        seg[:, 0], seg[:, 1] = xs, xe
-        seg[:, 2], seg[:, 3] = yy - hole / 2, yy + hole / 2
-        parts.append(seg[seg[:, 1] - seg[:, 0] > 1e-9])
-        parts.append(_rect(cx - w / 2, yy + hole / 2, cx + w / 2, yy + sampler_um / 2))
     dot = max(MIN_FEATURE_UM * 3.0, motif_um * 0.35)
-    mx, my = max(1, int(w / motif_um)), max(1, int(h / motif_um))
-    px = cx - w / 2.0 + (np.arange(mx) + 0.5) * motif_um
-    py = cy - h / 2.0 + (np.arange(my) + 0.5) * motif_um
-    PX, PY = np.meshgrid(px, py)
-    back = np.empty((PX.size, 4), dtype=np.float64)
-    back[:, 0], back[:, 1] = PX.ravel() - dot / 2, PX.ravel() + dot / 2
-    back[:, 2], back[:, 3] = PY.ravel() - dot / 2, PY.ravel() + dot / 2
-    return CellArt(
-        front=_cat(*parts), back=back,
-        stats={"sampler_um": sampler_um, "motif_um": motif_um,
-               "magnification": round(mag, 1), "hole_um": round(hole, 2),
-               "n_rects": int(sum(len(p) for p in parts) + len(back))},
-    )
+    x0, x1 = cx - w / 2.0, cx + w / 2.0
+    y0, y1 = cy - h / 2.0, cy + h / 2.0
+    ny = max(1, int(h / sampler_um))
+    gy = y1 - (np.arange(ny) + 0.5) * sampler_um
+    my = max(1, int(h / motif_um))
+    py = y1 - (np.arange(my) + 0.5) * motif_um
+
+    def rows(ys, size, pitch, line, phase):
+        """One array entry per row band of height ``size``."""
+        r = np.empty((len(ys), 4), dtype=np.float64)
+        r[:, 0], r[:, 1] = x0, x1
+        r[:, 2], r[:, 3] = ys - size / 2.0, ys + size / 2.0
+        return {"rects": r, "period_um": np.full(len(ys), pitch),
+                "line_um": np.full(len(ys), line), "phase_um": np.full(len(ys), phase)}
+
+    def between(ys, size):
+        """Full-width strips between row bands, and above/below the first/last."""
+        edges_top = np.concatenate(([y1], ys - size / 2.0))
+        edges_bot = np.concatenate((ys + size / 2.0, [y0]))
+        r = np.empty((len(ys) + 1, 4), dtype=np.float64)
+        r[:, 0], r[:, 1] = x0, x1
+        r[:, 2], r[:, 3] = edges_bot, edges_top
+        return r[r[:, 3] - r[:, 2] > 1e-9]
+
+    s_phase = x0 + 0.5 * sampler_um - hole / 2.0     # first hole's left edge
+    m_phase = x0 + 0.5 * motif_um - dot / 2.0         # first dot's left edge
+    if polarity == METAL:
+        # front: opaque field with holes = strips between rows + per-row segments
+        # between holes (an array of the GAPS between holes, i.e. line = pitch - hole)
+        front_arr = rows(gy, hole, sampler_um, sampler_um - hole, s_phase + hole)
+        art = CellArt(front=between(gy, hole), arrays=[front_arr],
+                      back_arrays=[rows(py, dot, motif_um, dot, m_phase)])
+    else:
+        # clear: the holes themselves; and the dot field's complement
+        art = CellArt(arrays=[rows(gy, hole, sampler_um, hole, s_phase)],
+                      back=between(py, dot),
+                      back_arrays=[rows(py, dot, motif_um, motif_um - dot, m_phase + dot)])
+    art.stats = {"polarity": polarity, "sampler_um": sampler_um, "motif_um": motif_um,
+                 "magnification": round(mag, 1), "hole_um": round(hole, 2),
+                 "n_rects": int(len(art.front) + len(art.back)), "n_arrays": 2}
+    return art
+
+

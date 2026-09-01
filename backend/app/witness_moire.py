@@ -28,7 +28,10 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from .witness_geom import CellArt, _cat, _grating_rects, _rect
+from .witness_geom import (CellArt, _cat, _grating_rects, _rect,
+                           column_complement, grating_array,
+                           grating_array_inverse, invert_grating,
+                           outside_boxes)
 
 # A cell whose metal exceeds this many shapes must invert analytically; the
 # boolean is only safe while it is small. Sized well under the halftone cells
@@ -417,19 +420,23 @@ def build_polarity_witness(cx: float, cy: float, w: float, h: float) -> CellArt:
 
 def build_step_wedge(cx: float, cy: float, w: float, h: float, *,
                      line_period_um: float = 44.0, steps: int = 16,
-                     tone_steps: int = 22) -> CellArt:
+                     tone_steps: int = 22, polarity: str = "metal") -> CellArt:
     """H-WEDGE — the dot-gain instrument.
 
     ``steps`` patches of halftone at known, evenly spaced duty. Measure the
     realized coverage of each and the curve inverts straight into the prep's
     ``gain``. This is what replaced eight subjective portrait sweeps: a
     photograph reads many coupled variables at once, a wedge reads one.
+
+    In clear polarity each band becomes the two gaps either side of it, exactly
+    as ``screenrects.screen_bands(emit="clear")`` does for a photograph.
     """
     patch_w = w / steps
     n_lines = max(1, int(h / line_period_um))
     parts: list[np.ndarray] = []
     duties: list[float] = []
     levels: list[int] = []
+    top = cy + h / 2.0
     for i in range(steps):
         # Duty is quantised to the SCREEN's own ladder, not to a round number,
         # so the wedge measures tones the plate can actually make.
@@ -439,47 +446,60 @@ def build_step_wedge(cx: float, cy: float, w: float, h: float, *,
         duties.append(round(lvl / tone_steps, 4))
         levels.append(lvl)
         x0 = cx - w / 2.0 + i * patch_w
-        ys = cy + h / 2.0 - (np.arange(n_lines) + 0.5) * line_period_um
-        r = np.empty((n_lines, 4), dtype=np.float64)
-        r[:, 0], r[:, 1] = x0, x0 + patch_w
-        r[:, 2], r[:, 3] = ys - band / 2.0, ys + band / 2.0
+        ys = top - (np.arange(n_lines) + 0.5) * line_period_um
+        if polarity == "metal":
+            r = np.empty((n_lines, 4), dtype=np.float64)
+            r[:, 0], r[:, 1] = x0, x0 + patch_w
+            r[:, 2], r[:, 3] = ys - band / 2.0, ys + band / 2.0
+        else:
+            hp = line_period_um / 2.0
+            r = np.empty((2 * n_lines, 4), dtype=np.float64)
+            r[:, 0], r[:, 1] = x0, x0 + patch_w
+            r[:n_lines, 2], r[:n_lines, 3] = ys + band / 2.0, ys + hp
+            r[n_lines:, 2], r[n_lines:, 3] = ys - hp, ys - band / 2.0
         parts.append(r)
+    if polarity != "metal":
+        rem_top = top - n_lines * line_period_um
+        if rem_top > cy - h / 2.0 + 1e-9:
+            parts.append(_rect(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, rem_top))
     return CellArt(
         front=_cat(*parts),
-        stats={"line_period_um": line_period_um, "steps": steps,
-               "duties": duties, "levels": levels, "tone_steps": tone_steps, "finest_band_um": round(line_period_um / tone_steps, 3),
-               "n_rects": int(sum(len(p) for p in parts))},
+        stats={"polarity": polarity, "line_period_um": line_period_um,
+               "steps": steps, "duties": duties, "levels": levels,
+               "tone_steps": tone_steps,
+               "finest_band_um": round(line_period_um / tone_steps, 3),
+               "n_rects": int(sum(len(p_) for p_ in parts))},
     )
 
 
 def build_swatch(cx: float, cy: float, w: float, h: float, *,
                  base_period_um: float = 5.0, spread: float = 1.45,
-                 n_rungs: int = 12, duty: float = 0.5) -> CellArt:
+                 n_rungs: int = 12, duty: float = 0.5,
+                 polarity: str = "metal") -> CellArt:
     """D-SWATCH — a whole hue ladder side by side, as stripes.
 
     The instrument that replaced the colour portrait sweeps. One swatch shows
     every rung of one ladder at once, so a base period and a spread can be
     judged against each other in a 6 mm cell instead of eight 10 mm photographs.
+    One array reference per rung, either polarity.
     """
     from .patterns.bitmap.colourzone import hue_ladder
 
     ladder = hue_ladder(n_rungs, spread)
     sw = w / n_rungs
-    parts = []
-    for i, sc in enumerate(ladder):
-        x = cx - w / 2.0 + (i + 0.5) * sw
-        parts.append(_grating_rects(x, cy, sw, h, base_period_um * sc, duty,
-                                    vertical=True))
-    periods = [round(base_period_um * s, 3) for s in ladder]
-    lines = [round(p * duty, 3) for p in periods]
-    return CellArt(
-        front=_cat(*parts),
-        stats={"base_period_um": base_period_um, "spread": spread,
-               "n_rungs": n_rungs, "periods_um": periods,
-               "finest_line_um": min(lines),
-               "all_printable": bool(min(lines) >= 2.0),
-               "n_rects": int(sum(len(p) for p in parts))},
-    )
+    f = grating_array if polarity == "metal" else grating_array_inverse
+    built = [f(cx - w / 2.0 + (i + 0.5) * sw, cy, sw, h, base_period_um * sc, duty)
+             for i, sc in enumerate(ladder)]
+    arrays = [e for e, _ in built]
+    periods = [round(base_period_um * s_, 3) for s_ in ladder]
+    lines = [round(p_ * duty, 3) for p_ in periods]
+    art = CellArt(front=_cat(*[r for _, r in built]), arrays=arrays)
+    art.stats = {"polarity": polarity, "base_period_um": base_period_um,
+                 "spread": spread, "n_rungs": n_rungs, "periods_um": periods,
+                 "finest_line_um": min(lines),
+                 "all_printable": bool(min(lines) >= 2.0),
+                 "n_rects": 0, "n_arrays": len(arrays)}
+    return art
 
 
 # --- two-layer, bonded ------------------------------------------------------
@@ -487,40 +507,38 @@ def build_swatch(cx: float, cy: float, w: float, h: float, *,
 
 def build_near_field(cx: float, cy: float, w: float, h: float, *,
                      period_um: float = 44.0, beat_um: float = 2000.0,
-                     duty: float = 0.5, gap_um: float = 2290.0) -> CellArt:
+                     duty: float = 0.5, gap_um: float = 2290.0,
+                     polarity: str = "metal") -> CellArt:
     """E-NF — where does the two-layer shadow die?
 
     The same beat pair as B-BEAT but split across the two plies, at a pitch
     swept through the near-field boundary. A grating does not cast a sharp
     shadow across millimetres: self-imaging revives at the Talbot distance
     ``z_T = 2p^2/lambda``, and between revivals the shadow washes out. Taking
-    ``z_T/4`` as the survival point predicts a boundary near 50 µm at a 2.29 mm
+    ``z_T/4`` as the survival point predicts a boundary near 50 um at a 2.29 mm
     quartz pair. This cell measures it instead of assuming it.
-
-    Its single-layer twin at the same pitch is the control: identical geometry,
-    no gap, so any loss of contrast here is the near field and nothing else.
     """
     lam = 0.55
     z_t = 2.0 * period_um * period_um / lam
     delta = beat_delta_for(period_um, beat_um)
-    return CellArt(
-        front=_grating_rects(cx, cy, w, h, period_um + delta, duty, vertical=True),
-        back=_grating_rects(cx, cy, w, h, period_um, duty, vertical=True),
-        stats={
-            "period_um": period_um, "beat_um": beat_um,
-            "talbot_um": round(z_t, 1),
-            "gap_over_talbot": round(gap_um / z_t, 3),
-            "predicted": ("intact" if gap_um / z_t < 0.25
-                          else "degraded" if gap_um / z_t < 1.0 else "washed out"),
-            "single_layer": False,
-            "n_rects": 0,
-        },
-    )
+    f = grating_array if polarity == "metal" else grating_array_inverse
+    fe, fr = f(cx, cy, w, h, period_um + delta, duty)
+    be, br = f(cx, cy, w, h, period_um, duty)
+    art = CellArt(front=fr, back=br, arrays=[fe], back_arrays=[be])
+    art.stats = {
+        "polarity": polarity, "period_um": period_um, "beat_um": beat_um,
+        "talbot_um": round(z_t, 1), "gap_over_talbot": round(gap_um / z_t, 3),
+        "predicted": ("intact" if gap_um / z_t < 0.25
+                      else "degraded" if gap_um / z_t < 1.0 else "washed out"),
+        "single_layer": False, "n_rects": 0, "n_arrays": 2,
+    }
+    return art
 
 
 def build_parallax_ruler(cx: float, cy: float, w: float, h: float, *,
                          comb_um: float = 60.0, n: int = 60,
-                         gap_um: float = 2290.0, n_index: float = 1.4585) -> CellArt:
+                         gap_um: float = 2290.0, n_index: float = 1.4585,
+                         polarity: str = "metal") -> CellArt:
     """P-RULE — read the bond gap directly, by tilting.
 
     A fine comb on one ply and a single index line on the other. Tilt until the
@@ -534,19 +552,27 @@ def build_parallax_ruler(cx: float, cy: float, w: float, h: float, *,
     two teeth. 60 um gives 2.2 deg per tooth and nine teeth inside +-10 deg,
     and still sits clear of the near-field boundary (z_T = 13 mm, gap/z_T = 0.17).
     """
-    teeth = _grating_rects(cx, cy - h * 0.15, min(w, comb_um * n), h * 0.5,
-                           comb_um, 0.5, vertical=True)
-    index = _rect(cx - comb_um * 0.12, cy + h * 0.12,
-                  cx + comb_um * 0.12, cy + h * 0.45)
+    cw = min(w, comb_um * n)
+    comb_cy, comb_h = cy - h * 0.15, h * 0.5
+    ix0, ix1 = cx - comb_um * 0.12, cx + comb_um * 0.12
+    iy0, iy1 = cy + h * 0.12, cy + h * 0.45
     per_deg = gap_um * math.tan(math.asin(math.sin(math.radians(1.0)) / n_index))
-    return CellArt(
-        front=index, back=teeth,
-        stats={"comb_um": comb_um, "n_teeth": n,
-               "parallax_um_per_deg": round(per_deg, 2),
-               "deg_per_tooth": round(comb_um / per_deg, 3),
-               "single_layer": False,
-               "n_rects": int(len(teeth) + len(index))},
-    )
+    if polarity == "metal":
+        be, br = grating_array(cx, comb_cy, cw, comb_h, comb_um, 0.5)
+        art = CellArt(front=_rect(ix0, iy0, ix1, iy1), back=br, back_arrays=[be])
+        n_r = 1 + len(br)
+    else:
+        front = outside_boxes(cx, cy, w, h, [(ix0, ix1, iy0, iy1)])
+        back = outside_boxes(cx, cy, w, h, [(cx - cw / 2, cx + cw / 2,
+                                             comb_cy - comb_h / 2, comb_cy + comb_h / 2)])
+        be, br = grating_array_inverse(cx, comb_cy, cw, comb_h, comb_um, 0.5)
+        art = CellArt(front=front, back=_cat(back, br), back_arrays=[be])
+        n_r = len(front) + len(back) + len(br)
+    art.stats = {"polarity": polarity, "comb_um": comb_um, "n_teeth": n,
+                 "parallax_um_per_deg": round(per_deg, 2),
+                 "deg_per_tooth": round(comb_um / per_deg, 3),
+                 "single_layer": False, "n_rects": int(n_r), "n_arrays": 1}
+    return art
 
 
 # --- ladders as ONE cell ----------------------------------------------------
@@ -555,7 +581,7 @@ def build_parallax_ruler(cx: float, cy: float, w: float, h: float, *,
 def build_ladder_strip(
     cx: float, cy: float, w: float, h: float, *,
     rungs: Sequence[tuple[str, float, float]],
-    gap_frac: float = 0.12,
+    gap_frac: float = 0.12, polarity: str = "metal",
 ) -> CellArt:
     """A whole ladder as a single cell: N sub-patches side by side.
 
@@ -566,28 +592,40 @@ def build_ladder_strip(
     the comparison is direct, and the overhead is paid once.
 
     ``rungs`` is ``(label, period_um, duty)``. A clear separator between rungs
-    keeps a boundary from reading as a defect.
+    keeps a boundary from reading as a defect. Each rung is ONE array reference
+    in either polarity — the clear complement of a grating is a grating — which
+    keeps a 36 mm ladder of 2 um lines to a dozen records.
     """
     n = max(1, len(rungs))
     pitch = w / n
     patch = pitch * (1.0 - gap_frac)
-    parts: list[np.ndarray] = []
+    arrays: list[dict[str, Any]] = []
+    seps: list[np.ndarray] = []
     meta: list[dict[str, Any]] = []
+    y0, y1 = cy - h / 2.0, cy + h / 2.0
     for i, (lab, period, duty) in enumerate(rungs):
         x = cx - w / 2.0 + (i + 0.5) * pitch
-        parts.append(_grating_rects(x, cy, patch, h, period, duty, vertical=True))
+        f = grating_array if polarity == "metal" else grating_array_inverse
+        entry, edges = f(x, cy, patch, h, period, duty)
+        arrays.append(entry)
+        seps.append(edges)
+        if polarity != "metal":
+            # Separators are bare glass in metal polarity, so CLEAR here, and
+            # have to be written.
+            seps.append(_rect(cx - w / 2.0 + i * pitch, y0, x - patch / 2.0, y1))
+            seps.append(_rect(x + patch / 2.0, y0, cx - w / 2.0 + (i + 1) * pitch, y1))
         line = period * duty
         meta.append({
             "label": lab, "period_um": period, "duty": duty,
             "line_um": round(line, 3), "gap_um": round(period - line, 3),
             "clears_floor": bool(line >= 2.0 and period - line >= 2.0),
         })
-    return CellArt(
-        front=_cat(*parts),
-        stats={"n_rungs": n, "patch_um": round(patch, 1), "rungs": meta,
-               "n_below_floor": sum(1 for m in meta if not m["clears_floor"]),
-               "n_rects": int(sum(len(p) for p in parts))},
-    )
+    art = CellArt(front=_cat(*seps), arrays=arrays)
+    art.stats = {"polarity": polarity, "n_rungs": n, "patch_um": round(patch, 1),
+                 "rungs": meta,
+                 "n_below_floor": sum(1 for m in meta if not m["clears_floor"]),
+                 "n_rects": int(len(art.front)), "n_arrays": len(arrays)}
+    return art
 
 
 def cd_rungs(periods: Sequence[float], dense: bool = True
