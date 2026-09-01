@@ -1,15 +1,12 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from .._helpers import raster_to_polygons
+from .._helpers import check_lattice_budget, raster_to_polygons
 from ..base import GeneratedPattern, ParamSpec, Pattern, register
-from ..effects.gratings import (
-    beat_delta_um,
-    clip_mask,
-    linear_grating_mask,
-    shimmer_moire_layers,
-)
+from ..effects.gratings import beat_delta_um, shimmer_moire_layers
 from ..motifs.lab.jamon import jamon_silhouette
 
 
@@ -21,23 +18,6 @@ def _resolve_grid(period_um: float, extent_um: float) -> tuple[int, float]:
     """
     n_grid = max(384, int(extent_um / max(1.0, period_um / 10)))
     return n_grid, extent_um / n_grid
-
-
-def _carrier_grating(period_um: float, extent_um: float):
-    """The uniform front carrier for these params.
-
-    Cheap — one ≤400k-cell numpy mask, budget-guarded by ``linear_grating_mask``
-    — and the ONLY place the EFFECTIVE (possibly coarsened) period comes from, so
-    ``generate`` and the metadata accessors cannot report different periods.
-    """
-    _n_grid, cell_um = _resolve_grid(period_um, extent_um)
-    return linear_grating_mask(
-        period_um,
-        (extent_um, extent_um),
-        angle_deg=0.0,
-        pitch_um=cell_um,
-        coarsen=True,
-    )
 
 
 @register
@@ -106,7 +86,13 @@ class JamonTray(Pattern):
         beat_um: float = 1635.0,
         extent_um: float = 2000.0,
     ) -> float:
-        return _carrier_grating(period_um, extent_um).period_um * 0.5
+        # Both gratings are 50% duty; the FINER of the two sets the limit.
+        # NOT _carrier_grating's effective period: linear_grating_mask(coarsen=
+        # True) snaps to its own 4-samples-per-period floor and returns 12.78 um
+        # for ANY request at this extent, which would silently make the moire
+        # delta 0.10 um instead of 0.30 — ten times finer than the other three
+        # shimmer faces, and at the edge of what the writer can hold.
+        return min(period_um, period_um + beat_delta_um(period_um, beat_um)) * 0.5
 
     @classmethod
     def extra_metadata(
@@ -115,18 +101,21 @@ class JamonTray(Pattern):
         beat_um: float = 1635.0,
         extent_um: float = 2000.0,
     ) -> tuple[dict, dict, tuple[str, ...]]:
-        carrier_g = _carrier_grating(period_um, extent_um)
-        # Informational only — kept out of recipe_data on purpose: the
-        # Pattern Lab zone UI offers tilt quick-sets whenever recipe_data
-        # carries a period key, and with an empty back layer there is no
-        # mask-level tilt effect to quick-set to.
+        front_period = period_um + beat_delta_um(period_um, beat_um)
         return (
             {
-                "carrier_period_um": carrier_g.period_um,
+                "carrier_period_um": period_um,
                 "switch_axis_deg": 0.0,
-                "coarsened": bool(carrier_g.coarsened),
+                "beat_period_um": beat_um,
             },
-            {},
+            {
+                "fab_back_period_um": period_um,
+                "fab_front_period_um": front_period,
+                "carrier_angle_deg": 0.0,
+                "slit_axis_deg": 0.0,
+                "grating_duty": 0.5,
+                "beat_period_um": beat_um,
+            },
             (),
         )
 
@@ -139,27 +128,30 @@ class JamonTray(Pattern):
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)
 
-        # The linear grating picks the pitch (budget-aware) and we build the
-        # silhouette at the SAME pitch so the masks compose 1:1 with no
-        # resampling.
+        # Same grid rule as the other three shimmer faces, and the REQUESTED
+        # period — see min_feature_um for why _carrier_grating's effective
+        # period must not drive the moire pair.
         n_grid, cell_um = _resolve_grid(period_um, extent_um)
 
-        # Keep _carrier_grating's budget-aware pitch, then build BOTH layers on
-        # that grid: the ham filled at a mismatched pitch over a full-field back
-        # carrier, so it is a shading moiré rather than a front-only glimmer.
-        # See monogram_jp for why the beat comes from pitch and not from a
-        # crossing angle on a build with no backside alignment.
-        carrier_g = _carrier_grating(period_um, extent_um)
-        h_px, w_px = carrier_g.mask.shape
-        n_grid = w_px  # square extent → square grid
-        cell_um = carrier_g.pitch_um
+        delta = beat_delta_um(period_um, beat_um)
+        n_stripes = int(math.ceil(extent_um / min(period_um, period_um + delta)))
+        check_lattice_budget(
+            2 * n_grid * n_stripes,
+            "jamon-tray carrier pair",
+            period_um=period_um,
+            beat_um=beat_um,
+            extent_um=extent_um,
+        )
 
         jamon = jamon_silhouette(extent, n_grid=n_grid)
 
+        # SHADING MOIRE: the ham filled at a mismatched pitch over a full-field
+        # back carrier. See monogram_jp for why the beat comes from pitch and
+        # not from a crossing angle on a build with no backside alignment.
         front_mask, back_mask = shimmer_moire_layers(
             jamon,
-            back_period_um=carrier_g.period_um,
-            delta_um=beat_delta_um(carrier_g.period_um, beat_um),
+            back_period_um=period_um,
+            delta_um=delta,
             cell_um=cell_um,
         )
 
