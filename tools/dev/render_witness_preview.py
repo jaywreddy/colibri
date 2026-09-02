@@ -163,7 +163,7 @@ def stack(rows, path):
 def main() -> int:
     out = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
     out.mkdir(parents=True, exist_ok=True)
-    TILTS = (-6.0, 0.0, 6.0)
+    TILTS = (0.0, 1.0, 2.0)
     TL = [f"tilt {t:+.0f}°" for t in TILTS]
 
     print("three variants at %g mm ..." % PORTRAIT_MM)

@@ -17,20 +17,40 @@ were cut.
 Photographs are the wrong instrument for most of that. A portrait is a
 subjective read of many coupled variables at once; a step wedge and a swatch
 matrix return the same information objectively in a twentieth of the area.
-Portraits survive here only for the one question that genuinely is subjective —
-*which colour treatment goes on the lid* — and they take 3% of the plate.
+Portraits survive here only for the one question that is subjective — *which
+colour treatment goes on the lid* — and they take 3.6% of the usable field.
 
-### Conventions used throughout
+### The box as designed
+
+Every derived number below uses these.
+
+| | |
+|---|---|
+| **glass** | 1.50 mm soda lime, n = 1.520 |
+| **witness pair** | 2.29 mm fused quartz, n = 1.4585 (a 5″ mask blank is 0.090″) |
+| **carrier** | 63.5 µm back-layer grating, 50% duty — the lattice every lid moiré beats against |
+| **screen** | 44 µm halftone, 22 levels (2 µm step) |
+| **comb** | 173 µm parallax-barrier comb; lane = p/2 = 86.5 µm |
+| **colour sub-grating** | base 5 µm, 12-rung ladder, spread 1.45 (red/blue pitch ratio), 50% duty |
+| **viewing** | D = 300 mm; a held box is ~200 mm |
+| **λ** | 550 nm for every Fresnel number and coherence width |
+
+### Conventions
 
 | Term | Meaning here |
 |---|---|
-| **eye cell** | 87 µm: what 1 arcmin subtends at a 300 mm viewing distance. Structure finer than this averages; structure coarser is seen. A held ring box is nearer, ~200 mm, so every visibility figure below is 1.5× conservative. |
-| **litho floor** | 2.0 µm minimum line *and* minimum gap. A 50%-duty grating therefore needs a period of at least 4.0 µm. |
-| **duty** *c* | metal fraction of a period. Efficiencies and harmonic content follow from it (§1.1). |
-| **clear field** | the polarity of this write: the file holds the regions where chrome is *removed*. |
-| **chrome / metal** | the opaque layer on this plate; "gold" is the box's layer. Optically interchangeable here. |
-| **ply** | one of the two glass sheets of a bonded pair; **die** is a cell cut from this plate to become a ply. |
+| **eye cell** | 87 µm: what 1 arcmin subtends at 300 mm. Structure finer than this averages; coarser is seen. At the ~200 mm a box is held, every visibility figure below is 1.5× conservative. |
+| **litho floor** | 2.0 µm minimum line *and* minimum gap. A 50%-duty grating therefore needs a pitch of at least 4.0 µm. |
+| **pitch** *p*, **duty** *c* | period of a grating, and its metal fraction. Efficiencies and harmonic content follow from *c* (§1.1). |
+| **beat** | the resolvable difference component m f₁ + n f₂ of two superposed gratings — the moiré. |
+| **polarity** | the plate is **darkfield**: chrome everywhere the file is empty. The drawn geometry is the **clear data** — the openings where chrome is removed — for positive resist. The mask file and the `M-POL CLEAR` label use those two words. |
+| **chrome / metal** | the opaque layer on this plate; the box's is gold. Optically interchangeable here. |
+| **ply / die** | a ply is one glass sheet of a bonded pair; a die is the piece cut from this plate to become one. |
 | **bonded** | a cell that needs two plies and a gap to work. Everything not so marked is single-layer. |
+| **kinegram** | N frames interlaced in 1/N-pitch lanes under a comb of duty 1/N (`SCAN N`). |
+| **perimeter frame** | the moiré frame around the lid: two lattices at unequal pitch *and* a small angle — hence B-VEC. |
+| **dot gain / prep gain** | realised minus designed coverage; and the correction the image pipeline applies for it. |
+| **cell families** | named by mechanism: `M-` metrology, `D-` diffraction, `B-` beat/moiré, `P-` parallax, `H-` halftone, `E-` edge of envelope. The plate has five blocks; E-NF is packed with the moiré block and the appendix lists it there. |
 
 ---
 
@@ -41,11 +61,11 @@ its own free parameters, and its own way of failing.
 
 ### 1.1 Diffraction — the only source of colour
 
-A lamellar amplitude grating of period *d* and duty *c*. The grating equation
+A lamellar amplitude grating of pitch *p* and duty *c*. The grating equation
 sets which wavelength leaves in which direction and the order efficiencies set
 how bright each order is:
 
-> sin θ_m = sin θ_i + m λ / d
+> sin θ_m = sin θ_i + m λ / p
 > η_m = (c · sinc(m c))²  →  η₀ = c²
 
 Two consequences drive the colour design. First, **η₀ = 0.25 against
@@ -55,13 +75,23 @@ wrong by 2.5× and shows black where the first order leaves the visible band.
 Second, **even harmonics vanish at exactly 50% duty** — sinc(m c) = 0 for even
 m when c = ½ — which matters for moiré (§2.4).
 
-Angular dispersion is dλ/dθ = d cos θ. A coarse grating packs the visible band
+Angular dispersion is dλ/dθ = p cos θ. A coarse grating packs the visible band
 into few degrees and any wide source mixes it back to white: at the 4–5 µm the
 litho floor allows, the visible spans ~5°, and a 6° room source covers all of
-it. **Colour needs a lamp, not a window**, and finer periods are better twice —
-a wider fan, and colour that survives softer light. Reflectance of chrome is
-~0.6 and roughly flat across the visible, so it scales the spectrum without
-tinting it.
+it. **Colour needs a lamp, not a window**, and finer pitches are better twice —
+a wider fan, and colour that survives softer light. Chrome reflectance is ~0.6
+and roughly flat across the visible, so it scales the spectrum without tinting
+it.
+
+On the box the grating is chopped into the halftone's bands. A band *b* wide
+holds N = b/p periods and its first order is Δλ/λ ≈ 1/N wide: a full 44 µm band
+at 5 µm is N = 8.8, an 11% linewidth — clean; a 0.2-coverage band is 8.8 µm,
+N = 1.8, no spectrum. A 50% sub-grating also removes half the band's metal, so a
+coloured band must be widened to tone/duty of the pitch to hold its tone — and
+that saturates at tone = duty: above the midtone a held-tone band is the whole
+period, a continuous grating with a phase reset every 44 µm, and the tone clips.
+That is what holding tone costs: colour only below the midtone, or tone lost
+above it. D-BAND measures it.
 
 *Single layer. No bond, no registration, no gap.*
 
@@ -69,22 +99,31 @@ tinting it.
 
 Two periodic structures superposed. The product of two transmittances
 contains every component m f₁ + n f₂; the ones coarse enough to resolve are the
-moiré.
+beats.
 
-> fundamental beat:  p_beat = p₁ p₂ / |p₁ − p₂|
+> pitch beat:  p_beat = p₁ p₂ / |p₁ − p₂|
 > two gratings at angle α:  p_beat = p₁ p₂ / √(p₁² + p₂² − 2 p₁ p₂ cos α)
 > equal pitch, rotated:  p_beat = p / (2 sin(α/2))
 
 The second line is the general case; the other two are its limits. Its
 fringes run perpendicular to **k₁ − k₂**: for a pitch difference that is across
 the lines, for a rotation it is nearly *along* them, which is why rotational
-moiré looks nothing like pitch moiré though the algebra is one line.
+moiré looks nothing like pitch moiré though the algebra is one line. The box's
+perimeter frame is the general case — unequal pitches at a small angle — and
+B-VEC checks it.
 
-Moiré is an **amplifier**. Against the 63.5 µm carrier, a 66.07 µm front gives
-a 1635 µm beat: the beat is p/Δ = 24.7× the pitch difference, so a pitch error
-of 0.1 µm moves the beat by 4%. That is the same mathematics as a vernier, it
+Moiré is an **amplifier**. Against the 63.5 µm carrier, a 66.07 µm front
+grating (Δ = p₂ − p₁ = 2.57 µm) gives a 1635 µm beat. The beat is p₁p₂/Δ, so it
+is p₁/Δ = 24.7 times the carrier pitch and scales as 1/Δ: a 0.1 µm pitch error
+is 4% of Δ and moves the beat 4%. That is the same mathematics as a vernier, it
 is a free metrology instrument, and it is why the lid's band spacing is the
 most process-sensitive number in the design.
+
+Sampling one lattice through another — a pinhole array over a motif array — is
+the same superposition read a different way: the pinholes pick one point of
+each motif cell and the picked points drift cell to cell, so the eye sees the
+motif magnified by M = p_s/(p_s − p_m). B-MAG is that mechanism, and the only
+one here that needs two planes.
 
 ### 1.3 Parallax — the only thing that needs two plies
 
@@ -94,9 +133,8 @@ appears displaced against the front by
 
 > shift(θ) = t · tan(asin(sin θ / n))
 
-— 17.22 µm/° for the box (1.5 mm soda lime, n = 1.52) and **27.40 µm/° for a
-bonded pair cut from this plate** (2.29 mm quartz, n = 1.4585). Every
-angle in §4.4 is quoted for both.
+— 17.22 µm/° for the box and **27.40 µm/° for a bonded pair cut from this
+plate**. Every angle in §4.4 is quoted for both.
 
 For a parallax barrier the switch completes when the shift reaches a quarter of
 the comb pitch p, and the lanes are invisible while their subtense p/2D stays
@@ -106,7 +144,9 @@ under one eye cell. Dividing the two:
 
 The pitch cancels. At 300 mm the ratio is **152 for the box and 96 for this
 plate**: swap angle and barrier visibility are locked together by the glass
-alone, and only a thinner substrate or a closer viewer moves them.
+alone, and only a thinner substrate or a closer viewer moves them. A kinegram
+(P-SCAN) is the same barrier with N frames in 1/N lanes; it wants N times the
+registration.
 
 ### 1.4 Halftone — the only source of continuous tone
 
@@ -128,7 +168,7 @@ opinions into numbers, and they are read first (§6).
 
 ---
 
-## 2. What actually needs the bond
+## 2. What needs the bond
 
 This decides the area budget, so it comes before the experiments.
 
@@ -141,16 +181,16 @@ For indicator functions, inclusion–exclusion gives
 The left side is the transmission of **one plane** carrying both gratings as
 metal; the right side is the transmission of **two plies in contact**, each
 carrying one. They are the same function, and the 1[A₁]·1[A₂] term is the
-moiré. So the *static* moiré — beat spacing, fringe direction, contrast — can
-be measured on a single layer for free, and that is where a third of this plate
-went.
+beat. So the *static* moiré — beat spacing, fringe direction, contrast — can be
+measured on a single layer for free: 1,770 mm² of this plate, 26% of the
+written area, is single-layer moiré for that reason.
 
 The identity is optical, not just algebraic, under three assumptions worth
 naming: binary amplitude masks; geometric optics, so no diffraction between the
 planes; and zero gap, so the two lattices hold a fixed relative phase. In
 reflection off chrome the bright regions are the metal *union* rather than the
-clear *intersection* — the same cross term, with brightness inverted — which is
-why B-CONT's brightness claims are stated for transmission.
+clear *intersection* — the same cross term, with brightness inverted — so every
+contrast in this document is given for both.
 
 The gap buys two things and costs two:
 
@@ -161,40 +201,51 @@ The gap buys two things and costs two:
 
 ### 2.2 The near-field limit
 
-A grating does not cast a sharp shadow across millimetres. The box is lit by
-incoherent white light and viewed through a pupil, so the eye is the
-collimator and the question is how far a slit of width p/2 spreads by
-diffraction over the gap, inside glass of index n: roughly λ z / (n p). The
-shadow is gone once that spread reaches the slit width. The Fresnel number puts
-the same statement on one axis:
+A grating does not cast a sharp shadow across millimetres. Take λ = 550 nm.
+Under coherent light a 50% grating's odd orders carry phase
+exp(−2πi m² z / z_T) with z_T = 2p²n/λ. At z = z_T/4 that phase is −i for every
+odd m, so u = ½ − i(g − ½) and |u|² = ½ everywhere: the shadow has **zero**
+contrast. Define
 
-> N = p² n / (4 λ z)  —  N ≥ 1 the shadow is intact; N < ¼ it is gone
-> p_min = √(2 λ z / n)  —  **33 µm for the box, 42 µm for this plate**
+> N = p² n / (4 λ z) = z_T / (8 z)
 
-| pitch | N at box (1.5 mm) | N at witness (2.29 mm) | verdict |
+N = 1 is z_T/8, where |u|² = ½ ± 1/(2√2), contrast 0.71: intact. N = ½ is the
+null, and the pitch that puts the gap there is
+
+> p_min = √(2 λ z / n) — **33 µm for the box, 42 µm for this plate**
+
+N = ¼ is z_T/2, where coherent light would revive an inverted image. It does
+not here: the pupil's coherence width at the plate, λD/a = 33 µm, is under one
+period, and the revival needs the ±1 orders — sheared by λz/(np) = p at that
+distance — to stay coherent. So: **N ≥ 1 intact, ¼ < N < 1 degraded, N < ¼
+gone.**
+
+| pitch | N, box (1.5 mm) | N, witness (2.29 mm) | verdict |
 |---|---|---|---|
-| 5 µm | 0.012 | 0.007 | washed out |
-| 20 µm | 0.18 | 0.12 | washed out |
+| 5 µm | 0.012 | 0.007 | gone |
+| 20 µm | 0.18 | 0.12 | gone |
 | 30 µm | 0.41 | 0.26 | degraded |
 | 44 µm | 0.89 | 0.56 | degraded |
 | 63.5 µm | 1.86 | 1.17 | intact |
 | 100 µm | 4.6 | 2.9 | intact |
 
-The pupil adds a second blur of the same order — a 5 mm pupil at 300 mm is a
-25 µm ray bundle across the box gap, 38 µm across this plate's — so the
-boundary is soft, and E-NF measures it rather than trusting the constant. The
-shipping 63.5 µm carrier and 173 µm comb clear it; a 5 µm colour grating is two
-orders of magnitude past it, which is fine because colour is single-layer by
-construction. **No two-layer effect may be designed at a fine pitch.**
-
-(Coherent Talbot self-imaging, z_T = 2 p² n / λ, is not the mechanism here: it
-needs spatial and temporal coherence the box will never have, and its quarter
-distance is where a 50% grating's shadow *vanishes*, not survives.)
+The pupil adds a geometric blur of the same order: a 5 mm pupil at 300 mm is a
+16.7 mrad cone in air, 16.7/n inside the glass — 16 µm across the box gap,
+26 µm across this plate's. The boundary is therefore soft, and E-NF measures it
+rather than trusting the constant. The shipping 63.5 µm carrier and 173 µm comb
+clear it; a 5 µm colour grating is two orders of magnitude past it, which is
+fine because colour is single-layer by construction. **No two-layer effect may
+be designed at a fine pitch.**
 
 ### 2.3 The witness is quartz; the box is soda lime
 
-A 5″ mask blank is 0.090″ = 2.29 mm of fused quartz. Bonding two diced dies
-therefore does not reproduce the box:
+A 5″ mask blank is 2.29 mm of fused quartz. A bonded pair is the front die laid
+**chrome-up on top of the back die, also chrome-up**: adhesive between the back
+die's chrome and the front die's bare glass. The viewer sees the front chrome
+exposed and the back chrome through one ply, so t = 2.29 mm plus the adhesive,
+and neither pattern is mirrored — the export writes both dies in the same
+orientation, and a die must not be flipped. Bonding two dies therefore does not
+reproduce the box:
 
 | | thickness | n | parallax | n D / 2 t | swap at 173 µm |
 |---|---|---|---|---|---|
@@ -203,29 +254,41 @@ therefore does not reproduce the box:
 
 The witness is the harsher case on both counts, which is the useful direction:
 a barrier whose lanes are invisible here is safely invisible on the box. But
-**angles do not transfer, only verdicts do**, and every bonded cell is labelled
-with the witness angle.
+**angles do not transfer, only verdicts do.** The etched labels carry the
+pitch; the angles in this document are for the witness pair unless the box's
+is given beside them.
 
 ### 2.4 The moiré the halftone carries
 
-The box puts a 44 µm halftone screen over the 63.5 µm carrier. Their beats,
-with the screen at local duty *c* over a 50% carrier:
+The box puts the 44 µm halftone screen over the 63.5 µm carrier. Screen
+harmonic m has amplitude a_m = |sin(π m c)| / (π m); the 50% carrier's
+b_n = |sin(π n / 2)| / (π n), zero for even n. The (m, n) beat rides on the mean
+at amplitude 2 a_m b_n. The columns below are 2A/Ī — the modulation of that one
+component against the mean. For the fundamental it exceeds 100% because the
+other components fill in the waveform; it is a Michelson contrast only where one
+component dominates, which is the case for (2, 3). In transmission the mean is
+(1 − c)/2 (clear ∩ clear); in reflection off gold it is (1 + c)/2 (metal ∪
+metal), so every reflection figure is the transmission figure × (1 − c)/(1 + c).
+This is the *tone* case: screen at local duty c over a carrier held at 0.50.
 
-| (m, n) | beat | at 300 mm | Michelson contrast, c = 0.20 | c = 0.42 | c = 0.50 | c = 0.65 |
-|---|---|---|---|---|---|---|
-| (1, 1) | 143 µm | 1.65′ | 45% | 57% | 81% | 108% |
-| (2, 3) | **559 µm** | **6.4′** | 8.0% | 5.6% | **0** | 15.6% |
-| (1, 3) | 41 µm | 0.47′ | — | — | — | — |
+| (m, n) | beat | at 300 mm | 2A/Ī transmission, c = 0.20 / 0.42 / 0.50 / 0.65 | reflection off gold |
+|---|---|---|---|---|
+| (1, 1) | 143 µm | 1.65′ | 30 / 68 / 81 / 103% | 20 / 28 / 27 / 22% |
+| (2, 3) | **559 µm** | **6.4′** | 8.0 / 5.6 / **0** / 15.6% | 5.4 / 2.3 / **0** / 3.3% |
+| (1, 3) | 41 µm | 0.47′ | — | — |
 
-The (1,1) beat is at the edge of visibility and is what the screen-angle cell
-B-SCREEN attacks. The (2,3) beat is at **9.4 cycles/degree — the peak of the
-eye's contrast sensitivity, where 0.5% is visible** — and its contrast is zero
-only where the screen's local duty is exactly 0.50. A halftone spans duty
-0.05–0.95 *by design*, so on a photograph this beat is a **tone-dependent
-banding**: absent in the midtones, 8% in the quarter-tones, 30% in the
-highlights. Process bias does not create it; bias moves the null off the
-midtone. B-HARM measures the contrast at three duties; B-SCREEN measures how
-far running the screen perpendicular to the carrier suppresses both beats.
+The (1, 1) beat is at the edge of visibility and is what B-SCREEN attacks by
+screen angle. The (2, 3) beat is at 9.4 cycles/degree — on the upper flank of
+the eye's contrast-sensitivity peak (3–6 cpd), where 0.5–1% is visible — and
+its contrast is zero only where the screen's local duty is exactly 0.50. A
+halftone spans duty 0.05–0.95 *by design*, so on a photograph this beat is a
+**tone-dependent banding**. On the lid, seen in reflection, it is absent at the
+midtone, ≈5% in the light quarter-tones (the reflection curve peaks at 5.5%
+near c = 0.23) and 2–4% over the rest of the scale; held to a lamp in
+transmission the same plate shows 8% at c = 0.2 rising to 32% at c = 0.8 and
+40% at 0.9. Either way the null is at exactly 0.50: process bias moves it, it
+does not create it. B-HARM measures the null and its sign; B-SCREEN measures how
+far a perpendicular screen suppresses both beats.
 
 ### 2.5 The plate may never be bonded
 
@@ -233,7 +296,7 @@ Bonding is a separate operation. Sections 2.1–2.2 are what make that
 survivable: the entire static moiré programme is single-layer, and only
 *motion*, *sampling* and *registration* need two plies. Those are confined to
 one band of the plate — **34% of the written area** — so if the bond never
-happens two-thirds of the plate still returns its numbers.
+happens 66% of the plate still returns its numbers.
 
 ---
 
@@ -241,25 +304,26 @@ happens two-thirds of the plate still returns its numbers.
 
 | # | Failure | Consequence | Measured by |
 |---|---|---|---|
-| 1 | CD fine or coarse of design | colour period wrong; finest gratings may not print | **M-CD**, **D-PER** |
-| 2 | duty biased off 0.50 | efficiencies and tone wrong; the (2,3) null moves off the midtone | **M-DUTY**, **B-HARM** |
+| 1 | CD fine or coarse of design | colour pitch wrong; finest gratings may not print | **M-CD**, **D-PER** |
+| 2 | duty biased off 0.50 | efficiencies and tone wrong; the (2, 3) null moves off the midtone | **M-DUTY**, **B-HARM** |
 | 3 | plies misregister | every parallax effect degrades or inverts | **M-VERN** |
 | 4 | bond gap off design | parallax angles wrong; near-field limit moves | **P-RULE** |
-| 5 | pitch error × 25 into the beat | lid band spacing visibly wrong | **B-BEAT** |
+| 5 | pitch error × 24.7 into the beat | lid band spacing visibly wrong | **B-BEAT** |
 | 6 | dot gain | picture too dark or too light | **H-WEDGE** |
 | 7 | source too wide | colour washes to white | protocol, **D-PER** |
 | 8 | screen beats with the carrier | banding across the photograph | **B-HARM**, **B-SCREEN** |
 | 9 | polarity inverted | everything is its own negative | **M-POL** |
-| 10 | fine pitch across the gap | two-layer effect simply absent | **E-NF** |
+| 10 | fine pitch across the gap | two-layer effect absent | **E-NF** |
+| 11 | frame lattice angle or pitch off | perimeter-frame fringe spacing wrong | **B-VEC** |
+| 12 | kinegram lanes misregistered by more than p/2N | frames blend, motion stalls | **P-SCAN** |
+| 13 | sampler/motif pitch ratio off | magnified motif wrong size or upright | **B-MAG** |
 
 ---
 
 ## 4. The experiments
 
-Cell families are named by block — `M-` metrology, `D-` diffraction, `B-`
-beat/moiré, `P-` parallax, `H-` halftone, `E-` edge of envelope. The **etched
-label** on the plate is shorter and carries the parameter value; the tables
-below give both. Sizes and sweeps are those of the plate as built.
+Sizes and sweeps are those of the plate as built; the **etched** column is what
+is read under the microscope.
 
 ### 4.1 Metrology — read these first
 
@@ -267,57 +331,56 @@ below give both. Sizes and sweeps are those of the plate as built.
 |---|---|---|---|---|
 | **M-POL** | `M-POL CLEAR` | a square with a square hole, beside a 1:3 bar pair | — | reads as chrome with a clear centre. Inverted, the reverse. Ten seconds, before anything else is interpreted |
 | **M-CD** | `M-CD 0.8-8um dense / iso` | line/space pairs at 50% duty, and the same line widths isolated at 10× the pitch | 0.8 → 8 µm, 10 rungs, both environments | the finest rung that resolves, in each. Iso and dense do not print alike, and the colour ladder assumes the difference is small |
-| **M-DUTY** | `M-DUTY .30-.70 @10um / @5um` | one period, duty stepped | 0.30 → 0.70 in 0.05, at 10 µm and at 5 µm | the 0.50 rung shows **no second order** (η₂ = 0 there). If it does, 0.40 vs 0.60 gives the sign of the bias |
-| **M-VERN** | `M-VERN` | 80 / 88 µm comb pairs | — | coincidence read to 1 µm, 11× amplification. *Bonded* |
+| **M-DUTY** | `M-DUTY .30-.70 @10um / @5um` | one pitch, duty stepped | 0.30 → 0.70 in 0.05, at 10 µm and at 5 µm | the 0.50 rung shows **no second order** (η₂ = 0 there). If it does, 0.40 vs 0.60 gives the sign of the bias |
+| **M-VERN** | `M-VERN` | 80 / 88 µm comb pairs | — | coincidence read to 1 µm; beat 880 µm, gain p/Δ = 80/8 = 10×. *Bonded* |
 
 ### 4.2 Diffraction
 
 | Cell | Etched | Structure | Sweep | Pass |
 |---|---|---|---|---|
 | **D-PER** | `D-PER 2-20um` | bare gratings, 50% duty, one strip | 2 → 20 µm, 11 rungs | hue at fixed geometry and how wide the fan is. Read under a lamp *and* room light: the difference is the source-width result |
-| **D-CHIRP** | `D-CHIRP` | period swept along the patch | 22 → 3 µm | a graded fan, not one flashing hue; where it stops diffracting is a continuous CD read, and the sweep crosses the 4 µm floor |
+| **D-CHIRP** | `D-CHIRP` | pitch swept along the patch | 22 → 3 µm | a graded fan, not one flashing hue; where it stops diffracting is a continuous CD read, and the sweep crosses the 4 µm floor |
 | **D-CROSS** | `CROSS 5/5`, `5/8` | two orthogonal gratings on one layer | 2 cells | orders on a 2-D grid; the cheapest check that same-plane superposition behaves as §2.1 says |
-| **D-SWATCH** | `SW base/spread` | the whole 12-rung hue ladder as adjacent stripes | base 4 / 5 / 6.5 / 8 µm × spread 1.20 / 1.45 / 1.90 | which base and spread separate cleanly under a lamp. Base 4 µm and spread 1.90 put the blue end under the floor and are on the plate *to be seen failing* |
-| **D-BAND** | `BAND period`, `H` = tone held | a flat-tone halftone whose bands carry a sub-grating | 5.0 / 4.15 / 6.02 µm; tone held or not | does a *banded* grating still diffract, and what does holding tone cost? Separates "the colour works" from "the picture works" |
+| **D-SWATCH** | `SW base/spread` | the whole 12-rung hue ladder as adjacent stripes | base 4 / 5 / 6.5 / 8 µm × spread 1.20 / 1.45 / 1.90 | which base and spread separate cleanly under a lamp. `SW 4/*` and `SW 5/1.90` put the blue end under the floor and are on the plate *to be seen failing* |
+| **D-BAND** | `BAND pitch`, `H` = tone held | a flat quarter-tone halftone whose bands carry a sub-grating | `BAND 5H / 4.15H / 6.02H`: 22 µm bands, tone held (N = 4.4 periods at 5 µm); `BAND 5`: 10 µm bands, not held (N = 2.0) | the held cells still show a hue at N = 4.4 (~23% linewidth); the unheld one sits at N = 2.0, the two-period boundary where a spectrum should just fail. The pair is the cost of holding tone, measured (§1.1) |
 
 ### 4.3 Moiré — the largest block
 
 | Cell | Etched | Structure | Sweep | Pass |
 |---|---|---|---|---|
 | **B-BEAT** | `BEAT beat` | two pitches on one plane | beat 500 / 1000 / 1635 / 3000 / 6000 µm; each cell holds ≥ 5 fringes | count fringes; the count inverts to the true pitch error through p/Δ |
-| **B-CONT** | `BCON duty` | B-BEAT at 1635 µm, duty swept | 0.25 / 0.50 / 0.75 | fringe contrast and mean brightness, in transmission. Union coverage runs from c to 2c − c², so low duty is brighter at similar contrast |
+| **B-CONT** | `BCON duty` | B-BEAT at 1635 µm, duty swept | 0.25 / 0.50 / 0.75 | fringe contrast and mean brightness. Local metal coverage runs from c (lines coincident) to min(2c, 1) (interleaved). Transmission: mean (1−c)² = 0.56 / 0.25 / 0.06, contrast 0.20 / 1.0 / 1.0 — low duty is brighter, at a fifth of the contrast. Reflection: mean 0.44 / 0.75 / 0.94, contrast 0.33 / 0.33 / 0.14. Which reads better on a lid is not a calculation |
 | **B-ROT** | `ROT angle` | equal 63.5 µm pitch, one rotated | 1 / 2 / 4 / 8° → 3.6 / 1.8 / 0.91 / 0.46 mm | fringes along the lines, at the predicted spacing |
-| **B-VEC** | `VEC p2/angle` | 63.5 µm against 63.5 / 66.07 / 70 µm at 1 / 3 / 6° | 3 × 3 | the general |k₁ − k₂| formula the perimeter frame relies on |
-| **B-HARM** | `HARM duty` | 44 µm over 63.5 µm, both on one plane, duty swept | 0.42 / 0.50 / 0.58 | the 559 µm banding at the predicted contrast (§2.4) — 5.6%, 0, 7.7% |
+| **B-VEC** | `VEC p2/angle` | 63.5 µm against 63.5 / 66.07 / 70 µm at 1 / 3 / 6° | 3 × 3 | the general \|k₁ − k₂\| formula the perimeter frame relies on. The 1° column holds under 5 fringes at 5 mm and checks fringe *direction*, not spacing |
+| **B-HARM** | `HARM duty` | 44 µm over 63.5 µm, both on one plane, **both at the swept duty** | 0.42 / 0.50 / 0.58 | the uniform-bias case: (2, 3) at **3.5 / 0 / 6.7%** in transmission, 2 a₂(c) a₃(c)/(1−c)². The tone case of §2.4 (carrier held at 0.50) predicts 5.6 / 0 / 7.7% at the same duties. The cell tests the null and its sign, not the lid's amplitude |
 | **B-SCREEN** | `SCR angle` | 44 µm screen over the 63.5 µm carrier, screen rotated | 0 / 45 / 90° | how far the perpendicular screen suppresses the 143 µm and 559 µm beats |
-| **B-MAG** | `MAG 10x`, `30x` | pinhole array over a motif array | M = 10, 30 | M = p_r / (p_r − p_s). *Bonded* — sampling genuinely needs two planes |
-| **B-MOVE** | `B-MOVE` | the 1635 µm beat across the gap | — | the twin of `BEAT 1635`: same geometry, so the only difference is whether the fringes **travel** — about 700 µm per degree on this plate. *Bonded* |
+| **B-MAG** | `MAG 10x`, `31.6x` | pinhole array (sampler p_s = 60 µm) over a motif array (p_m = 66.0 / 61.9 µm) | M = p_s/(p_s − p_m) = −10 / −31.6, inverted | a floating lattice at the predicted magnification, upside-down. *Bonded* — sampling needs two planes |
+| **B-MOVE** | `B-MOVE` | the 1635 µm beat across the gap | — | the twin of `BEAT 1635`: same geometry, so the only difference is whether the fringes **travel** — (beat/p) × 27.40 µm/° ≈ 700 µm per degree on this plate. *Bonded* |
 
 ### 4.4 Parallax — bonded pairs
 
 | Cell | Etched | Structure | Sweep | Pass |
 |---|---|---|---|---|
-| **P-SWAP** | `SWAP comb` | barrier switch, quarter-period registered | comb 100 / 173 / 250 / 350 µm | swap at **0.91 / 1.58 / 2.28 / 3.19°** on this plate (1.45 / 2.51 / 3.63 / 5.08° on the box); lanes at 0.57 / 0.99 / 1.43 / 2.01′, so the last two are visible barriers. Where does the barrier become visible, and does it swap cleanly head-on? |
+| **P-SWAP** | `SWAP comb` | barrier switch, straddle-registered: the slit sits on a lane boundary head-on | comb 100 / 173 / 250 / 350 µm | a 50/50 blend head-on, clean B at +p/4 and clean A at −p/4: swap at **0.91 / 1.58 / 2.28 / 3.19°** on this plate (1.45 / 2.51 / 3.63 / 5.08° on the box); lanes at 0.57 / 0.99 / 1.43 / 2.01′, so the last two are visible barriers by construction |
 | **P-SCAN** | `SCAN N` | N-phase kinegram | N = 2 / 4 / 6 | crests travel one way; wants N× the registration of a 2-phase switch |
-| **P-RULE** | `P-RULE` | 60 µm comb on one ply, index line on the other | — | tilt until the index sits over tooth k: 2.2° per tooth on this plate. Reads t·n directly — the number every other bonded cell rests on |
+| **P-RULE** | `P-RULE` | 60 µm comb on one ply, index line on the other; a tooth edge sits under the index head-on | — | tilt until the index sits over tooth k: 2.19° per tooth on this plate (60 µm / 27.40 µm per °). Reads t/n directly — the number every other bonded cell rests on |
 
 ### 4.5 Halftone
 
 | Cell | Etched | Structure | Sweep | Pass |
 |---|---|---|---|---|
-| **H-WEDGE** | `WEDGE screen` | 16-patch tone wedge, duties on the screen's own ladder | screens 20 / 44 / 60 µm | measured coverage against designed: **the dot-gain number**, which inverts straight into the prep's `gain` |
+| **H-WEDGE** | `WEDGE screen` | 16-patch tone wedge, duties on the screen's own ladder | screens 20 / 44 / 60 µm | measured coverage against designed: **the dot-gain number**, which inverts straight into the prep gain. At 20 µm only 9 distinct duties fit (10 levels at the 2 µm floor), so seven patches repeat — read the repeats as within-cell uniformity; 44 and 60 µm give 16 distinct |
 | **H-ACU** | `H-ACU 20-60um` | bare screens, no image | 20 / 30 / 44 / 60 µm | at what pitch the lines are *seen*; 43.5 µm is the calculation, this is the measurement |
-| **H-PORT** | `PORT PLAIN / HUE / ZONES` | the three colour treatments, 12 mm | plain / hue-mapped / zone-mapped | the one subjective call: which goes on the lid |
+| **H-PORT** | `PORT PLAIN / HUE / ZONES` | the three colour treatments, 12 mm | plain / hue-mapped / zone-mapped | the one subjective call: which goes on the lid. Read with §1.1's cost of holding tone in mind |
 | **H-SCALE** | `SZ size` | one treatment at three sizes | 4 / 8 mm, with the 12 mm portraits as the third rung | where a halftone stops reading as a screen |
 
 ### 4.6 Edge of envelope
 
 | Cell | Etched | Structure | Sweep | Pass |
 |---|---|---|---|---|
-| **E-NF** | `NF pitch` | the beat pair split across two plies, pitch swept through the §2.2 boundary | 20 / 30 / 44 / 64 / 100 µm | where the two-layer fringes die: predicted between 44 and 64 µm on this plate. *Bonded*; its single-layer twins are the B-BEAT cells |
+| **E-NF** | `NF pitch` | the beat pair split across two plies, pitch swept through the §2.2 boundary | 20 / 30 / 44 / 64 / 100 µm | where the two-layer fringes die: N = ½ null at 42 µm on this plate, so 30 and 44 degraded, 64 and 100 intact. *Bonded*; its single-layer twins are the B-BEAT cells |
 
-Iso-dense bias, which earlier drafts listed as its own cell, is measured by the
-two M-CD strips and needs nothing more.
+Iso-dense bias is measured by the two M-CD strips and needs no cell of its own.
 
 ---
 
@@ -341,7 +404,7 @@ per die.
 4. **D-PER** and **D-SWATCH**, under a lamp *and* under room light. The
    difference is the source-width result.
 5. The **B-** block, single-layer. Count fringes; back out the pitch error
-   through p/Δ; read B-HARM's contrast against §2.4.
+   through p/Δ; read B-HARM's null and sign against §2.4.
 6. **B-MOVE**, **E-NF**, the **P-** block, bonded. Read by rocking the part.
 7. **H-WEDGE**, then the portraits last, with the dot gain already known.
 

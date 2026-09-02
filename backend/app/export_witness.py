@@ -26,7 +26,8 @@ Everything in Groups B, C and D is single-layer and needs no registration,
 which is why all the sweeps live there. The two-layer cells (A1, A2, A4, A6 and
 the C6 beat ladder) have nothing to register against on a single plate, so they
 are emitted as a FRONT die and a BACK die side by side inside a dicing frame:
-cut the pair, flip one, bond. That is the only part of this plate that costs a
+cut the pair, stack them chrome-up, bond. Neither die is mirrored — the back
+die is a translation of its design position — so a die must NOT be flipped. That is the only part of this plate that costs a
 process step the rest does not.
 
 There is also only one gold layer. Both members of a pair are the same physical
@@ -265,16 +266,25 @@ def doe_cells() -> list[list[Cell]]:
                 label=f"SW {bp:g}/{sp:.2f}", axis="D-SWATCH ladder", takes_polarity=True,
                 level=f"base {bp:g} um, spread {sp:.2f}",
                 note="whole hue ladder side by side -- replaces 8 portraits"))
+    # D-BAND: a BANDED grating, not a continuous one. Built at tone 0.25 so the
+    # held-tone band is 22 um (4.4 periods of 5 um) and the unheld one 11 um
+    # (2.2 periods): the pair measures what holding tone costs. At tone 0.5
+    # with tone held the band is the whole 44 um period and the cell is just a
+    # grating with a phase reset — which is what the H cells were until a
+    # reviewer read the manifest's band_um.
     for i, (t, per, ht) in enumerate([
-        ("band + 5.0 um", 5.0, True), ("band + 4.15 um", 4.15, True),
-        ("band + 6.02 um", 6.02, True), ("band, tone not held", 5.0, False),
+        ("band 22 um + 5.0 um, held", 5.0, True),
+        ("band 22 um + 4.15 um, held", 4.15, True),
+        ("band 22 um + 6.02 um, held", 6.02, True),
+        ("band 11 um + 5.0 um, not held", 5.0, False),
     ]):
         d_cells.append(_cell(
             f"BAND{i+1}", t, "diffraction", SWATCH_MM, SWATCH_MM,
             (lambda per=per, ht=ht: (lambda cx, cy, w, h:
-                wc.build_colour_band(cx, cy, w, h, period_um=per, hold_tone=ht)))(),
+                wc.build_colour_band(cx, cy, w, h, period_um=per, tone=0.25,
+                                     hold_tone=ht)))(),
             label=f"BAND {per:g}{'H' if ht else ''}", axis="D-BAND",
-            level=f"{per:g} um", note="does a BANDED grating still diffract?"))
+            level=f"{per:g} um", note="does a BANDED grating still diffract, and what does holding tone cost?"))
     B.append(d_cells)
 
     # === MOIRE, single layer -- the largest block ===========================
@@ -294,7 +304,7 @@ def doe_cells() -> list[list[Cell]]:
             (lambda c=c: (lambda cx, cy, w, h:
                 wm.build_beat_contrast(cx, cy, w, h, duty=c)))(),
             label=f"BCON {c:.2f}", axis="B-CONT duty", level=f"{c:.2f}",
-            note="low duty is brighter at similar contrast"))
+            note="transmission: low duty brighter at a fifth of the contrast; reflection ranks them the other way"))
     for a in ROTATION_LADDER_DEG:
         mo.append(_cell(
             f"ROT{a:g}", f"rotation {a:g} deg", "moire",
@@ -377,12 +387,12 @@ def doe_cells() -> list[list[Cell]]:
               lambda cx, cy, w, h, polarity=METAL: wc.build_vernier(
                   cx, cy, w, h, polarity=polarity),
               label="M-VERN", two_layer=True, takes_polarity=True,
-              note="80/88 um, 11x amplification. Read before anything else"),
+              note="80/88 um, beat 880 um, gain p/delta = 10x. Read before anything else"),
         _cell("P-RULE", "parallax ruler", "parallax", SWEEP_MM, 6.0,
               lambda cx, cy, w, h, polarity=METAL: wm.build_parallax_ruler(
                   cx, cy, w, h, polarity=polarity),
               label="P-RULE", two_layer=True, takes_polarity=True,
-              note="reads t*n directly: 2.2 deg per tooth at a 2.29 mm quartz pair"),
+              note="reads t/n directly: 2.19 deg per tooth at a 2.29 mm quartz pair"),
         _cell("B-MOVE", "beat, across the gap", "moire", _beat_w_mm(1635.0),
               BEAT_H_MM,
               lambda cx, cy, w, h, polarity=METAL: wc.build_shading_moire(
@@ -398,7 +408,7 @@ def doe_cells() -> list[list[Cell]]:
                                     polarity=polarity)))(),
             label=f"NF {p_um:g}um", axis="E-NF pitch", level=f"{p_um:g} um",
             two_layer=True, takes_polarity=True,
-            note="Talbot: the shadow should die below about 50 um at this gap"))
+            note="Fresnel N = 1/2 null at 42 um: 30-44 degraded, >= 64 intact"))
     for comb in SWITCH_COMB_LADDER_UM:
         two.append(_cell(
             f"SWAP{comb:g}", f"switch, comb {comb:g} um", "parallax",
@@ -408,7 +418,7 @@ def doe_cells() -> list[list[Cell]]:
                                         polarity=polarity)))(),
             label=f"SWAP {comb:g}um", axis="P-SWAP comb", level=f"{comb:g} um",
             two_layer=True, takes_polarity=True,
-            note="quarter-period registered; witness angles, not box angles"))
+            note="straddle-registered: 50/50 blend head-on, clean A/B at +-p/4. Witness angles"))
     for n_ph in SCAN_PHASE_LADDER:
         two.append(_cell(
             f"SCAN{n_ph}", f"scanimation, {n_ph} phase", "parallax",
@@ -418,14 +428,15 @@ def doe_cells() -> list[list[Cell]]:
                                      polarity=polarity)))(),
             label=f"SCAN {n_ph}", axis="P-SCAN phases", level=str(n_ph),
             two_layer=True, takes_polarity=True, note=f"wants {n_ph}x the registration of a 2-phase switch"))
-    for mag, ps in (("10", 66.0), ("30", 61.9)):
+    for mag, ps in (("-10", 66.0), ("-31.6", 61.9)):
         two.append(_cell(
             f"MAG{mag}", f"magnifier M={mag}", "moire", SWEEP_MM, SWEEP_MM,
             (lambda ps=ps: (lambda cx, cy, w, h, polarity=METAL:
                 wc.build_moire_magnifier(cx, cy, w, h, sampler_um=60.0,
                                          motif_um=ps, polarity=polarity)))(),
-            label=f"MAG {mag}x", axis="B-MAG magnification", level=f"M={mag}",
-            two_layer=True, takes_polarity=True, note="sampling genuinely needs two planes"))
+            label=f"MAG {abs(float(mag)):g}x", axis="B-MAG magnification", level=f"M={mag}",
+            two_layer=True, takes_polarity=True,
+            note="M = p_s/(p_s - p_m), negative: the ghost is inverted. Sampling needs two planes"))
     B.append(two)
     return B
 
@@ -868,45 +879,51 @@ def write_gds(plate: dict[str, Any], out_path: Path, *, flat: bool = False) -> P
 
 
 def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
-    """A one-page plate map: where every cell is and what it is a rung of."""
+    """A one-page plate map from the manifest: block colour, etched label, and
+    the bonded band shaded. Keyed on ``block`` — an earlier version keyed on the
+    single-letter group and coloured one block of five."""
     s = PLATE_SIDE_UM
     sc = 900.0 / s
-    GROUP_FILL = {"A": "#7c4dff", "B": "#00b8a9", "C": "#f0a202", "D": "#e0457b"}
+    FILL = {"moire": "#e0457b", "diffraction": "#00b8a9", "parallax": "#7c4dff",
+            "halftone": "#f0a202", "metrology": "#9fb0b6"}
+    man = plate["manifest"]
+    two = [m for m in man if m["two_layer"]]
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 940" '
-        f'width="900" height="940"><rect width="900" height="940" fill="#0d1113"/>',
-        f'<rect x="0" y="0" width="900" height="900" fill="none" '
-        f'stroke="#3a4449" stroke-width="2"/>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 960" '
+        f'width="900" height="960"><rect width="900" height="960" fill="#0d1113"/>',
+        f'<rect x="0" y="0" width="900" height="900" fill="none" stroke="#3a4449" stroke-width="2"/>',
     ]
-    for m in plate["manifest"]:
+    if two:
+        y_top = max(m["y_mm"] * MM + m["h_mm"] * MM / 2 for m in two)
+        y_bot = min(m["y_mm"] * MM - m["h_mm"] * MM / 2 for m in two)
+        parts.append(f'<rect x="2" y="{(s/2 - y_top)*sc:.1f}" width="896" '
+                     f'height="{(y_top - y_bot)*sc:.1f}" fill="#7c4dff" fill-opacity=".07"/>')
+    for m in man:
         x = (m["x_mm"] * MM + s / 2) * sc
         y = (s / 2 - m["y_mm"] * MM) * sc
         w = m["w_mm"] * MM * sc
         h = m["h_mm"] * MM * sc
-        fill = GROUP_FILL.get(m["group"], "#888")
-        parts.append(
-            f'<rect x="{x-w/2:.1f}" y="{y-h/2:.1f}" width="{w:.1f}" height="{h:.1f}" '
-            f'fill="{fill}" fill-opacity="0.22" stroke="{fill}" stroke-width="1"/>'
-        )
-        if w > 26:
-            parts.append(
-                f'<text x="{x:.1f}" y="{y:.1f}" fill="#e6eef1" font-size="{min(13, w/4):.0f}" '
-                f'font-family="monospace" text-anchor="middle">{m["cid"]}</text>'
-            )
+        fill = FILL.get(m["block"], "#888")
+        parts.append(f'<rect x="{x-w/2:.1f}" y="{y-h/2:.1f}" width="{w:.1f}" height="{h:.1f}" '
+                     f'fill="{fill}" fill-opacity=".22" stroke="{fill}" stroke-width="1"/>')
+        if w > 40:
+            fs = max(7, min(11, w / max(6, len(m["label"]) * 0.75)))
+            parts.append(f'<text x="{x:.1f}" y="{y+3:.1f}" fill="#e6eef1" font-size="{fs:.0f}" '
+                         f'font-family="monospace" text-anchor="middle">{m["label"]}</text>')
         if m["two_layer"]:
-            parts.append(
-                f'<rect x="{x-w/2+w+GUTTER_UM*sc:.1f}" y="{y-h/2:.1f}" '
-                f'width="{w:.1f}" height="{h:.1f}" fill="{fill}" fill-opacity="0.10" '
-                f'stroke="{fill}" stroke-dasharray="3 2" stroke-width="1"/>'
-            )
+            parts.append(f'<rect x="{x-w/2+w+GUTTER_UM*sc:.1f}" y="{y-h/2:.1f}" width="{w:.1f}" '
+                         f'height="{h:.1f}" fill="{fill}" fill-opacity=".10" stroke="{fill}" '
+                         f'stroke-dasharray="3 2" stroke-width="1"/>')
     lg = plate["layout"]
-    parts.append(
-        f'<text x="10" y="918" fill="#9fb0b6" font-size="14" font-family="monospace">'
-        f'5in witness plate &#183; {len(plate["manifest"])} cells &#183; '
-        f'{lg["height_used_mm"]:.1f} of {lg["height_available_mm"]:.1f} mm used'
-        f'</text>'
-    )
-    parts.append('</svg>')
+    x = 10
+    for blk, col in FILL.items():
+        parts.append(f'<rect x="{x}" y="912" width="12" height="12" fill="{col}" fill-opacity=".6"/>'
+                     f'<text x="{x+16}" y="922" fill="#9fb0b6" font-size="12" font-family="monospace">{blk}</text>')
+        x += 16 + 8 * len(blk) + 22
+    parts.append(f'<text x="10" y="948" fill="#9fb0b6" font-size="12" font-family="monospace">'
+                 f'{len(man)} cells &#183; {lg["height_used_mm"]:.1f} of {lg["height_available_mm"]:.0f} mm used '
+                 f'&#183; dashed = back die &#183; shaded band = everything that needs a bond</text>')
+    parts.append("</svg>")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(parts), encoding="utf-8")

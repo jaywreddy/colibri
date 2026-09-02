@@ -343,15 +343,29 @@ def build_beat_contrast(cx: float, cy: float, w: float, h: float, *,
                         duty: float = 0.5) -> CellArt:
     """B-CONT — the same beat at three duties.
 
-    Union coverage runs from ``c`` (aligned) to ``2c - c^2`` (anti-aligned), so
-    a low duty is BRIGHTER at similar fringe contrast. Whether that reads better
-    on a lid is not a calculation.
+    Local metal coverage runs from ``c`` where the two gratings' lines coincide
+    to ``min(2c, 1)`` where they interleave, mean ``2c − c²`` over a beat. In
+    TRANSMISSION the clear fraction is the complement, so the mean is
+    ``(1 − c)²`` and the envelope contrast ``c / (2 − 3c)`` (clipping at 1 once
+    the interleaved coverage reaches 100%). In REFLECTION off chrome the bright
+    fraction is the metal itself: mean ``2c − c²``, contrast
+    ``(min(2c,1) − c) / (min(2c,1) + c)``. Both are reported because the witness
+    is read on a light table and the lid is seen in reflection, and they rank
+    the duties differently.
     """
     art = build_beat(cx, cy, w, h, period_um=period_um, beat_um=beat_um, duty=duty)
-    art.stats["coverage_aligned"] = round(duty, 3)
-    art.stats["coverage_anti"] = round(2 * duty - duty * duty, 3)
-    art.stats["contrast"] = round(
-        (2 * duty - duty * duty - duty) / (2 * duty - duty * duty + duty), 3)
+    c = duty
+    cmax = min(2.0 * c, 1.0)
+    t_lo, t_hi = 1.0 - cmax, 1.0 - c
+    art.stats.update({
+        "coverage_min": round(c, 3),
+        "coverage_max": round(cmax, 3),
+        "coverage_mean": round(2 * c - c * c, 3),
+        "mean_T": round((1 - c) ** 2, 3),
+        "contrast_T": round((t_hi - t_lo) / (t_hi + t_lo), 3) if (t_hi + t_lo) > 0 else 1.0,
+        "mean_R": round(2 * c - c * c, 3),
+        "contrast_R": round((cmax - c) / (cmax + c), 3),
+    })
     return art
 
 
@@ -564,18 +578,22 @@ def build_parallax_ruler(cx: float, cy: float, w: float, h: float, *,
     """
     cw = min(w, comb_um * n)
     comb_cy, comb_h = cy - h * 0.15, h * 0.5
+    # Anchor a tooth EDGE under the index line head-on, so the read starts at
+    # zero; origin-anchored, the index sat a third of a tooth past an edge.
+    comb_phase = cx % comb_um
     ix0, ix1 = cx - comb_um * 0.12, cx + comb_um * 0.12
     iy0, iy1 = cy + h * 0.12, cy + h * 0.45
     per_deg = gap_um * math.tan(math.asin(math.sin(math.radians(1.0)) / n_index))
     if polarity == "metal":
-        be, br = grating_array(cx, comb_cy, cw, comb_h, comb_um, 0.5)
+        be, br = grating_array(cx, comb_cy, cw, comb_h, comb_um, 0.5, phase_um=comb_phase)
         art = CellArt(front=_rect(ix0, iy0, ix1, iy1), back=br, back_arrays=[be])
         n_r = 1 + len(br)
     else:
         front = outside_boxes(cx, cy, w, h, [(ix0, ix1, iy0, iy1)])
         back = outside_boxes(cx, cy, w, h, [(cx - cw / 2, cx + cw / 2,
                                              comb_cy - comb_h / 2, comb_cy + comb_h / 2)])
-        be, br = grating_array_inverse(cx, comb_cy, cw, comb_h, comb_um, 0.5)
+        be, br = grating_array_inverse(cx, comb_cy, cw, comb_h, comb_um, 0.5,
+                                       phase_um=comb_phase)
         art = CellArt(front=front, back=_cat(back, br), back_arrays=[be])
         n_r = len(front) + len(back) + len(br)
     art.stats = {"polarity": polarity, "comb_um": comb_um, "n_teeth": n,

@@ -445,3 +445,32 @@ def test_the_plate_reports_what_flattening_would_cost():
     plate = build_plate(cells, verbose=False, polarity=METAL)
     assert flat_rect_count(plate) > len(plate["front"])
     assert plate["manifest"][0]["n_array_bands"] > 0
+
+
+def test_the_barrier_switch_is_straddle_registered_wherever_the_cell_sits():
+    """The comb must be anchored to the CELL, not the plate origin. Anchored to
+    the origin, head-on registration was x0 mod p — zero for three combs and
+    65 um for the shipping 173 um one, so that cell alone came out 25/75 and
+    swapped at 0.79 and 2.37 deg instead of a symmetric pair. Found by a
+    reviewer recomputing the cell, not by any test."""
+    for comb in (100.0, 173.0, 250.0, 350.0):
+        for x_left in (0.0, 16500.0, 12345.0):
+            a = wc.build_barrier_switch(x_left + 4000, 0, 8000, 8000, comb_um=comb)
+            assert a.stats["head_on_A_fraction"] == pytest.approx(0.5, abs=1e-6), (comb, x_left)
+            assert a.stats["peak_shift_um"] == pytest.approx(comb / 4.0)
+
+
+def test_the_band_cells_are_banded_not_continuous():
+    """At tone 0.5 with tone held the band was the whole 44 um period — a
+    continuous grating with a phase reset, not a banded one. At tone 0.25 the
+    held band is 22 um (4.4 periods of 5 um) and the unheld one 10 um (2.0), so
+    the pair measures what holding tone costs."""
+    held = wc.build_colour_band(0, 0, 6000, 6000, period_um=5.0, tone=0.25, hold_tone=True)
+    loose = wc.build_colour_band(0, 0, 6000, 6000, period_um=5.0, tone=0.25, hold_tone=False)
+    assert held.stats["band_um"] == pytest.approx(22.0)
+    assert loose.stats["band_um"] == pytest.approx(10.0)
+    assert held.stats["band_um"] < 44.0, "a full-period band is not a band"
+    # 10 um at 5 um pitch is exactly two periods — the boundary the cell probes,
+    # so the stat sits on the threshold; only the ordering is pinned here.
+    assert held.stats["periods_per_band"] > loose.stats["periods_per_band"]
+    assert loose.stats["periods_per_band"] == pytest.approx(2.0)

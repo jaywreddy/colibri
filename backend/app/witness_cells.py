@@ -353,25 +353,44 @@ def build_barrier_switch(
     cx: float, cy: float, w: float, h: float, *, comb_um: float = 173.0,
     polarity: str = METAL,
 ) -> CellArt:
-    """A1 test panel — two interlaced lane classes under a slit comb.
+    """P-SWAP test panel — two interlaced lane classes under a slit comb.
 
-    Back carries A/B bars in alternating half-comb lanes; front is the comb,
-    registered a QUARTER period over so a clean image shows head-on. That phase
-    is the free improvement the analysis turned up: as originally built the
-    slit straddled a lane boundary at rest, so head-on showed a blend and you
-    had to tilt 2.5 deg to see anything at all.
+    Back carries A/B bars in alternating half-comb lanes; front is the comb.
+    The comb is anchored to the CELL's left edge, where the lanes start — not to
+    the plate origin. Anchored to the origin, head-on registration was
+    ``x0 mod p``, which happened to be zero for three combs and 65 um for the
+    shipping 173 um one, so that cell alone came out 25/75 head-on and swapped
+    at 0.79 and 2.37 deg instead of a symmetric pair. Found by a reviewer
+    recomputing the cell, not by any test; the ``head_on_A_fraction`` stat now
+    exists so the page prints it.
+
+    Registration is the box's straddle convention (CLAUDE.md): the slit sits on
+    a lane boundary head-on, so head-on is a 50/50 blend and the clean images
+    are at a back shift of +-p/4 — one image per tilt sign.
     """
     lane = comb_um / 2.0
     n = max(2, int(w / lane))
     k = np.arange(n)
-    x0 = cx - w / 2.0 + k * lane
+    x_left = cx - w / 2.0
+    x0 = x_left + k * lane
     back = np.empty((n, 4), dtype=np.float64)
     back[:, 0], back[:, 1] = x0, x0 + lane
     tall = (k % 2) == 0
     back[:, 2] = cy - h / 2.0
     back[:, 3] = np.where(tall, cy + h * 0.45, cy - h * 0.10)
+    # metal lines of the comb start p/4 past a lane boundary, so the slit
+    # (their complement) is centred ON the boundary: a 50/50 blend head-on
+    phase = (x_left % comb_um) + comb_um * 0.25
+    # fraction of the head-on slit that looks at lane class A: the slit is
+    # [u - p/4, u + p/4] with u its centre inside the A|B period, A = [0, p/2)
+    u = (phase + 0.75 * comb_um - x_left) % comb_um
+    lo, hi = u - comb_um / 4.0, u + comb_um / 4.0
+    over_a = (max(0.0, min(hi, lane) - max(lo, 0.0))
+              + max(0.0, min(hi, comb_um + lane) - max(lo, comb_um))   # next period's A
+              + max(0.0, min(hi, 0.0) - max(lo, -lane)) * 0.0)          # previous period is B
+    head_on_a = over_a / lane
     f = grating_array if polarity == METAL else grating_array_inverse
-    fe, fr = f(cx, cy, w, h, comb_um, 0.5, phase_um=comb_um * 0.25)
+    fe, fr = f(cx, cy, w, h, comb_um, 0.5, phase_um=phase)
     art = CellArt(front=fr, arrays=[fe])
     if polarity == METAL:
         art.back = back
@@ -382,7 +401,8 @@ def build_barrier_switch(
     art.stats = {
         "polarity": polarity,
         "comb_um": comb_um, "lane_um": lane, "peak_shift_um": comb_um / 4.0,
-        "quarter_period_registered": True,
+        "head_on_A_fraction": round(float(head_on_a), 3),
+        "registration": "straddle: blend head-on, clean images at +-p/4",
         "n_rects": int(len(art.back)), "n_arrays": 1,
     }
     return art
@@ -392,22 +412,24 @@ def build_scanimation(
     cx: float, cy: float, w: float, h: float, *, comb_um: float = 173.0,
     phases: int = 4, polarity: str = METAL,
 ) -> CellArt:
-    """A2 test panel — N-phase kinegram, N frames in 1/N-pitch lanes.
+    """P-SCAN test panel — N-phase kinegram, N frames in 1/N-pitch lanes.
 
-    The bare-line version, where the direction of travel is unambiguous; on the
-    capybara's water it plausibly moves either way.
+    The bare-line version, where the direction of travel is unambiguous. The
+    comb is anchored to the cell's left edge like the lanes (see
+    :func:`build_barrier_switch` for what origin-anchoring did).
     """
     lane = comb_um / phases
     n = max(phases, int(w / lane))
     k = np.arange(n)
-    x0 = cx - w / 2.0 + k * lane
+    x_left = cx - w / 2.0
+    x0 = x_left + k * lane
     ph = k % phases
     back = np.empty((n, 4), dtype=np.float64)
     back[:, 0], back[:, 1] = x0, x0 + lane
     y = cy - h / 2.0 + (ph / float(phases)) * h * 0.78
     back[:, 2], back[:, 3] = y, y + h * 0.18
     f = grating_array if polarity == METAL else grating_array_inverse
-    fe, fr = f(cx, cy, w, h, comb_um, 1.0 / phases)
+    fe, fr = f(cx, cy, w, h, comb_um, 1.0 / phases, phase_um=(x_left % comb_um))
     art = CellArt(front=fr, arrays=[fe])
     if polarity == METAL:
         art.back = back
@@ -456,16 +478,17 @@ def build_moire_magnifier(
 ) -> CellArt:
     """A6 — a pinhole array over a slightly different motif pitch.
 
-    Transmission is ``(1 − f)(1 − b)``, so the sampler must be GOLD WITH HOLES
+    Transmission is ``(1 − f)(1 − b)``, so the sampler must be CHROME WITH HOLES
     rather than sparse dots; the inverted version reads as a grey field and
-    nothing floats.
+    nothing floats. ``M = p_s/(p_s − p_m)`` is negative here (motif coarser than
+    sampler), so the magnified image is inverted.
 
     Both plies are 2-D lattices, so both are written as one array per row: the
     sampler's clear complement is its pinhole grid, and the dot field's clear
     complement is the gaps between dots plus the strips between rows. As
     booleans these two cells alone were 55,000 polygons.
     """
-    mag = sampler_um / (sampler_um - motif_um)
+    mag = sampler_um / (sampler_um - motif_um)     # signed: negative = inverted
     hole = max(MIN_FEATURE_UM * 2.0, sampler_um * 0.18)
     dot = max(MIN_FEATURE_UM * 3.0, motif_um * 0.35)
     x0, x1 = cx - w / 2.0, cx + w / 2.0
