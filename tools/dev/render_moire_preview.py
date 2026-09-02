@@ -149,10 +149,15 @@ def main():
         c, a = build(cid)
         cov = raster(a, 0, 0, c.w_um, c.h_um, px_um=1.0)
         t = tile(cov, 110, c.w_um, c.h_um)
-        prof = cov.mean(axis=0)
+        # The profile must come from the RAW 1 um raster, not the eye-integrated
+        # one: at 87 um bins a 559 um period is six samples and the column means
+        # are binning noise. At 1 um it is 559 samples, and a 286 um box average
+        # (two (1,1) beats) removes the 143 um component and leaves (2,3) standing.
+        raw = raster(a, 0, 0, c.w_um, c.h_um, px_um=1.0, eye_um=1.0)
+        prof = raw.mean(axis=0)
         # the eye-cell raster still carries the 143 um (1,1) beat; a 286 um
         # moving average removes it and leaves the 559 um component we are after
-        k = max(1, int(round(286.0 / (c.w_um / len(prof)))))
+        k = 286                                  # um, at 1 um per sample
         prof = np.convolve(prof, np.ones(k) / k, mode="valid")   # no edge spikes
         prof = prof - prof.mean()
         pw = t.width
@@ -160,7 +165,7 @@ def main():
         d = ImageDraw.Draw(pimg)
         xs = np.linspace(0, pw - 1, len(prof))
         amp = max(1e-6, float(np.abs(prof).max()))
-        scale = max(amp, 0.004)          # common scale so a flat 0.50 reads flat
+        scale = max(amp, 0.01)           # common scale so a flat 0.50 reads flat
         xs = np.linspace(0, pw - 1, len(prof))
         pts = [(x, 23 - v / scale * 20) for x, v in zip(xs, prof)]
         d.line(pts, fill=WARN, width=1)
