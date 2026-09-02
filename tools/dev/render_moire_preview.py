@@ -157,18 +157,25 @@ def main():
         prof = raw.mean(axis=0)
         # the eye-cell raster still carries the 143 um (1,1) beat; a 286 um
         # moving average removes it and leaves the 559 um component we are after
-        k = 286                                  # um, at 1 um per sample
-        prof = np.convolve(prof, np.ones(k) / k, mode="valid")   # no edge spikes
+        # Cascade of integer-length box filters: each nulls its own period and
+        # that period's harmonics exactly. 143 um (the (1,1) beat), 64 and 44 um
+        # (the two gratings). A single 286 um box left +-3.9% of grating residue,
+        # which buries a +-1.75% beat.
+        for k in (143, 64, 44):
+            prof = np.convolve(prof, np.ones(k) / k, mode="valid")
         prof = prof - prof.mean()
+        # decimate to ~2 samples per plotted pixel so the line is a curve, not hash
         pw = t.width
+        step = max(1, len(prof) // (2 * pw))
+        prof = prof[: len(prof) // step * step].reshape(-1, step).mean(axis=1)
         pimg = Image.new("RGB", (pw, 46), BG)
         d = ImageDraw.Draw(pimg)
         xs = np.linspace(0, pw - 1, len(prof))
         amp = max(1e-6, float(np.abs(prof).max()))
         scale = max(amp, 0.01)           # common scale so a flat 0.50 reads flat
-        xs = np.linspace(0, pw - 1, len(prof))
-        pts = [(x, 23 - v / scale * 20) for x, v in zip(xs, prof)]
-        d.line(pts, fill=WARN, width=1)
+        d.line([(0, 15), (pw, 15)], fill=(40, 48, 52))
+        pts = [(x, 15 - v / scale * 13) for x, v in zip(xs, prof)]
+        d.line(pts, fill=WARN, width=2)
         d.text((2, 32), f"559 um component: +-{amp*100:.2f}% of mean", fill=DIM, font=font(9))
         both = Image.new("RGB", (pw, t.height + 48), BG)
         both.paste(t, (0, 0)); both.paste(pimg, (0, t.height + 2))
