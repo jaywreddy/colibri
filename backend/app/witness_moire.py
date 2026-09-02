@@ -513,13 +513,22 @@ def build_near_field(cx: float, cy: float, w: float, h: float, *,
 
     The same beat pair as B-BEAT but split across the two plies, at a pitch
     swept through the near-field boundary. A grating does not cast a sharp
-    shadow across millimetres: self-imaging revives at the Talbot distance
-    ``z_T = 2p^2/lambda``, and between revivals the shadow washes out. Taking
-    ``z_T/4`` as the survival point predicts a boundary near 50 um at a 2.29 mm
-    quartz pair. This cell measures it instead of assuming it.
+    shadow across millimetres: a slit of width p/2 spreads by roughly
+    ``lambda z / (n p)`` over a gap z inside glass of index n, and once that
+    spread reaches p/2 the shadow is gone. ``p_min = sqrt(2 lambda z / n)`` is
+    33 um at the box's 1.5 mm and 42 um at this plate's 2.29 mm quartz pair.
+    This cell measures the boundary instead of assuming it.
     """
+    # Incoherent white light: the eye, not the source, is the collimator, so the
+    # question is how far a p/2 slit's shadow spreads by DIFFRACTION across the
+    # gap inside the glass. Fresnel number N = p^2 n / (4 lambda z); N >= 1 the
+    # shadow is intact, N < 0.25 it is gone. (Coherent Talbot self-imaging is
+    # NOT the mechanism, and z_T/4 is where a 50% grating's shadow VANISHES,
+    # which an earlier version of this cell had backwards.)
     lam = 0.55
-    z_t = 2.0 * period_um * period_um / lam
+    n_idx = 1.4585
+    fresnel = period_um * period_um * n_idx / (4.0 * lam * gap_um)
+    p_min = math.sqrt(2.0 * lam * gap_um / n_idx)
     delta = beat_delta_for(period_um, beat_um)
     f = grating_array if polarity == "metal" else grating_array_inverse
     fe, fr = f(cx, cy, w, h, period_um + delta, duty)
@@ -527,10 +536,11 @@ def build_near_field(cx: float, cy: float, w: float, h: float, *,
     art = CellArt(front=fr, back=br, arrays=[fe], back_arrays=[be])
     art.stats = {
         "polarity": polarity, "period_um": period_um, "beat_um": beat_um,
-        "talbot_um": round(z_t, 1), "gap_over_talbot": round(gap_um / z_t, 3),
-        "predicted": ("intact" if gap_um / z_t < 0.25
-                      else "degraded" if gap_um / z_t < 1.0 else "washed out"),
-        "single_layer": False, "n_rects": 0, "n_arrays": 2,
+        "gap_um": gap_um, "fresnel_number": round(fresnel, 3),
+        "p_min_um": round(p_min, 1),
+        "predicted": ("intact" if fresnel >= 1.0
+                      else "degraded" if fresnel >= 0.25 else "washed out"),
+        "single_layer": False, "n_rects": int(len(fr) + len(br)), "n_arrays": 2,
     }
     return art
 

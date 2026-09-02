@@ -308,15 +308,18 @@ def test_the_even_harmonic_moire_exists_ONLY_under_duty_bias():
     assert nominal.stats["n_visible"] < biased.stats["n_visible"]
 
 
-def test_the_near_field_ladder_brackets_the_talbot_boundary():
-    """Two-layer effects need a coarse pitch: a grating does not cast a sharp
-    shadow across millimetres. The ladder must straddle the predicted boundary
-    or it measures nothing."""
+def test_the_near_field_ladder_brackets_the_fresnel_boundary():
+    """Two-layer effects need a coarse pitch: a p/2 slit spreads by lambda*z/(n*p)
+    across the gap, and the ladder must straddle p_min = sqrt(2*lambda*z/n) or it
+    measures nothing. (Coherent Talbot self-imaging is NOT the criterion; its
+    quarter distance is where a 50% grating's shadow vanishes.)"""
     verdicts = [wm.build_near_field(0, 0, 8000, 8000, period_um=p).stats["predicted"]
                 for p in NEAR_FIELD_LADDER_UM]
     assert "washed out" in verdicts and "intact" in verdicts, verdicts
-    fine = wm.build_near_field(0, 0, 8000, 8000, period_um=5.0)
-    assert fine.stats["gap_over_talbot"] > 10, "a colour grating is far past it"
+    ref = wm.build_near_field(0, 0, 8000, 8000, period_um=44.0).stats
+    assert ref["p_min_um"] == pytest.approx(41.6, abs=0.5), "2.29 mm quartz pair"
+    fine = wm.build_near_field(0, 0, 8000, 8000, period_um=5.0).stats
+    assert fine["fresnel_number"] < 0.05, "a colour grating is far past it"
 
 
 def test_the_swatch_reports_when_its_blue_end_is_unprintable():

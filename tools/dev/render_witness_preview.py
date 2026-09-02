@@ -169,11 +169,11 @@ def main() -> int:
     print("three variants at %g mm ..." % PORTRAIT_MM)
     rows = []
     for cid, mode, title, sub in [
-        ("B6a", "plain", "B6a  plain gold  — the control",
+        ("PORT-P", "plain", "PORT PLAIN  — the control",
          "identical code path, empty period field: any difference below is the colour"),
-        ("B6b", "hue", "B6b  hue-mapped  — period from every pixel's own hue",
+        ("PORT-H", "hue", "PORT HUE  — period from every pixel's own hue",
          "a gold photograph that shifts colour with view; 12 rungs over the whole frame"),
-        ("B6c", "zones", "B6c  zone-mapped  — flowers by hue, sweater and glasses authored",
+        ("PORT-Z", "zones", "PORT ZONES  — flowers by hue, sweater and glasses authored",
          "carpet takes one rung per petal colour; sweater mid-ladder; frames at the blue end"),
     ]:
         plan = _plan(mode)
