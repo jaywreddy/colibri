@@ -30,7 +30,7 @@ from .patterns.bitmap.colourzone import MIN_FEATURE_UM
 PLATE_SIDE_UM = 127_000.0            # 5 inch square
 EDGE_MARGIN_UM = 4_000.0             # handling / chuck exclusion
 USABLE_UM = PLATE_SIDE_UM - 2.0 * EDGE_MARGIN_UM
-GUTTER_UM = 1_500.0
+GUTTER_UM = 1_000.0                  # = the blank's hand-scribe street
 LABEL_H_UM = 900.0                   # gold cell-ID text under each cell
 
 LAYER_FRONT = (10, 0)
@@ -79,6 +79,9 @@ class CellArt:
     free_polys: list[np.ndarray] = field(default_factory=list)
     """Variable-vertex polygons, each ``(k, 2)``. Only the boolean clear-field
     inverter produces these: a box minus a grating is not a rectangle."""
+    back_polys: list[np.ndarray] = field(default_factory=list)
+    """Polygons belonging to the BACK die of a bonded pair, built at the front
+    die's centre; the plate shifts them to the pair position."""
     back_arrays: list[dict[str, Any]] = field(default_factory=list)
     """Array-referenced geometry belonging to the BACK die of a bonded pair;
     the plate shifts it to the pair position."""
@@ -119,6 +122,16 @@ class Cell:
     cell that sets this False is."""
     level: str = ""
     """This cell's value on that axis."""
+    back_w_um: float | None = None
+    back_h_um: float | None = None
+    """Size of the BACK die of a two-layer cell when it differs from the front
+    (a bonded box face: the inner ply is inset one ply per edge). ``None`` means
+    the pair is two equal dies, which every experiment cell is."""
+
+    @property
+    def back_dims(self) -> tuple[float, float]:
+        return (self.back_w_um if self.back_w_um is not None else self.w_um,
+                self.back_h_um if self.back_h_um is not None else self.h_um)
 
 
 # --- small rect utilities ---------------------------------------------------

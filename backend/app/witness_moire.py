@@ -521,7 +521,7 @@ def build_swatch(cx: float, cy: float, w: float, h: float, *,
 
 def build_near_field(cx: float, cy: float, w: float, h: float, *,
                      period_um: float = 44.0, beat_um: float = 2000.0,
-                     duty: float = 0.5, gap_um: float = 2290.0,
+                     duty: float = 0.5, gap_um: float = 1500.0,
                      polarity: str = "metal") -> CellArt:
     """E-NF — where does the two-layer shadow die?
 
@@ -530,7 +530,8 @@ def build_near_field(cx: float, cy: float, w: float, h: float, *,
     shadow across millimetres: a slit of width p/2 spreads by roughly
     ``lambda z / (n p)`` over a gap z inside glass of index n, and once that
     spread reaches p/2 the shadow is gone. ``p_min = sqrt(2 lambda z / n)`` is
-    33 um at the box's 1.5 mm and 42 um at this plate's 2.29 mm quartz pair.
+    33 um at 1.5 mm soda lime, which is both the box and this plate (the plate
+    is cut from the same stock; on a 2.29 mm quartz blank it would be 42 um).
     This cell measures the boundary instead of assuming it.
     """
     # Incoherent white light: the eye, not the source, is the collimator, so the
@@ -540,7 +541,7 @@ def build_near_field(cx: float, cy: float, w: float, h: float, *,
     # NOT the mechanism, and z_T/4 is where a 50% grating's shadow VANISHES,
     # which an earlier version of this cell had backwards.)
     lam = 0.55
-    n_idx = 1.4585
+    n_idx = 1.52
     fresnel = period_um * period_um * n_idx / (4.0 * lam * gap_um)
     p_min = math.sqrt(2.0 * lam * gap_um / n_idx)
     delta = beat_delta_for(period_um, beat_um)
@@ -561,7 +562,7 @@ def build_near_field(cx: float, cy: float, w: float, h: float, *,
 
 def build_parallax_ruler(cx: float, cy: float, w: float, h: float, *,
                          comb_um: float = 60.0, n: int = 60,
-                         gap_um: float = 2290.0, n_index: float = 1.4585,
+                         gap_um: float = 1500.0, n_index: float = 1.52,
                          polarity: str = "metal") -> CellArt:
     """P-RULE — read the bond gap directly, by tilting.
 
@@ -571,9 +572,9 @@ def build_parallax_ruler(cx: float, cy: float, w: float, h: float, *,
     ``t`` and ``n`` together — the one number every parallax cell on the plate
     depends on and which nothing else measures.
 
-    The comb is 60 um, not the 200 that first suggested itself: at 27.4 um/deg a
-    200 um tooth needs 7.3 deg of tilt, so a hand-held read would cover barely
-    two teeth. 60 um gives 2.2 deg per tooth and nine teeth inside +-10 deg,
+    The comb is 60 um, not the 200 that first suggested itself: at 17.2 um/deg a
+    200 um tooth needs 11.6 deg of tilt, so a hand-held read would cover barely
+    one tooth. 60 um gives 3.5 deg per tooth and five teeth inside +-10 deg,
     and still sits clear of the near-field boundary (z_T = 13 mm, gap/z_T = 0.17).
     """
     cw = min(w, comb_um * n)

@@ -393,7 +393,7 @@ export function defaultFrameSpec(seed = 1, overrides: Partial<FrameSpec> = {}): 
  * carrier angle) + distinct band composition, so every side reads uniquely. */
 export const LID_PATTERN_SLUG = 'monogram-jp';
 export const BOTTOM_PATTERN_SLUG = 'inscription-line';
-export const BACK_PATTERN_SLUG = 'capybara-scanimation';
+export const BACK_PATTERN_SLUG = 'inscription-line'; // capybara cut 2026-09 (near-field)
 export const LEFT_PATTERN_SLUG = 'jamon-tray';
 export const RIGHT_PATTERN_SLUG = 'gear-quill-switch';
 /** Confirmed per-face default centerpiece — mirrors backend _FACE_PATTERN_SLUG.

@@ -303,7 +303,7 @@ def test_default_box_spec_matches_contract():
     # redundant twin of colibri-globe-lenticular).
     expected_slug = {
         "front": "globe-duo-phase",
-        "back": "capybara-scanimation",
+        "back": "inscription-line",
         "top": "monogram-jp",
         "bottom": "inscription-line",
         "left": "jamon-tray",

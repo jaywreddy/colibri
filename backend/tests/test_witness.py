@@ -38,6 +38,7 @@ from app.patterns.bitmap import screenrects as sr
 from app.patterns.bitmap.colourzone import MIN_FEATURE_UM
 from app.witness_geom import (
     CLEAR,
+    GUTTER_UM,
     METAL,
     PLATE_SIDE_UM,
     USABLE_UM,
@@ -89,12 +90,14 @@ def test_no_cell_escapes_the_usable_area_and_none_overlap():
     half = USABLE_UM / 2.0
     boxes = []
     for p in placed:
-        for cx in ([p.cx] if p.pair_cx is None else [p.cx, p.pair_cx]):
-            assert cx - p.cell.w_um / 2 >= -half - 1e-6, p.cell.cid
-            assert cx + p.cell.w_um / 2 <= half + 1e-6, p.cell.cid
-            assert abs(p.cy) + p.cell.h_um / 2 <= half + 1e-6, p.cell.cid
-            boxes.append((p.cell.cid, cx - p.cell.w_um / 2, cx + p.cell.w_um / 2,
-                          p.cy - p.cell.h_um / 2, p.cy + p.cell.h_um / 2))
+        dies = [(p.cx, p.cell.w_um, p.cell.h_um)]
+        if p.pair_cx is not None:
+            dies.append((p.pair_cx, *p.cell.back_dims))
+        for cx, w, h in dies:
+            assert cx - w / 2 >= -half - 1e-6, p.cell.cid
+            assert cx + w / 2 <= half + 1e-6, p.cell.cid
+            assert abs(p.cy) + h / 2 <= half + 1e-6, p.cell.cid
+            boxes.append((p.cell.cid, cx - w / 2, cx + w / 2, p.cy - h / 2, p.cy + h / 2))
     for i in range(len(boxes)):
         ai, ax0, ax1, ay0, ay1 = boxes[i]
         for j in range(i + 1, len(boxes)):
@@ -103,26 +106,115 @@ def test_no_cell_escapes_the_usable_area_and_none_overlap():
                         and ay0 < by1 - 1e-6 and by0 < ay1 - 1e-6), f"{ai} / {bi}"
 
 
+def _written_mm2(c) -> float:
+    bw, bh = c.back_dims
+    return (c.w_um * c.h_um + (bw * bh if c.two_layer else 0.0)) / 1e6
+
+
 def test_the_area_budget_matches_the_plan():
-    """docs/witness-physics-plan.md section 5. The rebalance is the point of
-    this revision, so it is pinned: moiré is the largest block and portraits are
-    a few percent, not forty."""
+    """docs/production-plate-plan.md section 2: the four production dies are
+    about a third of the field, moiré is the largest EXPERIMENT block, there
+    are no portrait cells (the colour sides are the portraits), and the
+    experiments that need a bond stay a minority so a failed bond still
+    returns most of the numbers."""
     placed, _ = layout(doe_cells())
     area: dict[str, float] = {}
     for p in placed:
-        a = p.cell.w_um * p.cell.h_um * (2 if p.cell.two_layer else 1) / 1e6
-        area[p.cell.block] = area.get(p.cell.block, 0.0) + a
-    total = sum(area.values())
-    assert max(area, key=area.get) == "moire", area
-    assert area["moire"] / total > 0.30
+        area[p.cell.block] = area.get(p.cell.block, 0.0) + _written_mm2(p.cell)
+    usable = (USABLE_UM / MM) ** 2
+    assert 0.25 < area["production"] / usable < 0.40, area
+    exp = {k: v for k, v in area.items() if k != "production"}
+    assert max(exp, key=exp.get) == "moire", exp
+    assert not [p.cell.cid for p in placed if p.cell.cid.startswith(("PORT", "SZ"))]
+    two = sum(_written_mm2(p.cell) for p in placed
+              if p.cell.two_layer and p.cell.block != "production")
+    assert two / sum(exp.values()) < 0.40, "most experiments must survive a missing bond"
 
-    plate = (PLATE_SIDE_UM / MM) ** 2
-    portrait = sum(p.cell.w_um * p.cell.h_um / 1e6 for p in placed
-                   if p.cell.cid.startswith(("PORT", "SZ")))
-    assert portrait / plate < 0.08, f"portraits are {portrait/plate:.0%} of the plate"
 
-    two = sum(p.cell.w_um * p.cell.h_um * 2 / 1e6 for p in placed if p.cell.two_layer)
-    assert two / total < 0.40, "most of the plate must survive a missing bond"
+def test_the_production_dies_are_the_panelized_box_plies():
+    """A die on this plate must be interchangeable with one from the full
+    ``export_blank`` panel: same solve, same cut dims, F and B for the two
+    bonded faces, F only for the colour sides."""
+    from app import export_blank as eb
+    from app.witness_dies import blank_plan, die_dims, production_cells
+
+    result, spec = blank_plan()
+    assert result.plate_thickness_um == 1500.0
+    cells = {c.cid: c for c in production_cells()}
+    assert set(cells) == {"DIE-TOP", "DIE-FRONT", "DIE-LEFT", "DIE-RIGHT"}
+    for face in ("top", "front"):
+        c, d = cells[f"DIE-{face.upper()}"], die_dims(face)
+        assert c.two_layer and c.takes_polarity
+        assert (c.w_um, c.h_um) == (d["f_w"], d["f_h"])
+        assert c.back_dims == (d["b_w"], d["b_h"])
+        assert d["b_w"] == pytest.approx(d["f_w"] - 2 * 1500.0), "inner ply inset one ply per edge"
+    for face in ("left", "right"):
+        c = cells[f"DIE-{face.upper()}"]
+        assert not c.two_layer and c.takes_polarity
+        assert c.back_dims == (c.w_um, c.h_um)
+    panel = {r.face: (r.width_um, r.height_um)
+             for r in eb.pair_rects(result.width_um, result.depth_um,
+                                    result.height_um, result.plate_thickness_um)}
+    assert panel["top:F"] == (cells["DIE-TOP"].w_um, cells["DIE-TOP"].h_um)
+    assert panel["left:F"] == (cells["DIE-LEFT"].w_um, cells["DIE-LEFT"].h_um)
+
+
+def test_the_die_inversion_is_the_exact_complement_of_its_metal():
+    """``die box - metal`` through the klayout Region, decomposed to hole-free
+    trapezoids: the pieces tile the box with the metal exactly (area), and no
+    piece carries a hole or leaves the box."""
+    from app.witness_dies import clear_field
+
+    W, H = 3000.0, 2000.0
+    tri = np.array([[-1400.0, -900.0], [-1000.0, -900.0], [-1200.0, -500.0]])
+    metal = [_grating_rects(0.0, 0.0, 2000.0, 1200.0, 40.0, 0.5), tri]
+    clear = clear_field(W, H, metal)
+    a_metal = _area(metal[0]) + _poly_area(tri)
+    a_clear = sum(_poly_area(p) for p in clear)
+    assert a_metal + a_clear == pytest.approx(W * H, rel=1e-6)
+    for p in clear:
+        assert len(p) <= 4, "trapezoids only"
+        assert p[:, 0].min() >= -W / 2 - 1e-6 and p[:, 0].max() <= W / 2 + 1e-6
+        assert p[:, 1].min() >= -H / 2 - 1e-6 and p[:, 1].max() <= H / 2 + 1e-6
+
+
+def test_a_two_layer_cell_may_have_a_smaller_back_die():
+    """A bonded box face: the inner ply is inset one ply per edge. The packer
+    must span the pair at its true widths and the plate must frame, label and
+    place the back die at its own size."""
+    def build(cx, cy, w, h, polarity=METAL):
+        art = wc.build_grating_patch(cx, cy, w, h, period_um=10.0)
+        art.back = _grating_rects(cx, cy, w - 600.0, h - 600.0, 10.0, 0.5)
+        art.back_polys = [np.array([[cx - 100, cy - 100], [cx + 100, cy - 100], [cx, cy + 100]])]
+        return art
+    c = Cell("PAIR", "t", "X", 3000.0, 3000.0, build, two_layer=True, takes_polarity=True,
+             back_w_um=2400.0, back_h_um=2400.0)
+    placed, lay = layout([[c]])
+    p = placed[0]
+    assert p.pair_cx == pytest.approx(p.cx + 1500.0 + GUTTER_UM + 1200.0)
+    plate = build_plate([[c]], verbose=False, polarity=METAL)
+    m = plate["manifest"][0]
+    assert (m["back_w_mm"], m["back_h_mm"]) == (2.4, 2.4)
+    dx = p.pair_cx - p.cx
+    tri = [pv for pv in plate["free_polys"] if len(pv) == 3]
+    assert len(tri) == 1 and tri[0][:, 0].mean() == pytest.approx(p.cx + dx)
+    pm = plate["pair_marks"]
+    assert pm[:, 0].min() == pytest.approx(p.pair_cx - 1200.0, abs=1.0)
+
+
+def test_short_cells_stack_beside_tall_ones_instead_of_costing_the_row():
+    """Pockets and columns: a 4 mm cell placed after a 28 mm one must not add
+    28 mm of row height. Four 4 mm cells beside one tall cell fit in the tall
+    cell's own row."""
+    def g(cx, cy, w, h):
+        return wc.build_grating_patch(cx, cy, w, h, period_um=10.0)
+    tall = Cell("TALL", "t", "X", 20000.0, 28000.0, g)
+    shorts = [Cell(f"S{i}", "t", "X", 30000.0, 4000.0, g) for i in range(4)]
+    placed, lay = layout([[tall], shorts])
+    assert len(lay["rows"]) == 1, lay["rows"]
+    assert lay["height_used_mm"] < 31.0
+    ys = sorted({round(p.cy) for p in placed if p.cell.cid.startswith("S")})
+    assert len(ys) >= 2, "the short cells stacked in a column or pocket"
 
 
 def test_every_ladder_is_one_cell_not_one_cell_per_rung():
@@ -205,13 +297,25 @@ def test_the_crossed_grating_opens_exactly_the_square_of_its_gap():
     assert reg.area() * 1e-6 == pytest.approx((1 - (1 - c) ** 2) * W * H, rel=1e-3)
 
 
-def test_the_halftone_inverse_tiles_the_lines_it_covers():
+@pytest.mark.parametrize("mode", ["plain", "zones"])
+def test_the_halftone_inverse_tiles_the_lines_it_covers(mode):
+    """Plain bands AND coloured bands: the clear sub-grating (duty 1-c at phase
+    c*d) must be the exact complement of the metal one, by area."""
     W = H = 4000.0
-    kw = dict(plan=_plan("plain"), line_period_um=44.0, tone_steps=22)
+    kw = dict(plan=_plan(mode), line_period_um=44.0, tone_steps=22)
     m = wc.build_halftone(0, 0, W, H, polarity=METAL, **kw)
     k = wc.build_halftone(0, 0, W, H, polarity=CLEAR, **kw)
     tiled = round(W / 44.0) * 44.0 * W
-    assert _art_area(m) + _art_area(k) == pytest.approx(tiled, rel=1e-9)
+    # Plain bands tile exactly. Coloured bands tile to the centre-in stripe rule:
+    # each polarity keeps whole stripes whose centre is inside the band, so the
+    # two sets can differ by one 2.5 um stripe per band end, unbiased — a few
+    # parts per million over a cell (measured 39 um2 in 16 mm2).
+    assert _art_area(m) + _art_area(k) == pytest.approx(tiled, rel=1e-9 if mode == "plain" else 1e-5)
+    if mode == "zones":
+        assert m.arrays and k.arrays, "the zones plan must colour some bands"
+        band = _area(m.arrays[0]["rects"])
+        assert _array_area(m.arrays[0]) / band == pytest.approx(0.5, abs=0.01)
+        assert _array_area(k.arrays[0]) / band == pytest.approx(0.5, abs=0.01)
 
 
 def test_the_boolean_inverse_tiles_its_cell_exactly():
@@ -317,7 +421,8 @@ def test_the_near_field_ladder_brackets_the_fresnel_boundary():
                 for p in NEAR_FIELD_LADDER_UM]
     assert "washed out" in verdicts and "intact" in verdicts, verdicts
     ref = wm.build_near_field(0, 0, 8000, 8000, period_um=44.0).stats
-    assert ref["p_min_um"] == pytest.approx(41.6, abs=0.5), "2.29 mm quartz pair"
+    assert ref["p_min_um"] == pytest.approx(32.9, abs=0.5), "1.5 mm soda-lime pair, the box stock"
+    assert ref["fresnel_number"] == pytest.approx(0.89, abs=0.02)
     fine = wm.build_near_field(0, 0, 8000, 8000, period_um=5.0).stats
     assert fine["fresnel_number"] < 0.05, "a colour grating is far past it"
 
@@ -379,10 +484,12 @@ def test_beat_cells_are_wide_not_square():
 
 
 def test_the_parallax_ruler_is_readable_by_hand():
-    """At 27.4 µm/deg a 200 µm tooth needs 7.3 deg of tilt, so a hand-held read
-    would cover two teeth. 60 µm gives nine inside ±10 deg."""
+    """At 17.2 µm/deg (1.5 mm soda lime) a 200 µm tooth needs 11.6 deg of tilt,
+    so a hand-held read would cover one tooth. 60 µm gives 3.5 deg per tooth,
+    five inside ±10 deg."""
     a = wm.build_parallax_ruler(0, 0, 10000, 6000)
-    assert a.stats["deg_per_tooth"] < 3.0
+    assert 2.0 < a.stats["deg_per_tooth"] < 4.0
+    assert a.stats["parallax_um_per_deg"] == pytest.approx(17.22, abs=0.05)
     assert a.stats["single_layer"] is False
 
 

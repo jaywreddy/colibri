@@ -1,0 +1,406 @@
+"""In-silico gates for the production dies (docs/production-plate-plan.md §4.A).
+
+Three checks, each from the geometry the writer emits or the exact fab
+periods, never from a formula alone:
+
+  photo    A1  raster the LEFT die's clear data, integrate to the 87 um eye
+               cell, compare with the prepped source darkness.
+  switch   A2  sim2d.switch_metrics on the FRONT die's real front/back metal
+               at t = 1.5 mm, n = 1.52, comb 173 um; then a registration
+               sweep (back ply offset 0 / 8 / 20 / 40 um) -> the bench tolerance.
+  nearfield A3 angular-spectrum propagation across the 1.5 mm ply for the
+               garland as it would have been at 22/24 um, the garland as
+               built at 63.5/69.2 um, and the monogram pair, under an
+               incoherent source (11 angles x 3 wavelengths), box-averaged to
+               the eye cell: the fringe contrast that survives the gap.
+
+    uv run --directory backend python ../tools/dev/validate_dies.py OUTDIR [photo|switch|nearfield|all]
+
+One heavy process at a time; each check stays under ~1 GB.
+"""
+from __future__ import annotations
+
+import json
+import math
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
+
+from app import sim2d  # noqa: E402
+from app import witness_dies as wd  # noqa: E402
+from app.sim.angular_spectrum import _propagate  # noqa: E402
+from app.witness_geom import METAL  # noqa: E402
+
+BG = (13, 17, 19)
+FG = (214, 224, 227)
+DIM = (150, 165, 172)
+WARN = (224, 138, 114)
+OK = (110, 200, 150)
+EYE_UM = 87.0
+LAM_UM = (0.45, 0.55, 0.65)
+
+
+def font(sz=12):
+    try:
+        return ImageFont.truetype("arialbd.ttf", sz)
+    except Exception:
+        return ImageFont.load_default()
+
+
+# --- rasteriser ---------------------------------------------------------------
+
+
+def raster_rects(rects, x0, y1, px, nx, ny, out=None):
+    """Fill (N,4) [x0,x1,y0,y1] rects into a (ny,nx) uint8 grid whose top-left
+    is (x0, y1), y down."""
+    g = np.zeros((ny, nx), np.uint8) if out is None else out
+    r = np.asarray(rects, dtype=np.float64)
+    if r.size == 0:
+        return g
+    a = np.clip(np.floor((r[:, 0] - x0) / px).astype(int), 0, nx)
+    b = np.clip(np.ceil((r[:, 1] - x0) / px).astype(int), 0, nx)
+    c = np.clip(np.floor((y1 - r[:, 3]) / px).astype(int), 0, ny)
+    d = np.clip(np.ceil((y1 - r[:, 2]) / px).astype(int), 0, ny)
+    for i in range(len(r)):
+        if b[i] > a[i] and d[i] > c[i]:
+            g[c[i]:d[i], a[i]:b[i]] = 1
+    return g
+
+
+def raster_polys(polys, x0, y1, px, nx, ny, out=None):
+    im = Image.fromarray(out) if out is not None else Image.new("L", (nx, ny), 0)
+    d = ImageDraw.Draw(im)
+    for pv in polys:
+        pv = np.asarray(pv, dtype=np.float64)
+        pts = [((x - x0) / px, (y1 - y) / px) for x, y in pv]
+        d.polygon(pts, fill=1)
+    return np.asarray(im, dtype=np.uint8)
+
+
+def coverage_grid(rects, x0, y1, cell, nx, ny, out=None):
+    """EXACT area fraction of ``rects`` in each ``cell``-sized bin of a grid
+    whose top-left is (x0, y1), y down. A rasteriser that floors/ceils edges
+    inflates a 2.5 um stripe to whole pixels and biases coverage by 40%; this
+    clips every rectangle to the bins it touches and accumulates area."""
+    g = np.zeros((ny, nx), np.float64) if out is None else out
+    r = np.asarray(rects, dtype=np.float64)
+    if r.size == 0:
+        return g
+    rx0, rx1 = r[:, 0] - x0, r[:, 1] - x0
+    ry0, ry1 = y1 - r[:, 3], y1 - r[:, 2]          # y down
+    ix0 = np.floor(rx0 / cell).astype(int); ix1 = np.ceil(rx1 / cell).astype(int) - 1
+    iy0 = np.floor(ry0 / cell).astype(int); iy1 = np.ceil(ry1 / cell).astype(int) - 1
+    for k in range(int((ix1 - ix0).max()) + 1):
+        ix = ix0 + k
+        okx = (ix <= ix1) & (ix >= 0) & (ix < nx)
+        ox = np.minimum(rx1, (ix + 1) * cell) - np.maximum(rx0, ix * cell)
+        for l in range(int((iy1 - iy0).max()) + 1):
+            iy = iy0 + l
+            ok = okx & (iy <= iy1) & (iy >= 0) & (iy < ny)
+            oy = np.minimum(ry1, (iy + 1) * cell) - np.maximum(ry0, iy * cell)
+            a = ox * oy
+            m = ok & (a > 0)
+            np.add.at(g, (iy[m], ix[m]), a[m] / (cell * cell))
+    return g
+
+
+def box_mean(g, k):
+    m, n = g.shape[0] - g.shape[0] % k, g.shape[1] - g.shape[1] % k
+    return g[:m, :n].reshape(m // k, k, n // k, k).mean(axis=(1, 3))
+
+
+# --- A1 photo ------------------------------------------------------------------
+
+
+def check_photo(out: Path) -> dict:
+    from app import witness_cells as wc
+    from app.patterns.bitmap import colourplan as cp
+    from app.patterns.bitmap import imageprep as ip
+    from app.patterns.bitmap import screenrects as sr
+
+    d = wd.die_dims("left")
+    t0 = time.perf_counter()
+    cov = {}
+    stats = None
+    for pol in ("clear", "metal"):
+        art = wd.build_colour_side("left", 0.0, 0.0, d["f_w"], d["f_h"], pol)
+        side = art.stats["portrait_um"]
+        px = EYE_UM
+        n = int(round(side / px))
+        x0, y1 = -side / 2, side / 2
+        # the portrait's own data: band rects + the array stripes, flattened,
+        # accumulated as EXACT area per eye cell (garland and marks lie outside)
+        f = np.asarray(art.front)
+        inside = (f[:, 0] >= x0 - 1) & (f[:, 1] <= -x0 + 1) & (f[:, 2] >= -y1 - 1) & (f[:, 3] <= y1 + 1)
+        g = coverage_grid(f[inside], x0, y1, px, n, n)
+        for a in art.arrays:
+            st = sr.stripe_rects(a["rects"], a["period_um"], np.asarray(a["line_um"]) / np.asarray(a["period_um"]),
+                                 phase_um=a.get("phase_um", 0.0), max_rects=20_000_000)
+            coverage_grid(st, x0, y1, px, n, n, out=g)
+        cov[pol] = np.clip(g, 0, 1)
+        stats = art.stats
+    clear_eye, metal_eye = cov["clear"], cov["metal"]
+    tiling = clear_eye + metal_eye
+    # the source, prepped the way the builder preps it (mirrored: the die is)
+    ps = stats["portrait"]
+    gray, rgb = wc.portrait_source(ps["asset_px"])
+    dark = ip.prep_darkness(gray, ip.PrepSpec(tone_steps=ps["tone_steps"]))[:, ::-1]
+    shape = clear_eye.shape[::-1]
+    dk = np.asarray(Image.fromarray((dark * 255).astype(np.uint8)).resize(shape, Image.BOX)) / 255.0
+    # coloured bands carry a 50% sub-grating and are NOT tone-held: their metal
+    # is half the band. The builder's intended coverage is therefore
+    # dark * (1 - 0.5 * coloured); the plain target is dark itself.
+    ids, periods, _rep = cp.build_period_field(rgb, cp.PAULA_ZONES)
+    col = (ids > 0)[:, ::-1].astype(np.float64)
+    cm = np.asarray(Image.fromarray((col * 255).astype(np.uint8)).resize(shape, Image.BOX)) / 255.0
+    want_metal = dk * (1.0 - 0.5 * cm)
+    levels = ps["tone_steps"]
+    err_plain = metal_eye - dk
+    err_int = metal_eye - want_metal
+    res = {
+        "portrait_um": side, "eye_cells": list(clear_eye.shape), "method": "exact area per 87 um cell",
+        "tiling_clear_plus_metal_mean": float(tiling.mean()), "tiling_max_dev": float(np.abs(tiling - 1).max()),
+        "mean_metal": float(metal_eye.mean()), "mean_dark": float(dk.mean()),
+        "coloured_frac_of_cells": float(cm.mean()),
+        "vs_darkness_mae_levels": float(np.abs(err_plain).mean() * levels),
+        "vs_darkness_bias_levels": float(err_plain.mean() * levels),
+        "vs_intended_mae_levels": float(np.abs(err_int).mean() * levels),
+        "vs_intended_p95_levels": float(np.percentile(np.abs(err_int), 95) * levels),
+        "vs_intended_bias_levels": float(err_int.mean() * levels),
+        "vs_intended_bias_in_coloured_cells_levels": float(err_int[cm > 0.5].mean() * levels) if (cm > 0.5).any() else None,
+        "vs_intended_bias_in_plain_cells_levels": float(err_int[cm <= 0.5].mean() * levels),
+        "colour_lightening_levels": float((dk * 0.5 * cm).mean() * levels),
+        "build_s": round(time.perf_counter() - t0, 1),
+    }
+    def tile(a, lo, hi):
+        v = np.clip((a - lo) / (hi - lo), 0, 1)
+        return Image.fromarray((v * 255).astype(np.uint8)).convert("RGB")
+    h = clear_eye.shape[0]
+    im = Image.new("RGB", (4 * h + 50, h + 64), BG)
+    im.paste(tile(1 - metal_eye, 0, 1), (10, 10))
+    im.paste(tile(1 - want_metal, 0, 1), (h + 20, 10))
+    im.paste(tile(1 - dk, 0, 1), (2 * h + 30, 10))
+    im.paste(tile(err_int, -3 / levels, 3 / levels), (3 * h + 40, 10))
+    dr = ImageDraw.Draw(im)
+    dr.text((10, h + 14), "emitted metal, 87 um eye cell", fill=FG, font=font(11))
+    dr.text((h + 20, h + 14), "intended (colour bands halved)", fill=FG, font=font(11))
+    dr.text((2 * h + 30, h + 14), "prepped darkness", fill=FG, font=font(11))
+    dr.text((3 * h + 40, h + 14), f"emitted - intended, +-3 levels", fill=FG, font=font(11))
+    dr.text((10, h + 34), f"DIE-LEFT portrait {side/1000:.1f} mm, ZONES; 44 um screen, {levels} levels. mean |err| {res['vs_intended_mae_levels']:.2f} levels, bias {res['vs_intended_bias_levels']:+.2f}; "
+            f"clear + metal = {res['tiling_clear_plus_metal_mean']:.4f} (max dev {res['tiling_max_dev']:.4f})", fill=DIM, font=font(10))
+    dr.text((10, h + 48), f"the coloured bands ({res['coloured_frac_of_cells']:.0%} of cells) hold tone with a 50% sub-grating and print {res['colour_lightening_levels']:.1f} levels lighter than the photo -- the cost of holding tone (plan 1.1), measured", fill=DIM, font=font(10))
+    im.save(out / "validate_photo.png")
+    return res
+
+
+# --- A2 switch -----------------------------------------------------------------
+
+
+def check_switch(out: Path) -> dict:
+    d = wd.die_dims("front")
+    t0 = time.perf_counter()
+    art = wd.build_face_die("front", 0.0, 0.0, d["f_w"], d["f_h"], METAL)
+    per = art.stats["periods"]
+    p = float(per["center_switch_um"])
+    # centerpiece window: the art box (0.86 x aperture) -- take a central square
+    from app import plates as P
+    _, spec = wd.blank_plan()
+    side = P.CENTERPIECE_FILL * P._aperture(spec.faces["front"])
+    px = 4.0
+    n = int(round(side / px))
+    x0, y1 = -side / 2, side / 2
+    front = raster_polys(art.polys, x0, y1, px, n, n, raster_rects(art.front, x0, y1, px, n, n))
+    back = raster_polys(art.back_polys, x0, y1, px, n, n, raster_rects(art.back, x0, y1, px, n, n))
+    # drop the dice ticks / marks: they are outside the art box anyway
+    res: dict = {"comb_um": p, "raster_px_um": px, "window_um": side,
+                 "front_metal_frac": float(front.mean()), "back_metal_frac": float(back.mean()),
+                 "swap_deg": math.degrees(math.asin(math.sin(math.atan((p / 4) / (wd.PLY_UM / wd.GLASS_N))) * wd.GLASS_N)) if False else None}
+    # swap angle from the parallax formula: shift = t tan(asin(sin th / n)) = p/4
+    shift = p / 4.0
+    th_in = math.atan(shift / wd.PLY_UM)
+    res["swap_deg"] = math.degrees(math.asin(math.sin(th_in) * wd.GLASS_N))
+    # switch_metrics splits the back into lanes by (x mod p) from the raster's
+    # left edge; the die's lattice is phased to the FACE centre and mirrored,
+    # so first find the raster offset that puts a lane boundary at column 0 —
+    # the same thing the bench does with the vernier. Straddle geometry: the
+    # swap is read at a back shift of p/4, not p/2.
+    ff, bb = front.astype(np.float32), back.astype(np.float32)
+    best, best_k = None, 0
+    for k in range(0, int(round(p / px))):
+        m = sim2d.switch_metrics(np.roll(ff, -k, axis=1), np.roll(bb, -k, axis=1), px, p, shift_um=p / 4)
+        if best is None or m["separation"] > best["separation"]:
+            best, best_k = m, k
+    ff, bb = np.roll(ff, -best_k, axis=1), np.roll(bb, -best_k, axis=1)
+    res["lane_phase_offset_um"] = best_k * px
+    res["sim2d_at_zero_error"] = {kk: float(v) for kk, v in best.items() if isinstance(v, (int, float))}
+    # Registration sweep against the DESIGN lanes. sim2d relabels channels from
+    # the raster columns, so a shifted back is re-split and scores the same at
+    # every error; here the A/B lane masks are fixed at zero error and travel
+    # with the back ply, which is what a misbonded pair does.
+    w = bb.shape[1]
+    phase = np.mod(np.arange(w) * px, p)
+    in_a = (phase < p / 2.0)[None, :]
+    lane_a, lane_b = bb * in_a, bb * ~in_a
+    open_front = 1.0 - ff
+    s_px = int(round((p / 4) / px))
+    sweep = []
+    for err_um in (0.0, 8.0, 20.0, 30.0, 43.0, 60.0, 86.0):
+        k = int(round(err_um / px))
+        a_e = np.roll(lane_a, k, axis=1) if k else lane_a
+        b_e = np.roll(lane_b, k, axis=1) if k else lane_b
+        row = {"reg_err_um": err_um}
+        for lab, sgn in (("plus", 1), ("minus", -1)):
+            va = float((open_front * np.roll(a_e, sgn * s_px, axis=1)).sum() / max(1e-9, a_e.sum()))
+            vb = float((open_front * np.roll(b_e, sgn * s_px, axis=1)).sum() / max(1e-9, b_e.sum()))
+            row[f"vis_a_{lab}"], row[f"vis_b_{lab}"] = va, vb
+        row["separation"] = float(min((max(row["vis_a_plus"], row["vis_b_plus"]) + 1e-3) / (min(row["vis_a_plus"], row["vis_b_plus"]) + 1e-3),
+                                      (max(row["vis_a_minus"], row["vis_b_minus"]) + 1e-3) / (min(row["vis_a_minus"], row["vis_b_minus"]) + 1e-3)))
+        # which lane dominates at +p/4: a registration error past p/4 swaps them
+        row["shown_plus"] = "A" if row["vis_a_plus"] > row["vis_b_plus"] else "B"
+        sweep.append(row)
+    res["sweep"] = sweep
+    res["build_s"] = round(time.perf_counter() - t0, 1)
+    # figure: separation + visibilities vs registration error
+    W, H = 640, 300
+    im = Image.new("RGB", (W, H), BG)
+    dr = ImageDraw.Draw(im)
+    xs = [s["reg_err_um"] for s in sweep]
+    def X(v): return 50 + (W - 80) * v / 90.0
+    def Y(v): return H - 50 - (H - 90) * v
+    dr.line([(X(0), Y(0)), (X(90), Y(0))], fill=(60, 70, 76))
+    dr.line([(X(0), Y(0)), (X(0), Y(1))], fill=(60, 70, 76))
+    for key, col, lab in (("vis_a_plus", OK, "shown lane at +p/4 (want 1)"), ("vis_b_plus", WARN, "hidden lane at +p/4 (want 0)")):
+        pts = [(X(s["reg_err_um"]), Y(min(1.0, s.get(key, 0.0)))) for s in sweep]
+        dr.line(pts, fill=col, width=2)
+        for q in pts:
+            dr.ellipse([q[0] - 3, q[1] - 3, q[0] + 3, q[1] + 3], fill=col)
+    dr.line([(X(p / 4), Y(0)), (X(p / 4), Y(1))], fill=(90, 100, 110))
+    dr.text((X(p / 4) + 4, Y(1)), f"p/4 = {p/4:.0f} um", fill=DIM, font=font(10))
+    for v in (0, 20, 40, 60, 80):
+        dr.text((X(v) - 8, Y(0) + 6), f"{v}", fill=DIM, font=font(10))
+    dr.text((X(90) - 60, Y(0) + 20), "back-ply registration error, um", fill=DIM, font=font(10))
+    dr.text((10, 8), f"DIE-FRONT globe switch, comb {p:.0f} um, swap at +-{res['swap_deg']:.2f} deg (1.5 mm soda lime)", fill=FG, font=font(12))
+    dr.text((10, 26), "design lanes fixed, back ply slid by the error: green = the lane shown at +p/4, orange = the lane that should vanish", fill=DIM, font=font(10))
+    im.save(out / "validate_switch.png")
+    return res
+
+
+# --- A3 near field -----------------------------------------------------------
+
+
+def _grating(nx, ny, px, period, duty, angle_deg, phase=0.0):
+    y, x = np.mgrid[0:ny, 0:nx].astype(np.float64)
+    x = (x - nx / 2) * px
+    y = (y - ny / 2) * px
+    a = math.radians(angle_deg)
+    u = x * math.cos(a) + y * math.sin(a)
+    return (np.mod(u / period + phase, 1.0) < duty).astype(np.float64)   # 1 = gold
+
+
+def _eye_lowpass(I, px):
+    """Gaussian low-pass, sigma = half the eye cell. A box the size of the eye
+    cell leaves 21% of a 63.5 um carrier standing (its sinc is not at a zero
+    there); the Gaussian leaves 1e-4 of it and passes a 770 um beat at 94%."""
+    sigma = EYE_UM / 2.0 / px
+    ny, nx = I.shape
+    fy = np.fft.fftfreq(ny)[:, None]
+    fx = np.fft.fftfreq(nx)[None, :]
+    H = np.exp(-2.0 * (math.pi * sigma) ** 2 * (fx ** 2 + fy ** 2))
+    return np.real(np.fft.ifft2(np.fft.fft2(I) * H))
+
+
+def _fringe_contrast(I, px, crop=0.15):
+    m = _eye_lowpass(I, px)
+    c = int(m.shape[0] * crop)
+    m = m[c:-c, c:-c]
+    lo, hi = np.percentile(m, 5), np.percentile(m, 95)
+    return float((hi - lo) / max(1e-9, hi + lo)), m
+
+
+def check_nearfield(out: Path) -> dict:
+    z = wd.PLY_UM
+    n_glass = wd.GLASS_N
+    px = 2.0
+    N = 2048
+    cases = [
+        ("garland as drawn, 22 / 24 um", 22.0, 22.0 * 1.09, 2.5),
+        ("garland as built, 63.5 / 69.2 um", 63.5, 63.5 * 1.09, 2.5),
+        ("monogram, 63.5 / 66.07 um beat 1635", 63.5, 66.0659, 0.0),
+    ]
+    angles = np.linspace(-0.5, 0.5, 11)
+    results = []
+    tiles = []
+    for name, p_back, p_front, ang in cases:
+        back = _grating(N, N, px, p_back, 0.5, 0.0)
+        front = _grating(N, N, px, p_front, 0.5, ang)
+        t_back = 1.0 - back
+        t_front = 1.0 - front
+        I_geo = t_back * t_front                       # zero gap: the union identity
+        I_sum = np.zeros((N, N))
+        t0 = time.perf_counter()
+        for lam in LAM_UM:
+            for th in angles:
+                kx = 2 * math.pi / lam * math.sin(math.radians(th))
+                xs = (np.arange(N) - N / 2) * px
+                tilt = np.exp(1j * kx * xs)[None, :]
+                U = t_back * tilt
+                U = _propagate(U, px, z, lam, n_glass)
+                I_sum += np.abs(U * t_front) ** 2
+        I_sum /= len(LAM_UM) * len(angles)
+        c_geo, m_geo = _fringe_contrast(I_geo, px)
+        c_gap, m_gap = _fringe_contrast(I_sum, px)
+        fres = p_back ** 2 * n_glass / (4 * 0.55 * z)
+        results.append({"case": name, "back_um": p_back, "front_um": round(p_front, 3), "angle_deg": ang,
+                        "fresnel_N": round(fres, 3), "contrast_zero_gap": round(c_geo, 4),
+                        "contrast_across_gap": round(c_gap, 4),
+                        "survives": round(c_gap / max(1e-9, c_geo), 3), "s": round(time.perf_counter() - t0, 1)})
+        tiles.append((name, m_geo, m_gap, c_geo, c_gap, fres))
+        print(f"  {name}: N={fres:.2f}  contrast zero-gap {c_geo:.3f} -> across gap {c_gap:.3f}")
+    # figure
+    T = 220
+    im = Image.new("RGB", (3 * (2 * T + 30) + 20, T + 90), BG)
+    dr = ImageDraw.Draw(im)
+    for i, (name, m_geo, m_gap, c_geo, c_gap, fres) in enumerate(tiles):
+        x = 10 + i * (2 * T + 30)
+        for j, (m, lab, c) in enumerate(((m_geo, "zero gap", c_geo), (m_gap, "across 1.5 mm", c_gap))):
+            lo, hi = m.min(), m.max()
+            v = (m - lo) / max(1e-9, hi - lo)
+            t = Image.fromarray((v * 255).astype(np.uint8)).resize((T, T), Image.BILINEAR).convert("RGB")
+            im.paste(t, (x + j * (T + 6), 10))
+            dr.text((x + j * (T + 6), T + 14), f"{lab}: contrast {c:.3f}", fill=FG, font=font(11))
+        col = OK if c_gap / max(1e-9, c_geo) > 0.5 else WARN
+        dr.text((x, T + 34), name, fill=col, font=font(12))
+        dr.text((x, T + 52), f"Fresnel N = {fres:.2f}  ->  {c_gap/max(1e-9,c_geo):.0%} of the zero-gap fringe survives", fill=DIM, font=font(10))
+    dr.text((10, T + 72), "angular spectrum through 1.5 mm of n = 1.52 glass; 11 source angles over +-0.5 deg x 3 wavelengths, eye-cell (87 um) integrated, 4 mm patches", fill=DIM, font=font(10))
+    im.save(out / "validate_nearfield.png")
+    return {"z_um": z, "n": n_glass, "cases": results}
+
+
+def main():
+    out = Path(sys.argv[1] if len(sys.argv) > 1 else ".")
+    out.mkdir(parents=True, exist_ok=True)
+    which = sys.argv[2] if len(sys.argv) > 2 else "all"
+    res = {}
+    if which in ("photo", "all"):
+        print("A1 photo ..."); res["photo"] = check_photo(out); print(json.dumps(res["photo"], indent=1))
+    if which in ("switch", "all"):
+        print("A2 switch ..."); res["switch"] = check_switch(out); print(json.dumps(res["switch"], indent=1))
+    if which in ("nearfield", "all"):
+        print("A3 near field ..."); res["nearfield"] = check_nearfield(out); print(json.dumps(res["nearfield"], indent=1))
+    prev = {}
+    jp = out / "validate_dies.json"
+    if jp.exists():
+        prev = json.loads(jp.read_text())
+    prev.update(res)
+    jp.write_text(json.dumps(prev, indent=1))
+    print("saved", jp)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

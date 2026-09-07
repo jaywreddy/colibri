@@ -51,7 +51,8 @@ DEFAULT_FACE_PATTERN_SLUG = "globe-duo-phase"      # front: rotating CA↔Colomb
 LID_PATTERN_SLUG = "monogram-jp"                   # top
 BOTTOM_PATTERN_SLUG = "inscription-line"           # bottom
 # Confirmed six-face plan: each wall gets its own showpiece.
-BACK_PATTERN_SLUG = "capybara-scanimation"   # capybara + water scanimation
+BACK_PATTERN_SLUG = "inscription-line"       # capybara scanimation cut 2026-09: its 15 um
+                                             # slots are far below the 1.5 mm near-field limit
 LEFT_PATTERN_SLUG = "jamon-tray"             # jamón + tray (food-pair-chirp stays in catalog)
 RIGHT_PATTERN_SLUG = "gear-quill-switch"     # gear ↔ quill+book tilt switch
 

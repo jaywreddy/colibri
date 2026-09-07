@@ -85,7 +85,7 @@ from .witness_geom import (
 
 LAYER_PAIR = (21, 0)     # outline-only: marks the back ply of a bonded pair
 MM = 1000.0
-ROW_GUTTER_UM = 800.0
+ROW_GUTTER_UM = 500.0
 """Between rows. Most of this plate is never diced, so it does not need a saw
 street; the bonded pairs carry their own frame."""
 
@@ -112,7 +112,9 @@ def _label_h(cell_h_um: float) -> float:
 RESOLUTION_LADDER_UM = (0.8, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.5, 8.0)
 C3_DUTY_LADDER = (0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70)
 PERIOD_LADDER_UM = (2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0, 14.0, 20.0)
-BEAT_LADDER_UM = (500.0, 1000.0, 1635.0, 3000.0, 6000.0)
+BEAT_LADDER_UM = (500.0, 1000.0, 1635.0, 3000.0)
+"""The 6000 um rung (a 30 mm cell) went when the production dies arrived: the
+3000 rung already shows the p/delta scaling, and 240 mm2 is a third of a die."""
 BEAT_DUTY_LADDER = (0.25, 0.50, 0.75)
 ROTATION_LADDER_DEG = (1.0, 2.0, 4.0, 8.0)
 HARMONIC_DUTY_LADDER = (0.42, 0.50, 0.58)
@@ -194,7 +196,14 @@ def _halftone(cid, title, side_mm, *, mode="zones", label="", axis="", level="",
 
 def doe_cells() -> list[list[Cell]]:
     """Every cell on the plate, grouped into blocks. Order IS the layout order."""
+    from .witness_dies import production_cells
+
     B: list[list[Cell]] = []
+
+    # === PRODUCTION -- four box faces that come off the plate as plies =======
+    # Laid out first so they take the top of the plate whole; the packer fills
+    # the width beside them with experiment cells (see ``layout``'s pockets).
+    B.append(production_cells())
 
     # === METROLOGY -- read these first ======================================
     m: list[Cell] = [
@@ -314,8 +323,9 @@ def doe_cells() -> list[list[Cell]]:
                 wm.build_rotation_beat(cx, cy, w, h, angle_deg=a)))(),
             label=f"ROT {a:g}deg", axis="B-ROT angle", level=f"{a:g} deg",
             note="fringes run ALONG the lines, not across"))
+    # 1 and 6 degrees bracket the frame's angle fan; the 3 degree column was cut
+    # for the production dies.
     for pa, pb, ang in [(63.5, 63.5, 1.0), (63.5, 66.07, 1.0), (63.5, 70.0, 1.0),
-                        (63.5, 63.5, 3.0), (63.5, 66.07, 3.0), (63.5, 70.0, 3.0),
                         (63.5, 63.5, 6.0), (63.5, 66.07, 6.0), (63.5, 70.0, 6.0)]:
         mo.append(_cell(
             f"VEC{pb:g}/{ang:g}", f"vector {pb:g} um @ {ang:g} deg", "moire",
@@ -363,22 +373,8 @@ def doe_cells() -> list[list[Cell]]:
         label="H-ACU 20-60um", axis="H-ACU pitch", level="20 -> 60 um",
         takes_polarity=True,
         note="at what pitch do you SEE the lines? 43.5 um is the calculation"))
-    hf += [
-        _halftone("PORT-P", "portrait / plain gold", PORTRAIT_MM, mode="plain",
-                  label="PORT PLAIN", axis="H-PORT colour mode", level="plain",
-                  note="the control: same code path, empty period field"),
-        _halftone("PORT-H", "portrait / hue-mapped", PORTRAIT_MM, mode="hue",
-                  label="PORT HUE", axis="H-PORT colour mode", level="hue",
-                  note="period from every pixel's own hue"),
-        _halftone("PORT-Z", "portrait / zone-mapped", PORTRAIT_MM, mode="zones",
-                  label="PORT ZONES", axis="H-PORT colour mode", level="zones",
-                  note="flowers by hue, sweater and glasses authored"),
-    ]
-    for mm in SCALE_LADDER_MM:
-        hf.append(_halftone(
-            f"SZ{mm:g}", f"scale {mm:g} mm", mm, mode="zones",
-            label=f"SZ {mm:g}mm", axis="H-SCALE size", level=f"{mm:g} mm",
-            note=f"{int(mm*1000/87)} eye-cells across at 300 mm"))
+    # No portrait cells: the two colour SIDES (DIE-LEFT zones, DIE-RIGHT hue)
+    # are the portraits now, at 22 mm, and the plain control is the H-WEDGE.
     B.append(hf)
 
     # === TWO-LAYER -- everything the bond is actually for ===================
@@ -392,7 +388,7 @@ def doe_cells() -> list[list[Cell]]:
               lambda cx, cy, w, h, polarity=METAL: wm.build_parallax_ruler(
                   cx, cy, w, h, polarity=polarity),
               label="P-RULE", two_layer=True, takes_polarity=True,
-              note="reads t/n directly: 2.19 deg per tooth at a 2.29 mm quartz pair"),
+              note="reads t/n directly: 3.5 deg per tooth on the 1.5 mm soda-lime pair"),
         _cell("B-MOVE", "beat, across the gap", "moire", _beat_w_mm(1635.0),
               BEAT_H_MM,
               lambda cx, cy, w, h, polarity=METAL: wc.build_shading_moire(
@@ -408,7 +404,7 @@ def doe_cells() -> list[list[Cell]]:
                                     polarity=polarity)))(),
             label=f"NF {p_um:g}um", axis="E-NF pitch", level=f"{p_um:g} um",
             two_layer=True, takes_polarity=True,
-            note="Fresnel N = 1/2 null at 42 um: 30-44 degraded, >= 64 intact"))
+            note="Fresnel N = 1/2 null at 33 um: 30 degraded, 44 marginal, >= 64 intact"))
     for comb in SWITCH_COMB_LADDER_UM:
         two.append(_cell(
             f"SWAP{comb:g}", f"switch, comb {comb:g} um", "parallax",
@@ -419,18 +415,13 @@ def doe_cells() -> list[list[Cell]]:
             label=f"SWAP {comb:g}um", axis="P-SWAP comb", level=f"{comb:g} um",
             two_layer=True, takes_polarity=True,
             note="straddle-registered: 50/50 blend head-on, clean A/B at +-p/4. Witness angles"))
-    for n_ph in SCAN_PHASE_LADDER:
-        two.append(_cell(
-            f"SCAN{n_ph}", f"scanimation, {n_ph} phase", "parallax",
-            PAIR_MM, PAIR_MM,
-            (lambda n_ph=n_ph: (lambda cx, cy, w, h, polarity=METAL:
-                wc.build_scanimation(cx, cy, w, h, phases=n_ph,
-                                     polarity=polarity)))(),
-            label=f"SCAN {n_ph}", axis="P-SCAN phases", level=str(n_ph),
-            two_layer=True, takes_polarity=True, note=f"wants {n_ph}x the registration of a 2-phase switch"))
+    # P-SCAN (the N-phase kinegram ladder) left with the capybara: no face of
+    # the box is a scanimation any more, and its 15 um slots were two orders of
+    # magnitude under the 1.5 mm near-field limit anyway. ``build_scanimation``
+    # stays in witness_cells for a future thin-stock plate.
     for mag, ps in (("-10", 66.0), ("-31.6", 61.9)):
         two.append(_cell(
-            f"MAG{mag}", f"magnifier M={mag}", "moire", SWEEP_MM, SWEEP_MM,
+            f"MAG{mag}", f"magnifier M={mag}", "moire", PAIR_MM, PAIR_MM,
             (lambda ps=ps: (lambda cx, cy, w, h, polarity=METAL:
                 wc.build_moire_magnifier(cx, cy, w, h, sampler_um=60.0,
                                          motif_um=ps, polarity=polarity)))(),
@@ -502,77 +493,150 @@ class Placed:
     """Clear-field polygons for the BACK die, when it was inverted by boolean."""
 
 
+def _span(c: Cell) -> float:
+    """Width a cell occupies in a row: its die, plus the back die and a street."""
+    if c.two_layer:
+        return c.w_um + GUTTER_UM + c.back_dims[0]
+    return c.w_um
+
+
+def _cell_h(c: Cell) -> float:
+    """Height a cell costs in a row: the taller die plus its label band."""
+    h = max(c.h_um, c.back_dims[1])
+    return h + _label_h(h)
+
+
+@dataclass
+class _Pocket:
+    """Unused width at the end of a tall row, packed as its own small shelf.
+
+    A 28 mm production die beside 8 mm experiment cells would otherwise waste
+    the rest of its row: a shelf packer pays the tallest cell's height for the
+    whole width. Every row's leftover becomes a pocket and later, shorter cells
+    stack into it two or three deep before a new full-width row is opened."""
+    x0: float
+    x1: float
+    y_top: float
+    y_bot: float
+    x: float = 0.0
+    y: float = 0.0
+    sub_h: float = 0.0
+    cells: list = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.x = self.x0
+        self.y = self.y_top
+
+    def try_place(self, c: Cell) -> tuple[float, float] | None:
+        w, h = _span(c), _cell_h(c)
+        if w > self.x1 - self.x0:
+            return None
+        if self.x > self.x0 and self.x + GUTTER_UM + w <= self.x1 and self.y - h >= self.y_bot:
+            x = self.x + GUTTER_UM
+        else:
+            # new sub-row
+            y_next = self.y if self.x == self.x0 else self.y - self.sub_h - ROW_GUTTER_UM
+            if y_next - h < self.y_bot:
+                return None
+            self.y, self.sub_h, x = y_next, 0.0, self.x0
+        self.x = x + w
+        self.sub_h = max(self.sub_h, h)
+        self.cells.append(c.cid)
+        return x, self.y
+
+
 def layout(bands: Iterable[list[Cell]]) -> tuple[list[Placed], dict[str, Any]]:
-    """Shelf-pack the bands top-down, wrapping a band that overruns the width.
+    """Shelf-pack the bands top-down, filling each row's leftover width with
+    later, shorter cells (pockets) before opening a new row.
 
     Deliberately a packer rather than a hand-placed grid: cell sizes are still
     being tuned, and a hand-placed map goes stale the moment one ladder gains a
-    rung. The order within a band is preserved so a ladder always reads
-    left-to-right.
+    rung. Within a band cells are sorted by descending height (a shelf packer
+    pays the tallest cell's height for every cell in the row) — the sort is
+    stable so a ladder still reads left to right. Bands pack continuously: a
+    band may wrap mid-ladder, which the map makes clear.
+
+    Cells are placed with their TOP at the row's top and their label band below
+    them; a two-layer cell's back die sits one street to the right, centred on
+    the same y, at its own size (a box face's inner ply is smaller).
     """
     x_lo = -USABLE_UM / 2.0
-    y = USABLE_UM / 2.0
+    x_hi = USABLE_UM / 2.0
     placed: list[Placed] = []
     rows: list[dict[str, Any]] = []
-    overflow: list[str] = []
+    pockets: list[_Pocket] = []
 
-    def flush(row: list[Cell], y: float) -> float:
-        if not row:
-            return y
-        # Label band scales with the cell. A fixed 0.9 mm band plus a 1.5 mm
-        # gutter is 2.4 mm of overhead, which on a 4 mm cell is 60%; that, and
-        # not the cell sizes, is what was costing the plate its height.
-        row_h = max(c.h_um for c in row) + _label_h(max(c.h_um for c in row))
-        x = x_lo
-        for c in row:
-            span = c.w_um * (2.0 if c.two_layer else 1.0) + (
-                GUTTER_UM if c.two_layer else 0.0
-            )
-            lab_h = _label_h(max(cc.h_um for cc in row))
-            pl = Placed(cell=c, cx=x + c.w_um / 2.0,
-                        cy=y - lab_h - c.h_um / 2.0)
-            if c.two_layer:
-                pl.pair_cx = pl.cx + c.w_um + GUTTER_UM
-            placed.append(pl)
-            x += span + GUTTER_UM
-        rows.append({
-            "y_top_mm": round(y / MM, 2),
-            "height_mm": round(row_h / MM, 2),
-            "cells": [c.cid for c in row],
-        })
-        return y - row_h - ROW_GUTTER_UM
+    def put(c: Cell, x: float, y_top: float) -> None:
+        pl = Placed(cell=c, cx=x + c.w_um / 2.0, cy=y_top - c.h_um / 2.0)
+        if c.two_layer:
+            pl.pair_cx = x + c.w_um + GUTTER_UM + c.back_dims[0] / 2.0
+        placed.append(pl)
 
-    # Packed CONTINUOUSLY across bands, not flushed at every band boundary.
-    # Flushing per band cost 54 mm of the 119 available to half-empty rows —
-    # the D row used 73 mm of width and the next ladder started below it anyway.
-    # Order is still the band order, so a ladder stays contiguous and reads
-    # left to right; it may simply wrap mid-ladder, which the map makes clear.
     row: list[Cell] = []
-    row_w = 0.0
-    for band in bands:
-        # Sort each block by DESCENDING height before packing. A shelf packer
-        # pays the tallest cell's height for every cell in the row, so
-        # interleaving 4 mm ladder rungs with 20 mm beat cells wasted more than
-        # half the plate (45% efficiency, 136 mm of content for 74 mm of cells).
-        # The sort is stable, so a ladder — whose rungs are all one height —
-        # still reads left to right in order.
-        for c in sorted(band, key=lambda c: -c.h_um):
-            w = c.w_um * (2.0 if c.two_layer else 1.0) + (
-                GUTTER_UM if c.two_layer else 0.0
-            )
-            if row and row_w + GUTTER_UM + w > USABLE_UM:
-                y = flush(row, y)
-                row, row_w = [], 0.0
-            row.append(c)
-            row_w += (GUTTER_UM if row_w else 0.0) + w
-    y = flush(row, y)
+    row_x = x_lo          # next free x in the open row
+    y = USABLE_UM / 2.0   # top of the open row
+    col: dict[str, float] | None = None
+    """An open COLUMN inside the row: cells much shorter than the row stack
+    vertically at one x instead of each taking the row's full height. A 4 mm
+    wedge beside a 10 mm cell, or a 5 mm ladder beside a 28 mm die, costs its
+    own height this way and not the row's."""
 
-    used = USABLE_UM / 2.0 - y
-    if used > USABLE_UM:
-        overflow = [p.cell.cid for p in placed
-                    if p.cy - p.cell.h_um / 2.0 < -USABLE_UM / 2.0]
+    def flush() -> None:
+        nonlocal row, row_x, y, col
+        if not row:
+            return
+        row_h = max(_cell_h(c) for c in row)
+        rows.append({"y_top_mm": round(y / MM, 2), "height_mm": round(row_h / MM, 2),
+                     "cells": [c.cid for c in row]})
+        if x_hi - row_x >= 4.0 * MM:
+            pockets.append(_Pocket(x0=row_x + GUTTER_UM, x1=x_hi, y_top=y, y_bot=y - row_h))
+        y -= row_h + ROW_GUTTER_UM
+        row, row_x, col = [], x_lo, None
+
+    for band in bands:
+        for c in sorted(band, key=lambda c: -_cell_h(c)):
+            w, h = _span(c), _cell_h(c)
+            # A pocket first: the cell is shorter than every row above it.
+            hit = None
+            for pk in pockets:
+                hit = pk.try_place(c)
+                if hit is not None:
+                    break
+            if hit is not None:
+                put(c, *hit)
+                continue
+            if row:
+                rh = max(_cell_h(r) for r in row)
+                if col is not None and w <= col["w"] and col["y"] - h >= y - rh:
+                    put(c, col["x0"], col["y"])
+                    col["y"] -= h + ROW_GUTTER_UM
+                    row.append(c)
+                    continue
+                col = None
+                if h < 0.5 * rh and row_x + GUTTER_UM + w <= x_hi:
+                    x = row_x + GUTTER_UM
+                    put(c, x, y)
+                    col = {"x0": x, "w": w, "y": y - h - ROW_GUTTER_UM}
+                    row.append(c)
+                    row_x = x + w
+                    continue
+            if row and row_x + GUTTER_UM + w > x_hi:
+                flush()
+            x = row_x if not row else row_x + GUTTER_UM
+            put(c, x, y)
+            row.append(c)
+            row_x = x + w
+    flush()
+
+    used = USABLE_UM / 2.0 - (y + ROW_GUTTER_UM)
+    overflow = [p.cell.cid for p in placed
+                if p.cy - max(p.cell.h_um, p.cell.back_dims[1]) / 2.0
+                - _label_h(p.cell.h_um) < -USABLE_UM / 2.0 - 1e-6]
     return placed, {
         "rows": rows,
+        "pockets": [{"x0_mm": round(pk.x0 / MM, 1), "x1_mm": round(pk.x1 / MM, 1),
+                     "y_top_mm": round(pk.y_top / MM, 1), "y_bot_mm": round(pk.y_bot / MM, 1),
+                     "cells": pk.cells} for pk in pockets if pk.cells],
         "height_used_mm": round(used / MM, 2),
         "height_available_mm": round(USABLE_UM / MM, 2),
         "fits": not overflow,
@@ -642,6 +706,7 @@ def build_plate(
         free.extend(art.free_polys)
         free.extend(art.polys)
         n_back = 0
+        bw, bh = c.back_dims
         if c.two_layer and p.pair_cx is not None:
             dx = p.pair_cx - p.cx
             b = art.back.copy()
@@ -650,11 +715,11 @@ def build_plate(
                 b[:, 1] += dx
                 front.append(b)
             n_back = len(b)
-            for pv in p.back_free:
-                q = pv.copy()
+            for pv in list(p.back_free) + list(art.back_polys):
+                q = np.asarray(pv, dtype=np.float64).copy()
                 q[:, 0] += dx
                 free.append(q)
-            n_back += len(p.back_free)
+            n_back += len(p.back_free) + len(art.back_polys)
             for a in art.back_arrays:
                 rr = np.asarray(a["rects"], dtype=np.float64).copy()
                 rr[:, 0] += dx
@@ -662,11 +727,12 @@ def build_plate(
                 arrays.append({**a, "rects": rr,
                                "phase_um": np.asarray(a.get("phase_um", 0.0),
                                                       dtype=np.float64) + dx})
-            pair_marks.append(_frame_rects(p.pair_cx, p.cy, c.w_um, c.h_um))
-            outline.append(_frame_rects(p.pair_cx, p.cy, c.w_um, c.h_um))
+            pair_marks.append(_frame_rects(p.pair_cx, p.cy, bw, bh))
+            outline.append(_frame_rects(p.pair_cx, p.cy, bw, bh))
+            lab_b = _label_h(bh)
             labels.append(_text_rects(
-                (c.label or c.cid) + " B", p.pair_cx, p.cy + c.h_um / 2.0 + LABEL_H_UM * 0.5,
-                LABEL_H_UM * 0.62))
+                (c.label or c.cid).split(" ")[0] + " B", p.pair_cx - bw / 2.0,
+                p.cy - bh / 2.0 - lab_b * 0.5, lab_b * 0.66, anchor="left"))
         n_arr = sum(int(np.size(a["period_um"])) for a in art.arrays + art.back_arrays)
         dt = time.perf_counter() - t0
         manifest.append({
@@ -676,8 +742,9 @@ def build_plate(
             "x_mm": round(p.cx / MM, 3), "y_mm": round(p.cy / MM, 3),
             "w_mm": round(c.w_um / MM, 3), "h_mm": round(c.h_um / MM, 3),
             "two_layer": c.two_layer,
+            "back_w_mm": round(bw / MM, 3), "back_h_mm": round(bh / MM, 3),
             "n_rects": int(len(art.front)) + n_back,
-            "n_polys": int(len(art.free_polys)) + int(len(art.polys)),
+            "n_polys": int(len(art.free_polys)) + int(len(art.polys)) + int(len(art.back_polys)),
             "n_array_bands": n_arr,
             "build_s": round(dt, 2),
             "stats": art.stats,
@@ -884,8 +951,8 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
     single-letter group and coloured one block of five."""
     s = PLATE_SIDE_UM
     sc = 900.0 / s
-    FILL = {"moire": "#e0457b", "diffraction": "#00b8a9", "parallax": "#7c4dff",
-            "halftone": "#f0a202", "metrology": "#9fb0b6"}
+    FILL = {"production": "#d6b04a", "moire": "#e0457b", "diffraction": "#00b8a9",
+            "parallax": "#7c4dff", "halftone": "#f0a202", "metrology": "#9fb0b6"}
     man = plate["manifest"]
     two = [m for m in man if m["two_layer"]]
     parts = [
@@ -893,6 +960,7 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
         f'width="900" height="960"><rect width="900" height="960" fill="#0d1113"/>',
         f'<rect x="0" y="0" width="900" height="900" fill="none" stroke="#3a4449" stroke-width="2"/>',
     ]
+    two = [m for m in two if m["block"] != "production"]
     if two:
         y_top = max(m["y_mm"] * MM + m["h_mm"] * MM / 2 for m in two)
         y_bot = min(m["y_mm"] * MM - m["h_mm"] * MM / 2 for m in two)
@@ -911,8 +979,10 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
             parts.append(f'<text x="{x:.1f}" y="{y+3:.1f}" fill="#e6eef1" font-size="{fs:.0f}" '
                          f'font-family="monospace" text-anchor="middle">{m["label"]}</text>')
         if m["two_layer"]:
-            parts.append(f'<rect x="{x-w/2+w+GUTTER_UM*sc:.1f}" y="{y-h/2:.1f}" width="{w:.1f}" '
-                         f'height="{h:.1f}" fill="{fill}" fill-opacity=".10" stroke="{fill}" '
+            bw = m.get("back_w_mm", m["w_mm"]) * MM * sc
+            bh = m.get("back_h_mm", m["h_mm"]) * MM * sc
+            parts.append(f'<rect x="{x+w/2+GUTTER_UM*sc:.1f}" y="{y-bh/2:.1f}" width="{bw:.1f}" '
+                         f'height="{bh:.1f}" fill="{fill}" fill-opacity=".10" stroke="{fill}" '
                          f'stroke-dasharray="3 2" stroke-width="1"/>')
     lg = plate["layout"]
     x = 10
@@ -922,7 +992,7 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
         x += 16 + 8 * len(blk) + 22
     parts.append(f'<text x="10" y="948" fill="#9fb0b6" font-size="12" font-family="monospace">'
                  f'{len(man)} cells &#183; {lg["height_used_mm"]:.1f} of {lg["height_available_mm"]:.0f} mm used '
-                 f'&#183; dashed = back die &#183; shaded band = everything that needs a bond</text>')
+                 f'&#183; dashed = back die &#183; shaded band = the bonded experiments &#183; gold = production dies</text>')
     parts.append("</svg>")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

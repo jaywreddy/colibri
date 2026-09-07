@@ -1,8 +1,9 @@
 # Witness Plate — Physics Validation Plan
 
-**Subject:** one 127 mm (5″) chrome-on-quartz plate, written darkfield with
-positive resist. **Purpose:** measure every physical mechanism the ring box
-depends on, before any box glass is written.
+**Subject:** one 127 mm (5″) chrome plate on **1.5 mm soda lime — the box's own
+stock** — written darkfield with positive resist. **Purpose:** measure every
+physical mechanism the ring box depends on, and carry four of the box's faces
+as finished plies on the same write (§4.7).
 
 ---
 
@@ -17,8 +18,15 @@ were cut.
 Photographs are the wrong instrument for most of that. A portrait is a
 subjective read of many coupled variables at once; a step wedge and a swatch
 matrix return the same information objectively in a twentieth of the area.
-Portraits survive here only for the one question that is subjective — *which
-colour treatment goes on the lid* — and they take 3.6% of the usable field.
+There are no portrait *cells* on this plate at all: the two colour **sides** of
+the box (§4.7) are the portraits, at 15 mm, and the one subjective question —
+zone-mapped or hue-mapped — is answered on the box itself.
+
+The plate is also the box's glass. Since it is written on the 1.5 mm soda lime
+the bonded box is built from, a rectangle of it carrying a face's fine geometry
+IS that face's ply once diced. Four faces ride along — the lid and the front as
+bonded pairs, the two colour sides as single plies — and take
+31% of the usable field; the experiments fill the rest.
 
 ### The box as designed
 
@@ -26,8 +34,9 @@ Every derived number below uses these.
 
 | | |
 |---|---|
-| **glass** | 1.50 mm soda lime, n = 1.520 |
-| **witness pair** | 2.29 mm fused quartz, n = 1.4585 (a 5″ mask blank is 0.090″) |
+| **glass** | 1.50 mm soda lime, n = 1.520 — box and plate alike (a 5″ × 0.060″ blank) |
+| **witness pair** | two dies of this plate stacked: the same 1.50 mm gap as the box, so every angle below is one number |
+| **production dies** | top F 28.7 mm + B 25.7 mm; front F 28.7 × 28.57 + B 25.7 × 25.57; left and right F 25.7 × 28.57 (single ply). Cut dims from the blank solve, so a die here is interchangeable with one from the full panel |
 | **carrier** | 63.5 µm back-layer grating, 50% duty — the lattice every lid moiré beats against |
 | **screen** | 44 µm halftone, 22 levels (2 µm step) |
 | **comb** | 173 µm parallax-barrier comb; lane = p/2 = 86.5 µm |
@@ -46,11 +55,10 @@ Every derived number below uses these.
 | **polarity** | the plate is **darkfield**: chrome everywhere the file is empty. The drawn geometry is the **clear data** — the openings where chrome is removed — for positive resist. The mask file and the `M-POL CLEAR` label use those two words. |
 | **chrome / metal** | the opaque layer on this plate; the box's is gold. Optically interchangeable here. |
 | **ply / die** | a ply is one glass sheet of a bonded pair; a die is the piece cut from this plate to become one. |
-| **bonded** | a cell that needs two plies and a gap to work. Everything not so marked is single-layer. |
-| **kinegram** | N frames interlaced in 1/N-pitch lanes under a comb of duty 1/N (`SCAN N`). |
+| **bonded** | a cell that needs two plies and a gap to work. Everything not so marked is single-layer. Experiment pairs stack **chrome-up on chrome-up, unmirrored**; the production dies are **mirrored** for the box's chrome-down stack (§2.3). |
 | **perimeter frame** | the moiré frame around the lid: two lattices at unequal pitch *and* a small angle — hence B-VEC. |
 | **dot gain / prep gain** | realised minus designed coverage; and the correction the image pipeline applies for it. |
-| **cell families** | named by mechanism: `M-` metrology, `D-` diffraction, `B-` beat/moiré, `P-` parallax, `H-` halftone, `E-` edge of envelope. The plate has five blocks; E-NF is packed with the moiré block and the appendix lists it there. |
+| **cell families** | named by mechanism: `M-` metrology, `D-` diffraction, `B-` beat/moiré, `P-` parallax, `H-` halftone, `E-` edge of envelope, and `DIE-` for the four production faces. E-NF is packed with the moiré block and the appendix lists it there. |
 
 ---
 
@@ -133,8 +141,8 @@ appears displaced against the front by
 
 > shift(θ) = t · tan(asin(sin θ / n))
 
-— 17.22 µm/° for the box and **27.40 µm/° for a bonded pair cut from this
-plate**. Every angle in §4.4 is quoted for both.
+— **17.22 µm/°**. A bonded pair cut from this plate is the box's glass, so
+every angle in §4.4 is one number.
 
 For a parallax barrier the switch completes when the shift reaches a quarter of
 the comb pitch p, and the lanes are invisible while their subtense p/2D stays
@@ -142,11 +150,12 @@ under one eye cell. Dividing the two:
 
 > θ_swap / α_lane = n D / 2 t
 
-The pitch cancels. At 300 mm the ratio is **152 for the box and 96 for this
-plate**: swap angle and barrier visibility are locked together by the glass
-alone, and only a thinner substrate or a closer viewer moves them. A kinegram
-(P-SCAN) is the same barrier with N frames in 1/N lanes; it wants N times the
-registration.
+The pitch cancels. At 300 mm the ratio is **152**: swap angle and barrier
+visibility are locked together by the glass alone, and only a thinner substrate
+or a closer viewer moves them. (A kinegram is the same barrier with N frames in
+1/N lanes and wants N times the registration; the capybara scanimation was cut
+from the box for the near-field reason in §2.2, and its P-SCAN ladder left with
+it.)
 
 ### 1.4 Halftone — the only source of continuous tone
 
@@ -212,7 +221,7 @@ contrast. Define
 N = 1 is z_T/8, where |u|² = ½ ± 1/(2√2), contrast 0.71: intact. N = ½ is the
 null, and the pitch that puts the gap there is
 
-> p_min = √(2 λ z / n) — **33 µm for the box, 42 µm for this plate**
+> p_min = √(2 λ z / n) — **33 µm** at the 1.5 mm ply
 
 N = ¼ is z_T/2, where coherent light would revive an inverted image. It does
 not here: the pupil's coherence width at the plate, λD/a = 33 µm, is under one
@@ -220,43 +229,48 @@ period, and the revival needs the ±1 orders — sheared by λz/(np) = p at that
 distance — to stay coherent. So: **N ≥ 1 intact, ¼ < N < 1 degraded, N < ¼
 gone.**
 
-| pitch | N, box (1.5 mm) | N, witness (2.29 mm) | verdict |
+| pitch | N at 1.5 mm | verdict | simulated (§4.7) |
 |---|---|---|---|
-| 5 µm | 0.012 | 0.007 | gone |
-| 20 µm | 0.18 | 0.12 | gone |
-| 30 µm | 0.41 | 0.26 | degraded |
-| 44 µm | 0.89 | 0.56 | degraded |
-| 63.5 µm | 1.86 | 1.17 | intact |
-| 100 µm | 4.6 | 2.9 | intact |
+| 5 µm | 0.012 | gone | |
+| 15 µm | 0.10 | gone — the capybara's slot; the face was cut | |
+| 20 µm | 0.18 | gone | |
+| 22 µm | 0.22 | gone — the garland as first drawn | 12% of its fringe survives |
+| 30 µm | 0.41 | degraded | |
+| 44 µm | 0.89 | marginal | |
+| 63.5 µm | 1.86 | intact — the garland and monogram as built | 74% (garland), 69% (monogram) |
+| 100 µm | 4.6 | intact | |
 
 The pupil adds a geometric blur of the same order: a 5 mm pupil at 300 mm is a
-16.7 mrad cone in air, 16.7/n inside the glass — 16 µm across the box gap,
-26 µm across this plate's. The boundary is therefore soft, and E-NF measures it
-rather than trusting the constant. The shipping 63.5 µm carrier and 173 µm comb
-clear it; a 5 µm colour grating is two orders of magnitude past it, which is
-fine because colour is single-layer by construction. **No two-layer effect may
-be designed at a fine pitch.**
+16.7 mrad cone in air, 16.7/n inside the glass — 16 µm across the gap. The
+boundary is therefore soft, and E-NF measures it rather than trusting the
+constant. The right-hand column is the angular-spectrum result of §4.7: the
+fraction of the zero-gap fringe contrast that survives 1.5 mm of glass under an
+incoherent source, eye-cell integrated. It puts the frame's two gratings where
+the constant said: at 22 / 24 µm the garland keeps 12% of its
+contrast (0.46 → 0.05) and would not have
+shimmered; at 63.5 / 69.2 µm — the gap-scaled pitch the plate compositor already
+applies on 1.5 mm stock — it keeps 74% (0.79 → 0.58).
+The 173 µm comb is at N = 14. A 5 µm colour grating is two orders of magnitude
+past the boundary, which is fine because colour is single-layer by
+construction. **No two-layer effect may be designed at a fine pitch.**
 
-### 2.3 The witness is quartz; the box is soda lime
+### 2.3 Two stacking conventions on one plate
 
-A 5″ mask blank is 2.29 mm of fused quartz. A bonded pair is the front die laid
-**chrome-up on top of the back die, also chrome-up**: adhesive between the back
-die's chrome and the front die's bare glass. The viewer sees the front chrome
-exposed and the back chrome through one ply, so t = 2.29 mm plus the adhesive,
-and neither pattern is mirrored — the export writes both dies in the same
-orientation, and a die must not be flipped. Bonding two dies therefore does not
-reproduce the box:
+The plate is the box's glass, so a bonded pair of dies reproduces the box's
+gap exactly: 1.50 mm plus the adhesive, n = 1.520, 17.22 µm/°. What differs
+between the two kinds of pair on this plate is orientation.
 
-| | thickness | n | parallax | n D / 2 t | swap at 173 µm |
-|---|---|---|---|---|---|
-| box | 1.50 mm | 1.520 | 17.22 µm/° | 152 | 2.51° |
-| witness pair | 2.29 mm | 1.4585 | 27.40 µm/° | 96 | 1.58° |
+| | stack | mirrored in the file | gap |
+|---|---|---|---|
+| **experiment pairs** (M-VERN, P-RULE, B-MOVE, NF, SWAP, MAG) | front die chrome-up on top of the back die, also chrome-up; adhesive between the back chrome and the front die's bare glass | no — a die must **not** be flipped | 1.5 mm |
+| **production dies** (DIE-TOP, DIE-FRONT) | the box's chrome-down stack: outer ply F with its chrome at the bond, inner ply B with its chrome facing the interior; the viewer looks through the F glass | **yes**, both plies, x → −x about the die centre, exactly as `export_blank` writes the full panel | 1.5 mm |
 
-The witness is the harsher case on both counts, which is the useful direction:
-a barrier whose lanes are invisible here is safely invisible on the box. But
-**angles do not transfer, only verdicts do.** The etched labels carry the
-pitch; the angles in this document are for the witness pair unless the box's
-is given beside them.
+In both cases one ply of glass separates the two chrome layers, so the angles
+are the same; the labels and the 80 / 88 µm verniers tell the two conventions
+apart at the bench. The B die of a production pair is 3 mm smaller than its F
+(inset one ply per edge — the nested-shell corner of the bonded box), and its
+verniers sit at identical stack coordinates so the pair beats when it is
+aligned.
 
 ### 2.4 The moiré the halftone carries
 
@@ -294,9 +308,10 @@ far a perpendicular screen suppresses both beats.
 
 Bonding is a separate operation. Sections 2.1–2.2 are what make that
 survivable: the entire static moiré programme is single-layer, and only
-*motion*, *sampling* and *registration* need two plies. Those are confined to
-one band of the plate — **34% of the written area** — so if the bond never
-happens 66% of the plate still returns its numbers.
+*motion*, *sampling* and *registration* need two plies. Among the experiments
+those are **32% of the written area**, so if the bond never
+happens 68% of the experiment still returns its numbers. Of the four
+production faces, the two colour sides need no bond at all.
 
 ---
 
@@ -315,8 +330,8 @@ happens 66% of the plate still returns its numbers.
 | 9 | polarity inverted | everything is its own negative | **M-POL** |
 | 10 | fine pitch across the gap | two-layer effect absent | **E-NF** |
 | 11 | frame lattice angle or pitch off | perimeter-frame fringe spacing wrong | **B-VEC** |
-| 12 | kinegram lanes misregistered by more than p/2N | frames blend, motion stalls | **P-SCAN** |
-| 13 | sampler/motif pitch ratio off | magnified motif wrong size or upright | **B-MAG** |
+| 12 | sampler/motif pitch ratio off | magnified motif wrong size or upright | **B-MAG** |
+| 13 | a production pair bonded off register | the globe swap goes asymmetric or vanishes | the die's own verniers, and **DIE-FRONT** is `SWAP 173` at 28 mm |
 
 ---
 
@@ -348,22 +363,21 @@ is read under the microscope.
 
 | Cell | Etched | Structure | Sweep | Pass |
 |---|---|---|---|---|
-| **B-BEAT** | `BEAT beat` | two pitches on one plane | beat 500 / 1000 / 1635 / 3000 / 6000 µm; each cell holds ≥ 5 fringes | count fringes; the count inverts to the true pitch error through p/Δ |
+| **B-BEAT** | `BEAT beat` | two pitches on one plane | beat 500 / 1000 / 1635 / 3000 µm; each cell holds ≥ 5 fringes | count fringes; the count inverts to the true pitch error through p/Δ |
 | **B-CONT** | `BCON duty` | B-BEAT at 1635 µm, duty swept | 0.25 / 0.50 / 0.75 | fringe contrast and mean brightness. Local metal coverage runs from c (lines coincident) to min(2c, 1) (interleaved). Transmission: mean (1−c)² = 0.56 / 0.25 / 0.06, contrast 0.20 / 1.0 / 1.0 — low duty is brighter, at a fifth of the contrast. Reflection: mean 0.44 / 0.75 / 0.94, contrast 0.33 / 0.33 / 0.14. Which reads better on a lid is not a calculation |
 | **B-ROT** | `ROT angle` | equal 63.5 µm pitch, one rotated | 1 / 2 / 4 / 8° → 3.6 / 1.8 / 0.91 / 0.46 mm | fringes along the lines, at the predicted spacing |
-| **B-VEC** | `VEC p2/angle` | 63.5 µm against 63.5 / 66.07 / 70 µm at 1 / 3 / 6° | 3 × 3 | the general \|k₁ − k₂\| formula the perimeter frame relies on. The 1° column holds under 5 fringes at 5 mm and checks fringe *direction*, not spacing |
+| **B-VEC** | `VEC p2/angle` | 63.5 µm against 63.5 / 66.07 / 70 µm at 1 / 6° | 3 × 2 | the general \|k₁ − k₂\| formula the perimeter frame relies on. The 1° column holds under 5 fringes at 5 mm and checks fringe *direction*, not spacing |
 | **B-HARM** | `HARM duty` | 44 µm over 63.5 µm, both on one plane, **both at the swept duty** | 0.42 / 0.50 / 0.58 | the uniform-bias case: (2, 3) at **3.5 / 0 / 6.7%** in transmission, 2 a₂(c) a₃(c)/(1−c)². The tone case of §2.4 (carrier held at 0.50) predicts 5.6 / 0 / 7.7% at the same duties. The cell tests the null and its sign, not the lid's amplitude |
 | **B-SCREEN** | `SCR angle` | 44 µm screen over the 63.5 µm carrier, screen rotated | 0 / 45 / 90° | how far the perpendicular screen suppresses the 143 µm and 559 µm beats |
 | **B-MAG** | `MAG 10x`, `31.6x` | pinhole array (sampler p_s = 60 µm) over a motif array (p_m = 66.0 / 61.9 µm) | M = p_s/(p_s − p_m) = −10 / −31.6, inverted | a floating lattice at the predicted magnification, upside-down. *Bonded* — sampling needs two planes |
-| **B-MOVE** | `B-MOVE` | the 1635 µm beat across the gap | — | the twin of `BEAT 1635`: same geometry, so the only difference is whether the fringes **travel** — (beat/p) × 27.40 µm/° ≈ 700 µm per degree on this plate. *Bonded* |
+| **B-MOVE** | `B-MOVE` | the 1635 µm beat across the gap | — | the twin of `BEAT 1635`: same geometry, so the only difference is whether the fringes **travel** — (1635/63.5) × 17.22 µm/° ≈ 443 µm per degree. *Bonded*; DIE-TOP is the same experiment at 28 mm |
 
 ### 4.4 Parallax — bonded pairs
 
 | Cell | Etched | Structure | Sweep | Pass |
 |---|---|---|---|---|
-| **P-SWAP** | `SWAP comb` | barrier switch, straddle-registered: the slit sits on a lane boundary head-on | comb 100 / 173 / 250 / 350 µm | a 50/50 blend head-on, clean B at +p/4 and clean A at −p/4: swap at **0.91 / 1.58 / 2.28 / 3.19°** on this plate (1.45 / 2.51 / 3.63 / 5.08° on the box); lanes at 0.57 / 0.99 / 1.43 / 2.01′, so the last two are visible barriers by construction |
-| **P-SCAN** | `SCAN N` | N-phase kinegram | N = 2 / 4 / 6 | crests travel one way; wants N× the registration of a 2-phase switch |
-| **P-RULE** | `P-RULE` | 60 µm comb on one ply, index line on the other; a tooth edge sits under the index head-on | — | tilt until the index sits over tooth k: 2.19° per tooth on this plate (60 µm / 27.40 µm per °). Reads t/n directly — the number every other bonded cell rests on |
+| **P-SWAP** | `SWAP comb` | barrier switch, straddle-registered: the slit sits on a lane boundary head-on | comb 100 / 173 / 250 / 350 µm | a 50/50 blend head-on, clean B at +p/4 and clean A at −p/4: swap at **1.45 / 2.51 / 3.63 / 5.08°**; lanes at 0.57 / 0.99 / 1.43 / 2.01′, so the last two are visible barriers by construction |
+| **P-RULE** | `P-RULE` | 60 µm comb on one ply, index line on the other; a tooth edge sits under the index head-on | — | tilt until the index sits over tooth k: 3.48° per tooth (60 µm / 17.22 µm per °), five teeth inside ±10°. Reads t/n directly — the number every other bonded cell rests on |
 
 ### 4.5 Halftone
 
@@ -371,14 +385,73 @@ is read under the microscope.
 |---|---|---|---|---|
 | **H-WEDGE** | `WEDGE screen` | 16-patch tone wedge, duties on the screen's own ladder | screens 20 / 44 / 60 µm | measured coverage against designed: **the dot-gain number**, which inverts straight into the prep gain. At 20 µm only 9 distinct duties fit (10 levels at the 2 µm floor), so seven patches repeat — read the repeats as within-cell uniformity; 44 and 60 µm give 16 distinct |
 | **H-ACU** | `H-ACU 20-60um` | bare screens, no image | 20 / 30 / 44 / 60 µm | at what pitch the lines are *seen*; 43.5 µm is the calculation, this is the measurement |
-| **H-PORT** | `PORT PLAIN / HUE / ZONES` | the three colour treatments, 12 mm | plain / hue-mapped / zone-mapped | the one subjective call: which goes on the lid. Read with §1.1's cost of holding tone in mind |
-| **H-SCALE** | `SZ size` | one treatment at three sizes | 4 / 8 mm, with the 12 mm portraits as the third rung | where a halftone stops reading as a screen |
+
+The portrait cells and the scale ladder are gone: **DIE-LEFT** (zones) and
+**DIE-RIGHT** (hue) are the portraits, at 15 mm on the box's own sides, and the
+plain control is the H-WEDGE. The subjective call is made on the box.
 
 ### 4.6 Edge of envelope
 
 | Cell | Etched | Structure | Sweep | Pass |
 |---|---|---|---|---|
-| **E-NF** | `NF pitch` | the beat pair split across two plies, pitch swept through the §2.2 boundary | 20 / 30 / 44 / 64 / 100 µm | where the two-layer fringes die: N = ½ null at 42 µm on this plate, so 30 and 44 degraded, 64 and 100 intact. *Bonded*; its single-layer twins are the B-BEAT cells |
+| **E-NF** | `NF pitch` | the beat pair split across two plies, pitch swept through the §2.2 boundary | 20 / 30 / 44 / 64 / 100 µm | where the two-layer fringes die: N = ½ null at 33 µm, so 20 gone, 30 degraded, 44 marginal (N = 0.89), 64 and 100 intact — the simulation of §4.7 predicts the 64 rung keeps about three quarters of its contrast. *Bonded*; its single-layer twins are the B-BEAT cells |
+
+### 4.7 Production dies
+
+Four faces of the box, written on this plate as the plies they will be. Each is
+also an experiment: the two bonded faces are `B-MOVE` and `SWAP 173` at 28 mm,
+and the sides are the portraits.
+
+| Die | Etched | What it is | Its own witness role | Written |
+|---|---|---|---|---|
+| **DIE-TOP** | `TOP F monogram-jp`, `TOP B` | the lid: J+P monogram on a 66.07 µm carrier beating the inner ply's 63.5 µm carrier at 1635 µm; foliage garland at 63.5 / 69.2 µm | travelling two-layer moiré at full size — does the 1635 µm beat move at 443 µm/° and hold contrast (§2.2)? | F 28.7 × 28.7, B 25.7 × 25.7 mm; 24,617 polygons |
+| **DIE-FRONT** | `FRONT F globe-duo-phase`, `FRONT B` | the front: California ↔ Colombia globe as a parallax barrier, comb 173 µm, both globes interlaced on B under a neutral slit comb on F; garland | the barrier switch at 28 mm: 50/50 head-on, clean swap at ±2.51°, and the bench registration tolerance | F 28.7 × 28.57, B 25.7 × 25.57 mm; 29,022 polygons |
+| **DIE-LEFT** | `LEFT F colour ZONES` | a side: the portrait at 14.9 mm, 44 µm screen, 22 levels, zone-mapped colour; a colour garland with a diffraction sub-grating per motif family (orchid 4.15, philodendron 4.7, fern 4.85, plantain 5, vine 5, wax_palm 5.16, heliconia 5.66, coffee 5.84, anthurium 6.02 µm) | the halftone and the colour ladder at production size; single-layer, no bond | F 25.7 × 28.57 mm; 188,952 band rectangles + 36,204 coloured bands as arrays |
+| **DIE-RIGHT** | `RIGHT F colour HUE` | the same portrait, hue-mapped; same garland | the subjective comparison with DIE-LEFT, on the box | F 25.7 × 28.57 mm; 191,044 + 65,456 |
+
+Every die is mirrored for the chrome-down stack and carries the 80 µm (F) or
+88 µm (B) assembly verniers and a tick-code ID in the interior foil-fold band,
+plus corner scribe ticks in the street. The sides' backing plies are bare glass
+and take no plate area. The polarity is CLEAR like the rest of the plate: each
+die's gold geometry (the fine builder's merged, DRC-healed polygons) is
+inverted inside its own rectangle by one klayout Region boolean and decomposed
+to trapezoids, so no polygon carries a hole. Written clear fractions:
+top F 88.5%, top B 57.3%, front F 72.9%, front B 58.6%, left 84.6%, right 86.3% — the rest is chrome, which on the
+box is the gold.
+
+**In-silico gates, run before ordering** (`tools/dev/validate_dies.py`):
+
+*A1 — the photo.* The left side's metal, with the sub-gratings flattened and its area accumulated exactly per 87 µm eye cell, matches the coverage the builder intends to **0.80 of the 22 tone levels** on average (95th percentile 2.8, bias -0.36); clear and metal tile the portrait to 0.995. Against the photograph's darkness itself the die reads 1.3 levels light, all of it in the 34% of cells that carry colour: a coloured band holds tone with a 50% sub-grating, so it prints at half the metal — the cost of holding tone from §1.1, here 0.9 levels averaged over the picture and about 2.7 inside the coloured zones. That is the number the prep gain has to carry if the zones are to sit at the photograph's tone.
+
+*A2 — the switch.* `sim2d.switch_metrics` on DIE-FRONT's own front and back
+metal, rasterised at 4 µm over the art box, comb 173 µm, t = 1.5 mm, n = 1.52
+(swap at ±2.51°). Then the back ply is slid by a registration error and
+the metric repeated:
+
+| back-ply error | lane shown at +p/4 | lane that should vanish | separation |
+|---|---|---|---|
+| 0 µm | 0.01 | 0.93 | 54 |
+| 8 µm | 0.07 | 0.88 | 12 |
+| 20 µm | 0.21 | 0.75 | 4 |
+| 30 µm | 0.35 | 0.61 | 2 |
+| 43 µm | 0.48 | 0.48 | 1 |
+| 60 µm | 0.66 | 0.30 | 2 |
+| 86 µm | 0.95 | 0.02 | 54 |
+
+The lane pitch is p/2 = 86.5 µm, so an error of p/4 = 43 µm is a 50/50 blend
+at every tilt and past it the two globes trade places. The table is what the
+verniers have to hold: **±8 µm keeps a 12:1 swap, ±20 µm a 3.5:1 one.** The
+80/88 µm combs beat at 880 µm and read coincidence to about 1 µm, so the bond
+has margin of an order of magnitude — if it is set on the verniers and not by
+eye.
+
+*A3 — the near field.* The §2.2 column: angular-spectrum propagation through
+1.5 mm of n = 1.52 glass, an incoherent source (11 angles over ±0.5°, three
+wavelengths), eye-cell integrated, on 4 mm patches of the exact grating pairs.
+The garland as first drawn (22 / 23.98 µm at 2.5°) keeps 12% of its zero-gap
+fringe contrast; as built (63.5 / 69.2 µm) it keeps 74%; the monogram pair
+(63.5 / 66.07 µm) keeps 69%. That is the number that decided the garland
+pitch and cut the capybara.
 
 Iso-dense bias is measured by the two M-CD strips and needs no cell of its own.
 
@@ -400,13 +473,18 @@ per die.
    to mean.
 2. **M-CD**, **M-DUTY**, under a microscope. These gate the colour design and
    feed the dot-gain correction.
-3. **M-VERN**, on a bonded pair. Decides whether §4.4 is worth pursuing.
-4. **D-PER** and **D-SWATCH**, under a lamp *and* under room light. The
+3. **D-PER** and **D-SWATCH**, under a lamp *and* under room light. The
    difference is the source-width result.
-5. The **B-** block, single-layer. Count fringes; back out the pitch error
+4. The **B-** block, single-layer. Count fringes; back out the pitch error
    through p/Δ; read B-HARM's null and sign against §2.4.
-6. **B-MOVE**, **E-NF**, the **P-** block, bonded. Read by rocking the part.
-7. **H-WEDGE**, then the portraits last, with the dot gain already known.
+5. **H-WEDGE** → the dot gain. Then look at **DIE-LEFT** and **DIE-RIGHT**
+   under the lamp: they are the portraits, and they need no bond.
+6. Dice. Bond **M-VERN** + **P-RULE** first, chrome-up on chrome-up; read
+   registration and t/n. Then **B-MOVE**, **E-NF**, the **P-** block.
+7. Bond **DIE-FRONT** (mirrored, chrome-down, B nested inside F) on its
+   verniers: it is `SWAP 173` at 28 mm, and A2's table says how much error the
+   swap forgives. Then **DIE-TOP**: `B-MOVE` at 28 mm.
+8. Square a bare 1.5 mm ply to each side on its F vernier.
 
 ---
 
@@ -418,6 +496,9 @@ per die.
 * **The bond itself** — adhesive thickness uniformity, index, voids. P-RULE
   measures the gap you got; not whether it repeats.
 * **Durability.** No abrasion, adhesion or environmental exposure.
+* **The other two faces.** Back and bottom are not on this plate; the
+  capybara scanimation that was the back is cut from the design (§2.2), and
+  the back defaults to the inscription line until something replaces it.
 * **The real viewing distance.** All subtenses assume 300 mm; a held box is
   examined at ~200 mm, which makes every structure ~1.5× more visible than the
   figures say. That is a margin, and it is a margin of 1.5 and not more.
