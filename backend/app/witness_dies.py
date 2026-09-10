@@ -230,17 +230,18 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
         raise ValueError(f"{face}: cell is {w:.0f}x{h:.0f} but the F ply cuts "
                          f"{d['f_w']:.0f}x{d['f_h']:.0f}")
     fine = build_plate_fine(pspec, face)
+    single = bool(getattr(pspec, "single_ply", False))
 
     metal_f: list[np.ndarray] = list(fine.front_polys) + [bench_marks(face, "F", w, h)]
-    metal_b: list[np.ndarray] = list(fine.back_polys) + [bench_marks(face, "B", w, h)]
     fr, fp = _ply_art(w, h, metal_f, polarity)
-    br, bp = _ply_art(d["b_w"], d["b_h"], metal_b, polarity)
-
     art = CellArt()
     art.front = _shift_rects(_cat(fr, dice_ticks(w, h)), cx, cy)
     art.polys = _shift_polys(fp, cx, cy)
-    art.back = _shift_rects(_cat(br, dice_ticks(d["b_w"], d["b_h"])), cx, cy)
-    art.back_polys = _shift_polys(bp, cx, cy)
+    if not single:
+        metal_b: list[np.ndarray] = list(fine.back_polys) + [bench_marks(face, "B", w, h)]
+        br, bp = _ply_art(d["b_w"], d["b_h"], metal_b, polarity)
+        art.back = _shift_rects(_cat(br, dice_ticks(d["b_w"], d["b_h"])), cx, cy)
+        art.back_polys = _shift_polys(bp, cx, cy)
     drc = fine.stats.get("drc", {})
     art.stats = {
         "polarity": polarity, "face": face, "slug": pspec.pattern_slug,
@@ -253,7 +254,8 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
         "written_polys_back": len(art.back_polys),
         "drc_front": drc.get("front_merged_after"),
         "drc_back": drc.get("back_merged_after"),
-        "single_layer": False,
+        "single_layer": single,
+        "pattern_params": dict(getattr(pspec, "pattern_params", {}) or {}),
     }
     return art
 
@@ -435,36 +437,32 @@ def build_colour_side(face: str, cx: float, cy: float, w: float, h: float,
 
 
 def production_cells() -> list[Cell]:
-    """The four faces as plate cells, in layout order. Sized from the blank
-    solve so they cannot drift from the panelized box."""
+    """The four written faces of the production box as plate cells, in layout
+    order, each built from the SAME PlateSpec the box compositor and the GDS
+    bake use (``blank_plan().faces``), so a die here is that face. Bonded faces
+    are F + B pairs; single-ply faces (the photo sides) are one die whose inner
+    ply is bare glass and takes no plate area."""
     MM = 1000.0
     _, spec = blank_plan()
     cells: list[Cell] = []
-    for face, title in (("top", "lid: monogram + garland"),
-                        ("front", "front: globe switch + garland")):
+    for face, title in (("top", "lid"), ("front", "front"), ("left", "left"), ("right", "right")):
+        ps = spec.faces[face]
         d = die_dims(face)
-        slug = spec.faces[face].pattern_slug
+        slug = ps.pattern_slug
+        params = dict(ps.pattern_params or {})
+        single = bool(getattr(ps, "single_ply", False))
+        what = slug + (f" {params.get('image')}" if params.get("image") else "")
         cells.append(Cell(
-            cid=f"DIE-{face.upper()}", title=title, group="X",
+            cid=f"DIE-{face.upper()}", title=f"{title}: {what} + garland", group="X",
             w_um=d["f_w"], h_um=d["f_h"],
-            back_w_um=d["b_w"], back_h_um=d["b_h"],
+            back_w_um=None if single else d["b_w"], back_h_um=None if single else d["b_h"],
             build=(lambda face=face: (lambda cx, cy, w, h, polarity=METAL:
                    build_face_die(face, cx, cy, w, h, polarity)))(),
-            label=f"{face.upper()} F {slug}", block="production",
-            two_layer=True, takes_polarity=True,
-            axis="production die", level=f"{face} F+B",
-            note=(f"bonded pair, {d['f_w']/MM:.1f} mm outer / {d['b_w']/MM:.1f} mm inner ply; "
-                  "mirrored for the chrome-down stack; 80/88 um verniers in the fold band")))
-    for face in ("left", "right"):
-        d = die_dims(face)
-        mode = SIDE_MODES[face]
-        cells.append(Cell(
-            cid=f"DIE-{face.upper()}", title=f"{face}: colour portrait ({mode}) + colour garland",
-            group="X", w_um=d["f_w"], h_um=d["f_h"],
-            build=(lambda face=face: (lambda cx, cy, w, h, polarity=METAL:
-                   build_colour_side(face, cx, cy, w, h, polarity)))(),
-            label=f"{face.upper()} F colour {mode.upper()}", block="production",
-            takes_polarity=True, axis="production die", level=f"{face} F ({mode})",
-            note="single ply; backing ply is bare glass. Portrait + garland are "
-                 "single-layer: line screen and period-ratio diffraction colour"))
+            label=f"{face.upper()} F {what}", block="production",
+            two_layer=not single, takes_polarity=True,
+            axis="production die", level=f"{face} " + ("F" if single else "F+B"),
+            note=(("single ply: leaf gratings + carrier on the one ply, inner ply is bare glass; "
+                   if single else
+                   f"bonded pair, {d['f_w']/MM:.1f} mm outer / {d['b_w']/MM:.1f} mm inner ply; ")
+                  + "mirrored for the chrome-down stack; 80/88 um verniers in the fold band")))
     return cells
