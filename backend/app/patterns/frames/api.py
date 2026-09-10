@@ -53,6 +53,11 @@ class FrameParams:
     # mixed-tropical default (ordered vine + diversity + full band depth);
     # laurel is the austere single-species classic. See wreath.py::STYLES.
     wreath_style: str = "garland2"
+    # Motif-only size dial (wreath algorithm; colonize accepts and ignores it).
+    # Scales leaf/flower/understory sizes AND their spacing along the vine, so
+    # the foliage gets finer and correspondingly denser while the band width
+    # and the vine gauge stay put. 1.0 = the tuned production look.
+    motif_scale: float = 1.0
 
 
 def generate_frame(rect: RectFrame, params: FrameParams) -> Scene:
@@ -73,6 +78,7 @@ def generate_frame(rect: RectFrame, params: FrameParams) -> Scene:
         understory=params.understory,
         border_vine=params.border_vine,
         corner_fans=params.corner_fans,
+        motif_scale=params.motif_scale,
     )
     # wreath_style is wreath-only; colonize's signature doesn't accept it.
     if params.algorithm == "wreath":

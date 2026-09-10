@@ -230,6 +230,7 @@ def generate(
     border_vine: float = 1.0,
     corner_fans: float = 1.0,
     wreath_style: str = DEFAULT_STYLE,
+    motif_scale: float = 1.0,
 ) -> Scene:
     """Lay an ordered garland wreath and return a Scene.
 
@@ -240,6 +241,15 @@ def generate(
     understory within a style. ``understory``/``border_vine``/``corner_fans``
     are honored as multiplicative knobs so the existing per-face FrameParams
     still steer the look.
+
+    ``motif_scale`` shrinks (or grows) the MOTIFS ONLY — leaf lengths, bloom
+    radii, understory leaves and the corner sprig — together with their spacing
+    along the vine, so a smaller motif comes proportionally more often and the
+    band stays filled instead of going sparse. The band width, the vine gauge
+    and every band-relative placement depth are deliberately NOT scaled: the
+    frame keeps its footprint and its drawn-stem weight, only the foliage gets
+    finer. ``1.0`` is bit-identical to the unscaled generator (every use is a
+    literal ``* motif_scale`` on the existing expression).
     """
     short = min(rect.width_um, rect.height_um)
     if band_um is None:
@@ -272,14 +282,16 @@ def generate(
     # (mirror symmetry). We build it as TWO half-splines (mid->cornerA,
     # mid->cornerB) so leaf flow direction is trivially "away from midpoint".
     edges = _edge_specs(rect)
-    step = style.leaf_spacing_frac * short * (1.0 / max(0.35, density))
+    # Station spacing tracks motif size: half-size leaves at half spacing keep
+    # the same shingle overlap, so the rank stays a continuous garland.
+    step = style.leaf_spacing_frac * short * (1.0 / max(0.35, density)) * motif_scale
 
     for edge in edges:
         _lay_edge(
             scene, rect, edge, noise, rng, short, band_um, ride_depth,
             corner_inset, base_w, max_w, step, style, leaf_types,
             flower_types, laurel_species, bloom, foliage,
-            understory, border_vine,
+            understory, border_vine, motif_scale,
         )
 
     # --- corners: knotted crossing stems + medallion -------------------------
@@ -287,7 +299,7 @@ def generate(
         _lay_corners(
             scene, rect, noise, rng, short, band_um, ride_depth,
             base_w, max_w, style, leaf_types, flower_types, laurel_species,
-            bloom, corner_fans,
+            bloom, corner_fans, motif_scale,
         )
 
     scene.max_t = 1.0
@@ -347,6 +359,7 @@ def _lay_edge(
     foliage: float,
     understory: float,
     border_vine: float,
+    motif_scale: float = 1.0,
 ) -> None:
     """Lay both mirror halves of one edge: spline, ranked leaves, understory."""
     # Two halves: dir = +1 travels mid -> corner along +tangent, dir = -1 the
@@ -356,14 +369,14 @@ def _lay_edge(
             scene, rect, edge, direction, noise, rng, short, band_um,
             ride_depth, corner_inset, base_w, max_w, step, style,
             leaf_types, flower_types, laurel_species, bloom, foliage,
-            understory, border_vine,
+            understory, border_vine, motif_scale,
         )
 
 
 def _lay_half_edge(
     scene, rect, edge, direction, noise, rng, short, band_um, ride_depth,
     corner_inset, base_w, max_w, step, style, leaf_types, flower_types,
-    laurel_species, bloom, foliage, understory, border_vine,
+    laurel_species, bloom, foliage, understory, border_vine, motif_scale=1.0,
 ) -> None:
     # Build control points from the midpoint out to (corner - inset).
     span = edge.half_len - corner_inset
@@ -417,7 +430,7 @@ def _lay_half_edge(
 
     # --- ranked leaves along the spline ---
     total_s = samples[-1].s
-    leaf_len_base = style.leaf_len_frac * short * (0.9 + 0.2 * foliage)
+    leaf_len_base = style.leaf_len_frac * short * (0.9 + 0.2 * foliage) * motif_scale
     lean = math.radians(style.leaf_lean_deg)
 
     if style.cluster_mode:
@@ -430,7 +443,8 @@ def _lay_half_edge(
     # --- understory: a fine backing rank tucked just outboard of the vine ---
     if understory > 0.0 and style.understory > 0.0:
         _rank_understory(scene, samples, rng, style, leaf_types, short,
-                         band_um, understory * style.understory, foliage)
+                         band_um, understory * style.understory, foliage,
+                         motif_scale)
 
     # --- inner rank: a second rank of leaves leaning toward the aperture ---
     # This is what restores the FILLED band DEPTH the old colonize band had:
@@ -443,7 +457,7 @@ def _lay_half_edge(
     # --- inner tendril curls reaching gently toward the aperture ---
     if style.inner_tendrils > 0.0:
         _inner_tendrils(scene, samples, rng, short, band_um, base_w,
-                        style.inner_tendrils, rect)
+                        style.inner_tendrils, rect, motif_scale)
 
 
 def _rank_continuous(scene, samples, rng, style, leaf_types, flower_types,
@@ -558,7 +572,7 @@ def _rank_clusters(scene, samples, rng, style, leaf_types, flower_types,
 
 
 def _rank_understory(scene, samples, rng, style, leaf_types, short, band_um,
-                     density, foliage):
+                     density, foliage, motif_scale=1.0):
     """A fine backing rank of small leaves tucked OUTBOARD of the guiding vine.
 
     These fill the sliver between the vine and the rim so the wreath has a
@@ -566,7 +580,10 @@ def _rank_understory(scene, samples, rng, style, leaf_types, short, band_um,
     a second rank of subjects.
     """
     feathery = [t for t in leaf_types if t in ("fern", "wax_palm")] or leaf_types
-    small = min(band_um * 0.34, 0.034 * short)
+    # Motif size shrinks with motif_scale; the outboard scatter below is
+    # expressed in band fractions, so the ribbon keeps its DEPTH (it just packs
+    # finer sprigs into it) — only the leaves themselves get smaller.
+    small = min(band_um * 0.34, 0.034 * short) * motif_scale
     stride = max(1, int(round(1.0 / max(0.15, density))))
     depth_frac = getattr(style, "understory_depth", 0.30)
     for idx in range(0, len(samples), stride):
@@ -640,9 +657,12 @@ def _inner_rank(scene, samples, rng, style, leaf_types, flower_types,
 
 
 def _inner_tendrils(scene, samples, rng, short, band_um, base_w, strength,
-                    rect):
+                    rect, motif_scale=1.0):
     """Sparse fine curls reaching from the vine gently toward the aperture."""
-    stride = max(3, int(6 / max(0.2, strength)))
+    # Tendrils are VINE work, not motifs: they keep their band-relative length
+    # and gauge. The stride is in stations, and stations got denser by
+    # motif_scale, so divide it back out to hold their arc-length cadence.
+    stride = max(3, int(6 / max(0.2, strength) / motif_scale))
     curl = band_um * 0.32
     for idx in range(stride // 2, len(samples), stride):
         smp = samples[idx]
@@ -662,6 +682,7 @@ def _inner_tendrils(scene, samples, rng, short, band_um, base_w, strength,
 def _lay_corners(
     scene, rect, noise, rng, short, band_um, ride_depth, base_w, max_w,
     style, leaf_types, flower_types, laurel_species, bloom, reach,
+    motif_scale=1.0,
 ):
     """A tidy corner medallion that RESOLVES where the two edge ranks meet.
 
@@ -681,7 +702,10 @@ def _lay_corners(
     ]
     inv = 1.0 / math.sqrt(2.0)
     inset = band_um * 0.60
-    fan_len = band_um * 0.46 * reach
+    # The sprig's blade length AND its stagger along the diagonal both come off
+    # fan_len, so scaling it shrinks the medallion as one coherent motif. The
+    # ``inset`` (where the medallion sits in the corner) stays band-relative.
+    fan_len = band_um * 0.46 * reach * motif_scale
     broad = [t for t in leaf_types if t not in ("fern", "wax_palm")] or list(leaf_types)
     for cx, cy, sx, sy in corners:
         dxn, dyn = sx * inv, sy * inv
@@ -715,7 +739,8 @@ def _lay_corners(
         scene.flowers.append(FlowerSprite(
             x=ox + math.cos(bisector) * fan_len * 0.10,
             y=oy + math.sin(bisector) * fan_len * 0.10,
-            size=(style.leaf_len_frac * short) * 0.52 * (0.9 + 0.3 * bloom),
+            size=(style.leaf_len_frac * short) * 0.52 * (0.9 + 0.3 * bloom)
+            * motif_scale,
             t=1.0, type=rng.choice(flower_types), rot=bisector,
             seed=rng.next_uint32(),
         ))

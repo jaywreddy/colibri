@@ -125,6 +125,13 @@ class FrameSpec:
     # mixed foliage; "clusters" = spaced rosette swag. Ignored by colonize.
     # See frames/algorithms/wreath.py::STYLES (DEFAULT_STYLE == garland2).
     wreath_style: str = "garland2"
+    # MOTIF size dial (wreath only; colonize ignores it). Shrinks the leaves,
+    # blooms, understory sprigs and corner sprig — and their spacing along the
+    # vine with them, so finer motifs simply come more often and the band stays
+    # filled. The band WIDTH and the vine gauge are untouched: use this to make
+    # the foliage read finer/lacier without narrowing the frame. 1.0 = the
+    # tuned production look (bit-identical to before this knob existed).
+    motif_scale: float = 1.0
 
     def to_frame_params(self) -> FrameParams:
         return FrameParams(
@@ -140,6 +147,7 @@ class FrameSpec:
             border_vine=self.border_vine,
             corner_fans=self.corner_fans,
             wreath_style=self.wreath_style,
+            motif_scale=self.motif_scale,
         )
 
 
@@ -1503,7 +1511,13 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 #     ``_centerpiece_masks`` already carved the band and the plate pitch is keyed to
 #     the pattern's unchanged ``pixel_pitch_um``. Without the bump a warm plate slot
 #     keeps advertising the pre-carve measured minimums next to a re-baked SVG.
-PLATE_COMPOSE_VERSION = 12
+# v13: FrameSpec grows ``motif_scale`` — a motif-only size dial threaded into
+#     the wreath grower (leaf/bloom/understory/corner-sprig sizes AND their
+#     station spacing along the vine; band width and vine gauge untouched). The
+#     default 1.0 is bit-identical to v12's geometry, but the field is part of
+#     the frame recipe the compose path bakes, so warm slots must re-derive
+#     rather than serve a manifest that predates the knob.
+PLATE_COMPOSE_VERSION = 13
 
 
 def frame_scene_for_plate(

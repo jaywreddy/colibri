@@ -215,6 +215,10 @@ export type FrameSpec = {
   /** Wreath composition preset (wreath algorithm only). 'garland2' is the lush
    * mixed-tropical default; 'laurel' austere single-species; plus 'garland' | 'clusters'. */
   wreath_style: 'garland2' | 'laurel' | 'garland' | 'clusters';
+  /** Motif-only size dial (wreath only): scales leaf/bloom/understory sizes and
+   * their spacing along the vine, leaving the band width and vine gauge alone.
+   * 1.0 is the tuned production look. */
+  motif_scale: number;
 };
 
 export type GlassSpec = {
@@ -383,6 +387,7 @@ export function defaultFrameSpec(seed = 1, overrides: Partial<FrameSpec> = {}): 
     border_vine: 1.15,
     corner_fans: 1.0,
     wreath_style: 'garland2',
+    motif_scale: 1.0,
     ...overrides,
   };
 }

@@ -28,6 +28,11 @@ class FrameSpecBody(BaseModel):
     # Wreath composition preset (wreath algorithm only): "laurel" | "garland"
     # | "clusters". Ignored by colonize. See frames/algorithms/wreath.py.
     wreath_style: str = "laurel"
+    # Motif-only size dial (wreath only): scales leaf/bloom/understory sizes and
+    # their spacing along the vine; band width and vine gauge stay put. Declared
+    # here so the knob survives ``model_dump`` into FrameSpec — an undeclared
+    # field would be silently dropped from the request.
+    motif_scale: float = 1.0
 
 
 class GlassSpecBody(BaseModel):

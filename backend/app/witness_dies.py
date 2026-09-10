@@ -6,8 +6,8 @@ geometry IS that face's ply once it is diced. Four faces ride along with the exp
 
     top    F + B   monogram-jp centerpiece + foliage garland, bonded pair
     front  F + B   globe-duo-phase barrier switch + garland, bonded pair
-    left   F       colour-zoned halftone portrait (ZONES) + colour garland
-    right  F       the same portrait, HUE-mapped + colour garland
+    left   F       colour-zoned halftone portrait (ZONES) + garland (both gratings on the one ply)
+    right  F       the same portrait, HUE-mapped + garland
 
 The two sides are single plies: their optics are all single-layer (a line
 screen and period-ratio diffraction colour, §1.1 / §1.4 of the plan), so the
@@ -74,7 +74,24 @@ MOTIF_HUE_DEG: dict[str, float] = {
 GARLAND_LEVEL0 = 10
 """Graylevel of the first garland colour rung in the rendered frame scene."""
 
+GARLAND_MODE = "moire"
+"""How the single-ply sides carry their garland.
+
+``"moire"``: the leaf gratings AND the carrier on the one ply. By the union
+identity (plan §2.1) the superposition of the two gratings on one plane is the
+zero-gap two-ply pattern, so each leaf shows the same beat fringes the lid's
+two-ply garland shows head-on — they simply do not travel with tilt. The
+carrier covers the window outside the art box as it does on the bonded faces.
+``"colour"``: a diffraction sub-grating per motif family instead (flat leaves
+whose hue moves with tilt)."""
+
 TRAPEZOID_DECOMP = True
+
+MOTIF_SCALE = 0.75
+"""Garland leaf/flower size on the production faces, as a fraction of the
+design's. The band and vine keep their width; the grower packs motifs
+proportionally denser. Chosen on a 24.6 mm side, where the design's 13% band
+with 1.6 mm leaves read too heavy against a 15 mm portrait."""
 
 
 # --- the box this plate feeds -------------------------------------------------
@@ -89,6 +106,9 @@ def blank_plan() -> tuple[Any, Any]:
     if result is None:
         raise RuntimeError("no bonded box fits the blank at this ply")
     spec = eb.blank_box_spec(result, glass_n=GLASS_N, glass_material=GLASS_MATERIAL)
+    import dataclasses
+    for fid, ps in spec.faces.items():
+        ps.frame = dataclasses.replace(ps.frame, motif_scale=MOTIF_SCALE)
     return result, spec
 
 
@@ -281,8 +301,45 @@ def _garland_levels(pspec: Any, pitch_um: float) -> tuple[np.ndarray, list[float
     return levels, periods
 
 
+def _static_garland_metal(pspec: Any, w: float, h: float, pitch: float) -> list[np.ndarray]:
+    """The sides' garland as METAL polygons on one ply: every leaf filled with
+    the front grating at its angle bucket, the carrier over the window outside
+    the art box, unioned and healed to the litho floor exactly as the fine
+    builder heals a two-ply face's front layer. Plate-centred, unmirrored."""
+    from . import plates as P
+    from .export_fine import (LITHO_FLOOR_UM, _build_zone_masks, _compose_layer_polys,
+                              _concat_rects, _drc_rects, _emit_grating, _erode_zone)
+    from .patterns.effects.drc import drc_clean_region
+
+    rd = P._carrier_recipe_data(pspec)
+    zm = _build_zone_masks(pspec, pitch)
+    rects: list[np.ndarray] = []
+    angled: list[tuple[np.ndarray, float]] = []
+    n_b = int(round(float(rd["frame_bucket_count"])))
+    span = float(rd["frame_angle_span_deg"])
+    duty = float(rd["grating_duty"])
+    for b in range(n_b):
+        lo = P.FRAME_BUCKET0 + b * P.FRAME_BUCKET_STEP - P.FRAME_BUCKET_STEP // 2
+        hi = P.FRAME_BUCKET0 + b * P.FRAME_BUCKET_STEP + P.FRAME_BUCKET_STEP // 2
+        in_b = _erode_zone((zm.frame_level > max(0, lo)) & (zm.frame_level <= hi), 1)
+        if in_b.any():
+            ang = float(rd["slit_axis_deg"]) + (b - 0.5 * (n_b - 1)) * span
+            _emit_grating(in_b, pitch, (w, h), float(rd["slit_period_um"]), duty, ang, 0.0, rects, angled)
+    carrier_zone = zm.back_window.copy()
+    if zm.art_box is not None:
+        carrier_zone &= ~zm.art_box
+    carrier_zone = _erode_zone(carrier_zone, 2)
+    if carrier_zone.any():
+        _emit_grating(carrier_zone, pitch, (w, h), float(rd["carrier_period_um"]), duty,
+                      float(rd["carrier_angle_deg"]), 0.0, rects, angled)
+    polys = _compose_layer_polys(_drc_rects(_concat_rects(rects)) if rects else np.empty((0, 4)),
+                                 [(_drc_rects(r), a) for r, a in angled])
+    return drc_clean_region(polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM)
+
+
 def build_colour_side(face: str, cx: float, cy: float, w: float, h: float,
-                      polarity: str = METAL, *, mode: str | None = None) -> CellArt:
+                      polarity: str = METAL, *, mode: str | None = None,
+                      garland: str | None = None) -> CellArt:
     """A single-ply side: the portrait at the face's art box, a colour garland
     in the frame band, the F vernier and ID, all mirrored for the stack.
 
@@ -304,20 +361,26 @@ def build_colour_side(face: str, cx: float, cy: float, w: float, h: float,
     mode = mode or SIDE_MODES[face]
     plan = {"plain": cp.PAULA_PLAIN, "hue": cp.PAULA_HUE, "zones": cp.PAULA_ZONES}[mode]
 
+    garland_mode = garland or GARLAND_MODE
     # Boundary raster for the garland silhouettes — same rule as the fine
     # builder: fine enough for the leaf edges, capped by the lattice budget.
     pitch = max(10.0, math.sqrt(w * h / (0.9 * MAX_LATTICE_CELLS)))
-    levels, periods = _garland_levels(pspec, pitch)
-    garland: list[np.ndarray] = []
+    garland_rects: list[np.ndarray] = []
+    garland_polys: list[np.ndarray] = []
     per_rung_rects: dict[float, int] = {}
-    for i, per in enumerate(periods):
-        zone = _erode_zone(levels == GARLAND_LEVEL0 + i, 1)
-        if not zone.any():
-            continue
-        r = _clip_axis_grating(zone, pitch, (w, h), per, plan.duty, 0.0, phase=0.0)
-        if r.shape[0]:
-            garland.append(r)
-            per_rung_rects[per] = per_rung_rects.get(per, 0) + int(r.shape[0])
+    periods: list[float] = []
+    if garland_mode == "moire":
+        garland_polys = _static_garland_metal(pspec, w, h, pitch)
+    else:
+        levels, periods = _garland_levels(pspec, pitch)
+        for i, per in enumerate(periods):
+            zone = _erode_zone(levels == GARLAND_LEVEL0 + i, 1)
+            if not zone.any():
+                continue
+            r = _clip_axis_grating(zone, pitch, (w, h), per, plan.duty, 0.0, phase=0.0)
+            if r.shape[0]:
+                garland_rects.append(r)
+                per_rung_rects[per] = per_rung_rects.get(per, 0) + int(r.shape[0])
 
     # Portrait: the CENTERPIECE_FILL square of the aperture, at the die centre.
     side = P.CENTERPIECE_FILL * P._aperture(pspec)
@@ -329,11 +392,11 @@ def build_colour_side(face: str, cx: float, cy: float, w: float, h: float,
     # remainder in either polarity).
     marks = bench_marks(face, "F", w, h)
     if polarity == METAL:
-        rects = eb.mirror_rects(_cat(*garland, marks)) if garland else eb.mirror_rects(marks)
-        polys: list[np.ndarray] = []
+        rects = eb.mirror_rects(_cat(*garland_rects, marks)) if garland_rects else eb.mirror_rects(marks)
+        polys: list[np.ndarray] = _mirror_polys(garland_polys)
     else:
         rects = np.empty((0, 4))
-        polys = _mirror_polys(clear_field(w, h, garland + [marks, art_box]))
+        polys = _mirror_polys(clear_field(w, h, garland_rects + garland_polys + [marks, art_box]))
 
     # Mirror the portrait too: rect edges swap about x = 0, and each array
     # band's stripe phase reflects — stripe k spanned [phase + k·d, +line], so
@@ -356,8 +419,10 @@ def build_colour_side(face: str, cx: float, cy: float, w: float, h: float,
         "ply_um": PLY_UM, "glass_n": GLASS_N, "mirrored": True,
         "f_um": [w, h], "portrait_um": round(side, 1),
         "garland_pitch_um": round(pitch, 2),
-        "garland_hue_deg": {k: MOTIF_HUE_DEG[k] for k in sorted(MOTIF_HUE_DEG)},
-        "garland_periods_um": {k: periods[i] for i, k in enumerate(sorted(MOTIF_HUE_DEG))},
+        "garland_mode": garland_mode,
+        "garland_metal_polys": len(garland_polys),
+        "garland_hue_deg": {k: MOTIF_HUE_DEG[k] for k in sorted(MOTIF_HUE_DEG)} if periods else {},
+        "garland_periods_um": {k: periods[i] for i, k in enumerate(sorted(MOTIF_HUE_DEG))} if periods else {},
         "garland_rects_by_period": {f"{k:g}": v for k, v in per_rung_rects.items()},
         "portrait": port.stats,
         "written_polys": len(art.polys),

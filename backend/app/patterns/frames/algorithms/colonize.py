@@ -53,6 +53,12 @@ def generate(
     understory: float = 1.0,
     border_vine: float = 1.0,
     corner_fans: float = 1.0,
+    # Accepted for signature parity with the wreath grower and IGNORED here:
+    # colonize sizes every motif off the local branch thickness it grew, so a
+    # standalone motif dial has no well-defined meaning in this algorithm.
+    # Taking the kwarg keeps ``api.generate_frame`` free of per-algorithm
+    # forwarding branches.
+    motif_scale: float = 1.0,
 ) -> Scene:
     """Run the colonization and return a renderer-agnostic Scene.
 

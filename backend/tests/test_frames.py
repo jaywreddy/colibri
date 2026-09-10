@@ -163,3 +163,56 @@ def test_scene_json_roundtrip() -> None:
     assert len(restored.flowers) == len(scene.flowers)
     assert len(restored.leaves) == len(scene.leaves)
     assert restored.max_t == scene.max_t
+
+
+# ---- (7) motif_scale: smaller motifs, denser rank, same band ----------------
+
+def _leaf_stats(scene: Scene) -> tuple[int, float]:
+    sizes = [leaf.size for leaf in scene.leaves]
+    assert sizes, "expected leaves in the wreath scene"
+    return len(sizes), sum(sizes) / len(sizes)
+
+
+def test_motif_scale_shrinks_motifs_and_fills_in() -> None:
+    """0.6 gives ~0.6x-long leaves, more of them, and the SAME vine gauge.
+
+    The point of the knob is a finer-grained foliage read without narrowing
+    the band: motif sizes and their station spacing scale together, so the
+    rank packs proportionally more (smaller) leaves into the same ribbon.
+    """
+    rect = RectFrame(width_um=3000.0, height_um=2400.0)
+    base = generate_frame(rect, FrameParams(seed=5))
+    small = generate_frame(rect, FrameParams(seed=5, motif_scale=0.6))
+
+    n_base, mean_base = _leaf_stats(base)
+    n_small, mean_small = _leaf_stats(small)
+
+    ratio = mean_small / mean_base
+    assert 0.54 <= ratio <= 0.66, f"mean leaf length ratio {ratio:.3f} != ~0.6"
+    # Spacing shrank with the motifs, so the band fills rather than thinning.
+    assert n_small > n_base * 1.3, f"expected a denser rank, got {n_small} vs {n_base}"
+    # The vine is NOT a motif: its gauge must not move with the dial.
+    assert max(s.w for s in small.segments) == pytest.approx(
+        max(s.w for s in base.segments)
+    ), "motif_scale must leave the vine stroke width alone"
+
+
+def test_motif_scale_one_is_the_unscaled_wreath() -> None:
+    """The default dial is a no-op — pins the knob's neutral position."""
+    rect = RectFrame(width_um=2000.0, height_um=1500.0)
+    a = generate_frame(rect, FrameParams(seed=17))
+    b = generate_frame(rect, FrameParams(seed=17, motif_scale=1.0))
+    assert json.dumps(a.to_dict(), sort_keys=True) == json.dumps(
+        b.to_dict(), sort_keys=True
+    ), "motif_scale=1.0 must be identical to the unscaled generator"
+
+
+def test_frame_spec_forwards_motif_scale() -> None:
+    """FrameSpec -> FrameParams carries the dial (the real production path)."""
+    from dataclasses import replace
+
+    from app.plates import FrameSpec
+
+    assert FrameSpec().to_frame_params().motif_scale == 1.0
+    fp = replace(FrameSpec(), motif_scale=0.55).to_frame_params()
+    assert fp.motif_scale == 0.55
