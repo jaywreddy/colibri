@@ -492,6 +492,9 @@ export type FaceRenderState = {
   /** uThicknessUm / uN as actually bound on the outer plane. */
   uThicknessUm: number;
   uN: number;
+  /** recipe_data flags: a blank face binds nothing; a single-ply face has no inner plane. */
+  blank: boolean;
+  singlePly: boolean;
 };
 
 /** Read the two-plane structural state of all six faces in one round-trip. */
@@ -515,6 +518,8 @@ export async function allFaceRenderState(page: Page): Promise<FaceRenderState[]>
       const inner = imgOf(rt?.shaderBack);
       return {
         face: fid,
+        blank: !!fm?.recipe_data?.blank,
+        singlePly: !!fm?.recipe_data?.single_ply,
         manifestRecipe: (fm?.render_recipe as string | undefined) ?? null,
         recipe: Number(rt?.shader?.uniforms?.uRecipe?.value ?? -1),
         recipeBack: Number(rt?.shaderBack?.uniforms?.uRecipe?.value ?? -1),
@@ -522,8 +527,12 @@ export async function allFaceRenderState(page: Page): Promise<FaceRenderState[]>
         visibleBack: !!rt?.shaderBack?.visible,
         maskW: outer.w,
         maskBackW: inner.w,
-        maskMatchesManifest: declares(outer.src, fm?.files?.front_png),
-        maskBackMatchesManifest: declares(inner.src, fm?.files?.back_png),
+        // A literal face binds the fabricated-geometry raster instead of the
+        // level-coded mask; either is THIS face's declared image.
+        maskMatchesManifest:
+          declares(outer.src, fm?.files?.front_png) || declares(outer.src, fm?.files?.literal_front),
+        maskBackMatchesManifest:
+          declares(inner.src, fm?.files?.back_png) || declares(inner.src, fm?.files?.literal_back),
         thicknessUm:
           typeof fm?.substrate?.thickness_um === 'number'
             ? (fm.substrate.thickness_um as number)
@@ -570,6 +579,16 @@ export async function waitForAllFaceMasks(page: Page, timeoutMs = 30_000): Promi
       return (ids as readonly string[]).every((fid) => {
         const rt = s.faces[fid];
         const files = bm.faces?.[fid]?.files;
+        const literal = !!bm.faces?.[fid]?.recipe_data?.literal;
+        // literal faces may legitimately drop an EMPTY plane (blank / bare inner ply)
+        const boundOr = (mat: any, a: unknown, b: unknown) => bound(mat, a) || bound(mat, b);
+        if (literal) {
+          const rd = bm.faces?.[fid]?.recipe_data ?? {};
+          if (rd.blank) return true; // bare glass: nothing to bind on either plane
+          const outerOk = boundOr(rt?.shader, files?.front_png, files?.literal_front);
+          const innerOk = rd.single_ply || boundOr(rt?.shaderBack, files?.back_png, files?.literal_back);
+          return outerOk && innerOk;
+        }
         return bound(rt?.shader, files?.front_png) && bound(rt?.shaderBack, files?.back_png);
       });
     },

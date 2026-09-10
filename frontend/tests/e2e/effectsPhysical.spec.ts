@@ -247,20 +247,25 @@ test.describe('@effects physical honesty of renderer effects', () => {
       if (st.manifestRecipe !== 'foliage_moire') {
         bindFailures.push(`${st.face}: manifest render_recipe ${st.manifestRecipe}`);
       }
-      if (st.recipe !== 3 || st.recipeBack !== 3) {
+      // Bare glass has nothing to bind on either plane, and a single-ply face
+      // has no inner pattern plane: on a literal face an EMPTY raster drops
+      // the plane, which is the truth of that face, not a binding failure.
+      if (st.blank) continue;
+      const wantInner = !st.singlePly;
+      if (st.recipe !== 3 || (wantInner && st.recipeBack !== 3)) {
         bindFailures.push(`${st.face}: uRecipe ${st.recipe}/${st.recipeBack} (want 3/3)`);
       }
-      if (!st.visible || !st.visibleBack) {
+      if (!st.visible || (wantInner && !st.visibleBack)) {
         bindFailures.push(
           `${st.face}: plane hidden (outer ${st.visible}, inner ${st.visibleBack})`
         );
       }
-      if (st.maskW <= 1 || st.maskBackW <= 1) {
+      if (st.maskW <= 1 || (wantInner && st.maskBackW <= 1)) {
         bindFailures.push(
           `${st.face}: placeholder mask still bound (${st.maskW}px / ${st.maskBackW}px)`
         );
       }
-      if (!st.maskMatchesManifest || !st.maskBackMatchesManifest) {
+      if (!st.maskMatchesManifest || (wantInner && !st.maskBackMatchesManifest)) {
         bindFailures.push(
           `${st.face}: bound mask URLs are not the manifest's front/back PNGs ` +
             `(outer ${st.maskMatchesManifest}, inner ${st.maskBackMatchesManifest})`

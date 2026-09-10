@@ -99,5 +99,8 @@ Costs and caveats found on the way:
 * Pattern-picker thumbnails for `blank` and `photo-halftone` 404 until their
   default variants are seeded (`just seed`); that is the existing
   never-generate-on-GET design, not a fault.
-* The `@effects` Playwright suite has not been run against the literal path
-  yet; it must run alone (heavy) before the shader change is called done.
+* The `@effects` Playwright suite passes (8/8) on the literal path. Two
+  harness checks were taught that a literal face binds `literal_front/back.png`
+  rather than the level-coded masks, that a blank face binds nothing, and that a
+  single-ply face has no inner plane; the renderer assertions themselves
+  (time-invariance, substrate-driven parallax, orbit flow) are unchanged.

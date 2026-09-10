@@ -532,6 +532,10 @@ async function loadCoverageTexture(
   tex.generateMipmaps = true;
   tex.anisotropy = anisotropy;
   tex.unpackAlignment = 1; // one byte per texel: rows are not 4-aligned
+  // The honesty harness identifies a bound mask by the URL of its image; a
+  // DataTexture's image is a bare {data,width,height}, so record the source
+  // here (same contract an HTMLImageElement gives for the level-coded masks).
+  (tex.image as unknown as { src?: string }).src = url;
   tex.needsUpdate = true;
   return tex;
 }
