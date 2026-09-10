@@ -31,3 +31,7 @@ Produced by tools/dev/render_side_plate.py + the fade study; originals live in p
   "prepared": true
  }
 }
+
+sunset.png (and its .subject.png) is a second crop of the IMG_1827~2 square: x 0.19-0.81, y 0.05-0.67,
+resampled back to 1400 px, so the couple fills the frame — the sun and the coast are gone and the
+faces are 1.6x larger (the picture is 12.5 mm wide on the box).

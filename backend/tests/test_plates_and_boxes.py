@@ -318,7 +318,8 @@ def test_default_box_spec_matches_contract():
         # Per-face seed 100..105 in FACE_IDS order (distinct moiré carrier angle).
         assert spec.faces[fid].frame.seed == 100 + i
         # Finer, lacier foliage at the same band width, on every face.
-        assert spec.faces[fid].frame.motif_scale == 0.75
+        assert spec.faces[fid].frame.motif_scale == 0.68
+        assert spec.faces[fid].frame.band_um == 2400.0
     # The two photographs, and the only two single-ply faces: a halftone's tone
     # IS its band height, so a second ply under it would show through the gaps.
     assert spec.faces["left"].pattern_params == {"image": "beach", "colour_mode": "faces"}
@@ -582,7 +583,8 @@ def test_literal_rasters_publish_the_fabricated_chrome(isolated_data):
     assert _arr(art, "literal_front").max() > 0
     assert _arr(art, "literal_back").max() > 0
     # Sub-pixel grating lines must AVERAGE in rather than drop out — a raster
-    # that only ever hit 0 or 255 would mean the supersample did nothing.
+    # that only ever hit 0 or 255 would mean the coverage estimate collapsed to
+    # a binary in/out fill.
     front = _arr(art, "literal_front")
     assert ((front > 0) & (front < 255)).any()
 
@@ -591,6 +593,82 @@ def test_literal_rasters_publish_the_fabricated_chrome(isolated_data):
     for m in (art, blank):
         assert "period_front" not in m["files"]
         assert not (PLATES_ROOT / m["id"] / "period_front.png").exists()
+
+
+def _grating_rings(period_um, duty, angle_deg, w_um, h_um):
+    """CCW µm rings for a grating covering the whole plate, plate frame, y up."""
+    import numpy as np
+
+    th = np.radians(angle_deg)
+    ux, uy = np.cos(th), np.sin(th)          # along the lines
+    nx, ny = -np.sin(th), np.cos(th)         # across them
+    half = period_um * duty / 2.0
+    reach = 0.5 * (w_um * abs(nx) + h_um * abs(ny)) + period_um
+    span = w_um + h_um
+    rings = []
+    for k in range(-int(reach / period_um) - 1, int(reach / period_um) + 2):
+        c = k * period_um
+        cx, cy = nx * c, ny * c
+        rings.append(
+            np.array(
+                [
+                    (cx + ux * su * span + nx * sv * half,
+                     cy + uy * su * span + ny * sv * half)
+                    for su, sv in ((-1, -1), (1, -1), (1, 1), (-1, 1))
+                ]
+            )
+        )
+    return rings
+
+
+def test_literal_raster_coverage_is_unbiased(isolated_data):
+    """A 50%-duty grating must raster to 50% coverage — at ANY angle, and at a
+    period far below a texel.
+
+    ``literal_front``/``literal_back`` are what the renderer samples in place of
+    a procedural grating, so a systematic error in them is a systematic error in
+    the preview's brightness. The features are all sub-texel (a 27.5 mm face is
+    ~13.4 µm/texel; the colour sub-gratings are 2.5 µm lines on a 5 µm period),
+    so a boundary-inclusive polygon fill fattens every line by a whole sample:
+    the pre-v16 2× supersampled draw read 0.538 on the 99 µm carrier and a
+    solid 1.000 on the 5 µm colour stripes. ``literal_raster`` accumulates the
+    exact area instead — the axis-aligned rectangles analytically, everything
+    else by signed-area accumulation — so both paths land on the true duty.
+    """
+    import numpy as np
+    from app.plates import PlateSpec, _literal_layer_raster, _literal_raster_dims
+
+    spec = PlateSpec(pattern_slug="blank", width_um=29100.0, height_um=29100.0)
+    w_px, h_px = _literal_raster_dims(spec)
+
+    def coverage(period_um, duty, angle_deg):
+        rings = _grating_rings(period_um, duty, angle_deg, spec.width_um, spec.height_um)
+        img = _literal_layer_raster(rings, spec, w_px, h_px)
+        assert img.mode == "L" and img.size == (w_px, h_px)
+        # Trim the plate edge, where the grating is cut off mid-period.
+        return np.asarray(img, dtype=np.float64)[64:-64, 64:-64] / 255.0
+
+    # ANGLED (the carrier / leaf gratings): goes down the polygon path.
+    angled = coverage(99.0, 0.5, 148.0)
+    assert angled.mean() == pytest.approx(0.5, abs=0.01)
+    assert 0.0 < (angled >= 254 / 255).mean() < 0.6, "an angled 50% duty is not solid"
+
+    # AXIS-ALIGNED (the colour stripes, halftone bands, comb, switch lanes):
+    # goes down the exact-rectangle path.
+    assert coverage(44.0, 0.5, 0.0).mean() == pytest.approx(0.5, abs=0.01)
+
+    # SUB-TEXEL and axis-aligned: 2.5 µm lines under a 14 µm texel. The whole
+    # point of the coverage raster — every texel reads the local duty, and NONE
+    # of them saturates into solid gold.
+    fine = coverage(5.0, 0.5, 0.0)
+    assert fine.mean() == pytest.approx(0.5, abs=0.01)
+    assert fine.max() < 254 / 255, "sub-texel 50% stripes rastered as solid chrome"
+    assert fine.min() > 1 / 255, "sub-texel 50% stripes dropped out entirely"
+
+    # The raster carries DUTY, not just presence: a quarter-duty grating is a
+    # quarter as bright, at both a coarse and a sub-texel period.
+    assert coverage(99.0, 0.25, 148.0).mean() == pytest.approx(0.25, abs=0.01)
+    assert coverage(5.0, 0.25, 0.0).mean() == pytest.approx(0.25, abs=0.01)
 
 
 # ----- HTTP layer ------------------------------------------------------------

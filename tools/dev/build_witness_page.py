@@ -244,15 +244,15 @@ AFTER = {
               "DIE-TOP: outer ply F (left) with the foliage garland and the J+P monogram as chrome gratings in a clear field, inner ply B (right) with the uniform carrier. Both mirrored for the chrome-down stack; the 80 / 88 µm vernier combs and the tick-code ID sit in the fold band at identical stack coordinates.")
         + fig("witness_die_leaf.png", "4 mm of the lid's garland",
               f"Four millimetres of the lid's garland: each leaf is a chrome grating at its own angle (the carrier × 1.09), which beats against the B ply's carrier across {PLY_UM/1000:g} mm of glass. The gaps between leaves are clear — on the box, bare glass.")
-        + fig("witness_die_portrait.png", "3 mm of the left side's portrait",
+        + fig("witness_die_portrait.png", "3 mm of the beach side's line screen",
               "Three millimetres of DIE-LEFT: the 44 µm line screen with the 4.15–6.0 µm colour sub-gratings inside the coloured bands. The die is mirrored, so the picture reads correctly through the glass once it is the box's outer ply.")
-        + fig("witness_die_garland.png", "3 mm of the left side's colour garland",
+        + fig("witness_die_garland.png", "3 mm of the beach side's one-ply garland: leaf gratings over the 35% carrier",
               "The colour garland at the same scale: each motif family is filled with a vertical 4.15–6.0 µm grating on the hue ladder, the same diffraction colour as the portrait's zones, so the whole side is single-layer and needs no bond.")
-        + fig("validate_nearfield.png", "near-field simulation across 1.5 mm",
+        + fig("validate_nearfield.png", "near-field simulation across 2.25 mm",
               f"A3, the gate: angular-spectrum propagation through {PLY_UM/1000:g} mm of glass under an incoherent source, eye-cell integrated. Left: a garland at the 500 µm design pitch of 22 / 24 µm; middle: the garland as built at this glass's carrier; right: the monogram pair. The surviving fraction of the zero-gap fringe contrast is printed under each. Predicted by §2.2's Fresnel number, and the number that decided the garland pitch and cut the capybara.")
         + fig("validate_switch.png", "registration tolerance of the globe switch",
               f"A2: DIE-FRONT's own front and back metal through sim2d at t = {PLY_UM/1000:g} mm at this glass's comb. The design lanes are fixed and the back ply slid; at p/4 the two globes are a 50/50 blend at every tilt and beyond it they trade places. The verniers read to about 1 µm; the table in §4.7 has the separation at each error.")
-        + fig("validate_photo.png", "tone check of the left side",
+        + fig("validate_photo.png", "tone check of the beach side",
               "A1: the emitted metal of DIE-LEFT accumulated exactly per 87 µm eye cell against the coverage the builder intends. Mean error 0.8 of 22 levels; the coloured bands, holding tone with a 50% sub-grating, print about 2.7 levels lighter than the photograph inside the zones — the cost of holding tone, measured on the real geometry.")
     ),
     "5. Area budget, as built": BUDGET,

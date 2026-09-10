@@ -14,6 +14,7 @@ import {
   bondedCutList,
   cutList,
   hingeLayout,
+  bondedArtKeepoutUm,
   keepoutUm,
   overlapUm,
   seamSegments,
@@ -36,6 +37,7 @@ type GoldenCase = {
     valid: boolean;
     overlap_um?: number;
     keepout_um?: number;
+    art_keepout_um?: number;
     back_window_um?: number;
     cut_list?: {
       face: string;
@@ -91,6 +93,10 @@ describe('assembly contract golden fixture (shared with backend)', () => {
 
       expect(overlapUm(spec)).toBeCloseTo(c.expected.overlap_um!, 6);
       expect(keepoutUm(spec)).toBeCloseTo(c.expected.keepout_um!, 6);
+      if (c.expected.art_keepout_um !== undefined) {
+        // Bonded front-art rim (assembly.py::bonded_art_keepout_um <-> bondedArtKeepoutUm).
+        expect(bondedArtKeepoutUm(spec)).toBeCloseTo(c.expected.art_keepout_um, 6);
+      }
       // Back-carrier window keep-out — the newest shared formula
       // (assembly.py::back_window_um <-> assembly.ts::backWindowUm).
       expect(backWindowUm(spec)).toBeCloseTo(c.expected.back_window_um!, 6);

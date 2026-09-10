@@ -154,7 +154,14 @@ def _render_glyph(letter: str, canvas: int, font_px: int) -> _Glyph:
     # Baseline anchor ('ls' = left / baseline) puts the typographic baseline at
     # a KNOWN y, so cap height and descender depth are directly measurable.
     baseline = canvas // 2
-    draw.text((canvas // 6, baseline), letter, fill=255, font=font, anchor="ls")
+    # Litho weight: Great Vibes' hairlines are ~2% of the font size, which on
+    # a 17 mm lid is a 0.3 mm line the eye reads as a scratch next to the
+    # 1 mm stems. A stroke outline of ~0.45% of the font size (2 px at the
+    # working 430 px) thickens hairlines by half and the stems by an eighth,
+    # the weight of an engraver's copperplate rather than a pen's.
+    sw = max(1, int(round(font_px * 0.0045)))
+    draw.text((canvas // 6, baseline), letter, fill=255, font=font, anchor="ls",
+              stroke_width=sw, stroke_fill=255)
     arr = np.asarray(img, dtype=np.uint8) > 127
     ys, xs = np.where(arr)
     if len(xs) == 0:
@@ -211,7 +218,7 @@ def _place(
     return (tx / W, (tx + new_w) / W)
 
 
-def _recenter(mask: np.ndarray, fill: float = 0.82) -> np.ndarray:
+def _recenter(mask: np.ndarray, fill: float = 0.92) -> np.ndarray:
     """Crop the union to its tight bbox and re-paste it centered, scaled so the
     larger dimension fills ``fill`` of the grid. Guarantees the composite art is
     centered and consistently sized regardless of per-glyph swash asymmetry."""
@@ -238,7 +245,7 @@ def monogram_silhouette(
     extent_um: tuple[float, float] | float,
     n_grid: int = 256,
     letters: str = "JP",
-    overlap: float = 0.68,
+    overlap: float = 0.76,
     surround: bool = False,
     min_stroke_px: int = 2,
 ) -> np.ndarray:

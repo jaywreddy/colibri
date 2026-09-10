@@ -3,8 +3,9 @@
 Three checks, each from the geometry the writer emits or the exact fab
 periods, never from a formula alone:
 
-  photo    A1  raster the LEFT die's clear data, integrate to the 87 um eye
-               cell, compare with the prepped source darkness.
+  photo    A1  the LEFT die's real front metal (export_fine.build_plate_fine),
+               integrated exactly to the 87 um eye cell, compared against the
+               builder's own intended per-pixel coverage (photo.photo_coverage).
   switch   A2  sim2d.switch_metrics on the FRONT die's real front/back metal
                at the plate's glass and comb; then a registration
                sweep (back ply offset 0 / 8 / 20 / 40 um) -> the bench tolerance.
@@ -119,53 +120,86 @@ def box_mean(g, k):
 
 
 def check_photo(out: Path) -> dict:
-    from app import witness_cells as wc
-    from app.patterns.bitmap import colourplan as cp
-    from app.patterns.bitmap import imageprep as ip
-    from app.patterns.bitmap import screenrects as sr
+    """A1, ported to the production geometry: DIE-LEFT is built by
+    ``witness_dies.build_face_die``, which is ``export_fine.build_plate_fine``
+    (there is no ``build_colour_side`` in the production path any more — that
+    function is the legacy single-ply-portrait writer this gate used to call).
 
-    d = wd.die_dims("left")
+    ``fine.front_polys`` is the merged, DRC-healed FRONT metal in the plate
+    frame (plate-centred, y up), UNMIRRORED — ``witness_dies._ply_art`` only
+    mirrors after this point, when it assembles ``build_face_die``'s returned
+    ``art``. The intended coverage below (``photo_coverage``) is equally
+    unmirrored, so the two are compared directly with no flip.
+    """
+    from app import export_fine
+    from app import plates as P
+    from app.patterns.bitmap import photo as ph
+
     t0 = time.perf_counter()
-    cov = {}
-    stats = None
-    for pol in ("clear", "metal"):
-        art = wd.build_colour_side("left", 0.0, 0.0, d["f_w"], d["f_h"], pol)
-        side = art.stats["portrait_um"]
-        px = EYE_UM
-        n = int(round(side / px))
-        x0, y1 = -side / 2, side / 2
-        # the portrait's own data: band rects + the array stripes, flattened,
-        # accumulated as EXACT area per eye cell (garland and marks lie outside)
-        f = np.asarray(art.front)
-        inside = (f[:, 0] >= x0 - 1) & (f[:, 1] <= -x0 + 1) & (f[:, 2] >= -y1 - 1) & (f[:, 3] <= y1 + 1)
-        g = coverage_grid(f[inside], x0, y1, px, n, n)
-        for a in art.arrays:
-            st = sr.stripe_rects(a["rects"], a["period_um"], np.asarray(a["line_um"]) / np.asarray(a["period_um"]),
-                                 phase_um=a.get("phase_um", 0.0), max_rects=20_000_000)
-            coverage_grid(st, x0, y1, px, n, n, out=g)
-        cov[pol] = np.clip(g, 0, 1)
-        stats = art.stats
-    clear_eye, metal_eye = cov["clear"], cov["metal"]
-    tiling = clear_eye + metal_eye
-    # the source, prepped the way the builder preps it (mirrored: the die is)
-    ps = stats["portrait"]
-    gray, rgb = wc.portrait_source(ps["asset_px"])
-    dark = ip.prep_darkness(gray, ip.PrepSpec(tone_steps=ps["tone_steps"]))[:, ::-1]
-    shape = clear_eye.shape[::-1]
-    dk = np.asarray(Image.fromarray((dark * 255).astype(np.uint8)).resize(shape, Image.BOX)) / 255.0
+    _, spec = wd.blank_plan()
+    pspec = spec.faces["left"]
+    side = P.CENTERPIECE_FILL * P._aperture(pspec)
+    px = EYE_UM
+    n = int(round(side / px))
+    x0, y1 = -side / 2, side / 2
+
+    fine = export_fine.build_plate_fine(pspec, "left")
+
+    # The FRONT metal inside the photo's art box (the halftone bands + their
+    # coloured sub-grating stripes; the frame's leaves and carrier lie outside
+    # it by construction), accumulated as EXACT area per eye cell by the same
+    # analytic rasteriser the simulator's literal_front.png is made with
+    # (``literal_raster.layer_coverage``: rectangles by clipped overlap, other
+    # rings by Green's theorem). Rings are selected by bbox; the art box is
+    # centred on the plate, so the plate frame is the art-box frame.
+    from app.literal_raster import layer_coverage
+
+    in_polys: list[np.ndarray] = []
+    n_nonrect = 0
+    for ring in fine.front_polys:
+        r = np.asarray(ring, dtype=np.float64)
+        bx0, bx1 = float(r[:, 0].min()), float(r[:, 0].max())
+        by0, by1 = float(r[:, 1].min()), float(r[:, 1].max())
+        if bx0 < x0 - 1 or bx1 > -x0 + 1 or by0 < -y1 - 1 or by1 > y1 + 1:
+            continue  # outside the art box: frame leaves / carrier, not the photo
+        in_polys.append(r)
+        xs = np.unique(np.round(r[:, 0], 4))
+        ys = np.unique(np.round(r[:, 1], 4))
+        if not (r.shape[0] == 4 and xs.size == 2 and ys.size == 2):
+            n_nonrect += 1  # merged band steps; exact all the same
+    metal_eye = np.clip(layer_coverage(in_polys, side, side, n, n), 0, 1)
+    # The clear side is 1 - metal_eye BY CONSTRUCTION here (metal and its
+    # complement are the same die inversion tested exactly in
+    # tests/test_witness.py::test_the_die_inversion_is_the_exact_complement_of_its_metal),
+    # so there is no separate clear build/raster and no tiling stat to report.
+
+    # The intended coverage: the SAME per-pixel tone model the builder screens
+    # from (`plates._photo_halftone_art` -> `photo.photo_coverage`), at its own
+    # asset resolution, resampled to the eye grid. This already carries the
+    # edge fade-to-carrier and the colour gate (`weight < 0.5` zeros `ids`),
+    # so it is the builder's actual intent, not a re-derivation of it.
+    inp = P._photo_screen_inputs(pspec)
+    cov, ids, _periods = ph.photo_coverage(
+        inp["image"], inp["fade_start"], inp["fade_gate"], inp["tone_steps"],
+        inp["asset_px"], colour_mode=inp["colour_mode"],
+    )
+    shape = metal_eye.shape[::-1]  # PIL wants (w, h)
+    dk = np.asarray(Image.fromarray(np.clip(cov * 255, 0, 255).astype(np.uint8))
+                    .resize(shape, Image.BOX)) / 255.0
+    cm = np.asarray(Image.fromarray(((ids > 0).astype(np.uint8) * 255))
+                    .resize(shape, Image.BOX)) / 255.0
     # coloured bands carry a 50% sub-grating and are NOT tone-held: their metal
-    # is half the band. The builder's intended coverage is therefore
-    # dark * (1 - 0.5 * coloured); the plain target is dark itself.
-    ids, periods, _rep = cp.build_period_field(rgb, cp.PAULA_ZONES)
-    col = (ids > 0)[:, ::-1].astype(np.float64)
-    cm = np.asarray(Image.fromarray((col * 255).astype(np.uint8)).resize(shape, Image.BOX)) / 255.0
+    # is half the band (screenrects.stripe_plan / witness_cells.build_halftone_bands,
+    # duty = colourplan.ColourPlan.duty, default 0.5). The builder's intended
+    # coverage is therefore cov * (1 - 0.5 * coloured); the plain target is cov itself.
     want_metal = dk * (1.0 - 0.5 * cm)
-    levels = ps["tone_steps"]
+    levels = inp["tone_steps"]
     err_plain = metal_eye - dk
     err_int = metal_eye - want_metal
     res = {
-        "portrait_um": side, "eye_cells": list(clear_eye.shape), "method": "exact area per 87 um cell",
-        "tiling_clear_plus_metal_mean": float(tiling.mean()), "tiling_max_dev": float(np.abs(tiling - 1).max()),
+        "portrait_um": side, "eye_cells": list(metal_eye.shape),
+        "method": "exact area per 87 um cell, from export_fine.build_plate_fine's front_polys (un-mirrored)",
+        "non_rect_rings_in_art_box": n_nonrect,
         "mean_metal": float(metal_eye.mean()), "mean_dark": float(dk.mean()),
         "coloured_frac_of_cells": float(cm.mean()),
         "vs_darkness_mae_levels": float(np.abs(err_plain).mean() * levels),
@@ -181,7 +215,7 @@ def check_photo(out: Path) -> dict:
     def tile(a, lo, hi):
         v = np.clip((a - lo) / (hi - lo), 0, 1)
         return Image.fromarray((v * 255).astype(np.uint8)).convert("RGB")
-    h = clear_eye.shape[0]
+    h = metal_eye.shape[0]
     im = Image.new("RGB", (4 * h + 50, h + 64), BG)
     im.paste(tile(1 - metal_eye, 0, 1), (10, 10))
     im.paste(tile(1 - want_metal, 0, 1), (h + 20, 10))
@@ -192,8 +226,9 @@ def check_photo(out: Path) -> dict:
     dr.text((h + 20, h + 14), "intended (colour bands halved)", fill=FG, font=font(11))
     dr.text((2 * h + 30, h + 14), "prepped darkness", fill=FG, font=font(11))
     dr.text((3 * h + 40, h + 14), f"emitted - intended, +-3 levels", fill=FG, font=font(11))
-    dr.text((10, h + 34), f"DIE-LEFT portrait {side/1000:.1f} mm, ZONES; 44 um screen, {levels} levels. mean |err| {res['vs_intended_mae_levels']:.2f} levels, bias {res['vs_intended_bias_levels']:+.2f}; "
-            f"clear + metal = {res['tiling_clear_plus_metal_mean']:.4f} (max dev {res['tiling_max_dev']:.4f})", fill=DIM, font=font(10))
+    dr.text((10, h + 34), f"DIE-LEFT portrait {side/1000:.1f} mm, {inp['colour_mode'].upper()}; "
+            f"{inp['line_period_um']:g} um screen, {levels} levels. mean |err| {res['vs_intended_mae_levels']:.2f} levels, "
+            f"bias {res['vs_intended_bias_levels']:+.2f} ({res['non_rect_rings_in_art_box']} non-rect rings folded in)", fill=DIM, font=font(10))
     dr.text((10, h + 48), f"the coloured bands ({res['coloured_frac_of_cells']:.0%} of cells) hold tone with a 50% sub-grating and print {res['colour_lightening_levels']:.1f} levels lighter than the photo -- the cost of holding tone (plan 1.1), measured", fill=DIM, font=font(10))
     im.save(out / "validate_photo.png")
     return res

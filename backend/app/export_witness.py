@@ -83,7 +83,7 @@ from .witness_geom import (
     REF_SCREEN_UM,
     REF_SPREAD,
     REF_TONE_STEPS,
-    USABLE_UM,
+    USABLE_UM as _GEOM_USABLE_UM,
     Cell,
     CellArt,
     _cat,
@@ -92,6 +92,13 @@ from .witness_geom import (
 )
 
 LAYER_PAIR = (21, 0)     # outline-only: marks the back ply of a bonded pair
+
+TICK_REACH_UM = 550.0
+"""How far a die's corner dicing tick reaches into the street beyond the die
+edge (``export_blank.DICE_TICK_GAP_UM + DICE_TICK_LEN_UM``). The packer keeps
+every cell this much inside the geometric usable square, so no written shape —
+tick included — lands in the blank's 4 mm edge margin."""
+USABLE_UM = _GEOM_USABLE_UM - 2.0 * TICK_REACH_UM
 MM = 1000.0
 ROW_GUTTER_UM = 500.0
 """Between rows. Most of this plate is never diced, so it does not need a saw

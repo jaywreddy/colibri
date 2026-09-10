@@ -247,15 +247,24 @@ test.describe('@effects physical honesty of renderer effects', () => {
       if (st.manifestRecipe !== 'foliage_moire') {
         bindFailures.push(`${st.face}: manifest render_recipe ${st.manifestRecipe}`);
       }
-      // Bare glass has nothing to bind on either plane, and a single-ply face
-      // has no inner pattern plane: on a literal face an EMPTY raster drops
-      // the plane, which is the truth of that face, not a binding failure.
+      // Bare glass has nothing to bind on either layer, and a single-ply face
+      // has no back layer: on a literal face an EMPTY raster drops it, which is
+      // the truth of that face, not a binding failure.
       if (st.blank) continue;
       const wantInner = !st.singlePly;
-      if (st.recipe !== 3 || (wantInner && st.recipeBack !== 3)) {
+      // A LITERAL face composites both layers in ONE pass on the outer plane —
+      // the eye integrates the PRODUCT of the two layers' transmissions, and two
+      // independently filtered planes alpha-blended afterwards cannot express
+      // that (see plate.frag::runLiteralLayer). So its inner PATTERN plane is
+      // deliberately hidden and its inner MATERIAL is inert; the back layer's
+      // binding is asserted on the outer material's uBackCoverage instead, which
+      // allFaceRenderState already routes maskBackW/maskBackMatchesManifest to.
+      // The procedural path keeps the two-plane assertions exactly as they were.
+      const wantInnerPlane = wantInner && !st.literal;
+      if (st.recipe !== 3 || (wantInnerPlane && st.recipeBack !== 3)) {
         bindFailures.push(`${st.face}: uRecipe ${st.recipe}/${st.recipeBack} (want 3/3)`);
       }
-      if (!st.visible || (wantInner && !st.visibleBack)) {
+      if (!st.visible || (wantInnerPlane && !st.visibleBack)) {
         bindFailures.push(
           `${st.face}: plane hidden (outer ${st.visible}, inner ${st.visibleBack})`
         );
@@ -268,7 +277,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
       if (!st.maskMatchesManifest || (wantInner && !st.maskBackMatchesManifest)) {
         bindFailures.push(
           `${st.face}: bound mask URLs are not the manifest's front/back PNGs ` +
-            `(outer ${st.maskMatchesManifest}, inner ${st.maskBackMatchesManifest})`
+            `(outer ${st.maskMatchesManifest}, back layer ${st.maskBackMatchesManifest})`
         );
       }
       const tUm = st.thicknessUm;
@@ -406,17 +415,19 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const fZeroAgain = await capture();
     const dControlZero = diffFrames(fZeroGap, fZeroAgain);
 
-    // Gap -> 80%: response must be smaller than the full collapse. The probe
-    // sits at 80% (20% displacement), NOT deeper, because the pixel response
-    // saturates once the fringe shift exceeds its correlation length: the
-    // measured curve on the linear-light renderer is mad 2.7 @ 0.9, 4.8 @ 0.8,
-    // 5.9 @ 0.7, 6.6 @ 0.6, then a flat shoulder to 7.2 @ 0.12. The old 0.6
-    // probe sat ON that shoulder, passing the <0.9x gate by 0.012 mad on the
-    // blurrier pre-linear pipeline and failing on any contrast improvement.
-    // At 0.8 the ratio is ~0.66 with the gate unchanged — and the anti-cheat
-    // is STRONGER: a binary fake (any nonzero collapse -> same frame) still
-    // reads ~1.0 here and fails.
-    await scaleBackPlaneGap(page, 'front', 0.8);
+    // Gap -> 95%: response must be smaller than the full collapse. The probe
+    // sits at a SMALL displacement because the pixel response saturates once
+    // the fringe shift exceeds its correlation length, and on the production
+    // stack that length is short: the paraxial gap is 1543 um, so at this 10
+    // deg view a 20% collapse slides the inner layer 37 um — 0.35 of the
+    // garland's 1635 um beat (gain 15.5) and 0.27 of the globe barrier's
+    // 135 um lane — and the literal composite (the two-layer product formed
+    // per sub-sample) reads that as a full fringe change, the same as the
+    // aliased full collapse (13.3 vs 12.5 mad at 0.8). At 5% the slide is
+    // 9 um, 0.09 of a beat, inside the linear regime. The anti-cheat still
+    // holds: a binary fake (any nonzero collapse -> same frame) reads ~1.0
+    // here and fails, and the lower bound catches a gap that does nothing.
+    await scaleBackPlaneGap(page, 'front', 0.95);
     const fPartial = await capture();
     await scaleBackPlaneGap(page, 'front', 1); // restore design gap
     await unzoom();
@@ -452,7 +463,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
     }
     if (!(dPartial.mad < dCollapse.mad * 0.9 && dPartial.mad > 0.02)) {
       failures.push(
-        `response does not scale with the gap (80%-gap mad ${dPartial.mad.toFixed(2)} vs full collapse ${dCollapse.mad.toFixed(2)})`
+        `response does not scale with the gap (95%-gap mad ${dPartial.mad.toFixed(2)} vs full collapse ${dCollapse.mad.toFixed(2)})`
       );
     }
     if (dControl.mad > 0.5) {
@@ -607,16 +618,25 @@ test.describe('@effects physical honesty of renderer effects', () => {
     await settle(page, 400);
     expect(await faceRecipeId(page, 'front')).toBe(3);
     // Structural half of the same axiom: the newly bound masks are the PNGs
-    // this face's manifest declares, on both planes, at real resolution.
+    // this face's manifest declares, for BOTH layers, at real resolution.
+    //
+    // "Both layers", not "both planes": a literal face composites its two layers
+    // in one pass on the outer plane (the eye integrates their PRODUCT — see
+    // plate.frag::runLiteralLayer), so its inner plane is hidden and the back
+    // raster rides uBackCoverage on the outer material. allFaceRenderState reads
+    // maskBackW / maskBackMatchesManifest from whichever slot the renderer
+    // actually samples, so the axiom is unchanged on either path. A single-ply
+    // face genuinely has no back layer.
     const frontState = (await allFaceRenderState(page)).find((s) => s.face === 'front');
     expect(frontState, 'no render state for the front face').toBeTruthy();
+    const wantBack = !frontState!.singlePly;
     expect(
-      frontState!.maskW > 1 && frontState!.maskBackW > 1,
-      `front planes still on the placeholder mask (${frontState!.maskW}/${frontState!.maskBackW} px)`
+      frontState!.maskW > 1 && (!wantBack || frontState!.maskBackW > 1),
+      `front layers still on the placeholder mask (${frontState!.maskW}/${frontState!.maskBackW} px)`
     ).toBeTruthy();
     expect(
-      frontState!.maskMatchesManifest && frontState!.maskBackMatchesManifest,
-      'front planes are not bound to the manifest front/back PNGs'
+      frontState!.maskMatchesManifest && (!wantBack || frontState!.maskBackMatchesManifest),
+      'front layers are not bound to the manifest front/back PNGs'
     ).toBeTruthy();
 
     // First-zone calibration: the reveal completes when the Snell-refracted

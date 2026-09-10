@@ -326,7 +326,7 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         # BARE GLASS: every zone stays empty, so every ``.any()`` gate in
         # ``build_plate_fine`` falls through and the plate emits no geometry at
         # all. Returning here rather than special-casing each emitter means any
-        # OTHER caller of the zone masks (witness_dies._static_garland_metal,
+        # OTHER caller of the zone masks (the single-ply carrier block below,
         # the render tools) also sees a blank face as blank.
         return ZoneMasks(
             pitch_um=pitch_um,
@@ -1213,10 +1213,10 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # --- SINGLE PLY: the carrier moves to the FRONT layer -------------------
     # One sheet of glass, so there is no inner ply to carry the uniform carrier.
     # It joins the leaves on the outer ply over the back window MINUS the art
-    # box, and every BACK emitter below is skipped. This is exactly
-    # ``witness_dies._static_garland_metal`` — the geometry the production
-    # witness plate's colour sides are written from — reached from the ordinary
-    # per-face path instead of a parallel one. The 2-cell erosion is the same
+    # box, and every BACK emitter below is skipped. This IS the single-ply
+    # carrier geometry — the production witness dies (witness_dies.build_face_die,
+    # via build_plate_fine) are built from this block, not from a parallel one.
+    # The 2-cell erosion is the same
     # seam gutter the two-ply carrier takes: an angled grating's rotated
     # rectangles end in slanted tips that would otherwise close the gap to the
     # abutting field below the litho floor.
@@ -1226,9 +1226,12 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
             carrier_zone &= ~zm.art_box
         carrier_zone = _erode_zone(carrier_zone, 2)
         if carrier_zone.any():
+            # Lighter than the two-ply carrier: the leaves sit ON this field and
+            # the photograph fades INTO it (plates.SINGLE_PLY_CARRIER_DUTY is the
+            # photo module's fade target, so the two agree by construction).
             _emit_grating(
-                carrier_zone, pitch, extent, back_period, duty, base_angle,
-                0.0, front_rects_parts, front_angled,
+                carrier_zone, pitch, extent, back_period, P.SINGLE_PLY_CARRIER_DUTY,
+                base_angle, 0.0, front_rects_parts, front_angled,
             )
 
     # --- BACK carrier grating (22 µm) over the whole window ----------------

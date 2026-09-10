@@ -32,8 +32,8 @@ from .assembly import (
     assembly_summary,
     back_window_um,
     bonded_assembly_summary,
+    bonded_art_keepout_um,
     bonded_back_window_um,
-    bonded_keepout_um,
     face_cut_dims,
     keepout_um,
     validate_assembly,
@@ -90,10 +90,23 @@ _FACE_PATTERN_PARAMS: dict[str, dict[str, Any]] = {
 # than a parallax one. See PlateSpec.single_ply.
 _SINGLE_PLY_FACES: frozenset[str] = frozenset({"left", "right"})
 
-# Motif size dial for every face's frame. 0.75 makes the foliage read finer and
-# lacier without narrowing the band — the leaves simply come more often. Matches
-# witness_dies.MOTIF_SCALE, which is what the production plate is written at.
-PRODUCTION_MOTIF_SCALE = 0.75
+# Motif size dial for every face's frame. 0.68 makes the foliage read finer and
+# lacier without narrowing the band — the leaves simply come more often — and
+# keeps a flower under a millimetre inside the 2.4 mm band. witness_dies reads
+# this, so the production plate is written at the same value.
+PRODUCTION_MOTIF_SCALE = 0.68
+
+# One garland band width for all six faces (µm). The default (12% of the
+# shorter side) gave the lid a 3.5 mm band and the walls 2.95 mm; with the art
+# rim now starting at the inner ply's window (assembly.bonded_art_keepout_um)
+# a fixed 2.4 mm keeps the lid's art box at 17 mm and the photo walls' at
+# 12.5 mm.
+PRODUCTION_BAND_UM = 2400.0
+
+# 3/8" copper foil: the only stock preset that wraps the 6.75 mm stepped edge of
+# a 2.25 mm bonded stack with a fold left over (1.39 mm per face). 1/4" tape is
+# 0.4 mm short of the edge and validate_bonded_assembly rejects it.
+PRODUCTION_TAPE_UM = 9525.0
 
 # The production stock: 2.25 mm fused quartz plies, bonded face-to-face, so the
 # wall is 4.5 mm and the optical parallax gap is t/n = 1543 um.
@@ -251,7 +264,10 @@ class BoxSpec:
             # already one ply in — so, measured in the shared outer frame, its
             # window insets by ply + the interior foil fold. That guarantees
             # composed back geometry never overhangs the smaller inner plate.
-            ko = bonded_keepout_um(self.foil, t)
+            # Front art starts at the LARGER of the foil keep-out and that
+            # back window, so every front feature has the inner ply's carrier
+            # behind it (see assembly.bonded_art_keepout_um).
+            ko = bonded_art_keepout_um(self.foil, t)
             bw = t + bonded_back_window_um(self.foil, t)
         else:
             ko = keepout_um(self.foil, t)
@@ -278,10 +294,10 @@ class BoxSpec:
 def default_box_spec() -> BoxSpec:
     """The PRODUCTION ring box — MUST match the frontend's ``defaultBoxSpec()``.
 
-    29.1 x 29.1 x 32.01 mm, BONDED from 2.25 mm fused-quartz plies, 1/4" foil,
+    29.1 x 29.1 x 32.01 mm, BONDED from 2.25 mm fused-quartz plies, 3/8" foil,
     5-segment tube hinge. Every written face gets a perimeter foliage FRAME with
     its own seed + band-composition profile (so each side is a visibly distinct
-    engraved border) at ``motif_scale`` 0.75, around a centerpiece:
+    engraved border) at ``motif_scale`` 0.68 in a 2.4 mm band, around a centerpiece:
 
       * TOP (lid) → the interlocked cursive J+P monogram (``monogram-jp``), a
         shading moiré against the carrier — the engagement engraving.
@@ -307,6 +323,7 @@ def default_box_spec() -> BoxSpec:
             material=PRODUCTION_GLASS_MATERIAL,
             n=PRODUCTION_GLASS_N,
         ),
+        foil=FoilSpec(tape_width_um=PRODUCTION_TAPE_UM),
         bonded=True,
     )
     for fid in FACE_IDS:
@@ -315,7 +332,8 @@ def default_box_spec() -> BoxSpec:
         spec.faces[fid] = PlateSpec(
             pattern_slug=slug,
             pattern_params=dict(_FACE_PATTERN_PARAMS.get(fid, {})),
-            frame=FrameSpec(**profile, motif_scale=PRODUCTION_MOTIF_SCALE),
+            frame=FrameSpec(**profile, motif_scale=PRODUCTION_MOTIF_SCALE,
+                            band_um=PRODUCTION_BAND_UM),
             single_ply=fid in _SINGLE_PLY_FACES,
         )
     spec.normalize_face_dims()

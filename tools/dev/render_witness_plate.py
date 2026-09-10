@@ -64,26 +64,14 @@ def main() -> int:
     s = dies["DIE-LEFT"]
     cx, cy = s["x_mm"] * 1000, s["y_mm"] * 1000
     render(gds, out / "witness_die_portrait.png", 1200, (cx - 1500, cy - 1500, cx + 1500, cy + 1500))
-    # The colour garland: 4.15-6 um vertical gratings, which a 3 mm window
-    # cannot resolve. Find the densest 0.6 mm patch of thin shapes in the left
-    # band from the GDS itself and zoom there at ~0.5 um/px.
-    ly = db.Layout(); ly.read(gds)
-    top_cell = ly.top_cell(); L = ly.layer(10, 0); dbu = ly.dbu
+    # 3 mm of the left side's one-ply garland: leaf gratings (107.9 um) over the
+    # 35%-duty carrier (99 um), both on the outer ply, a corner of the band —
+    # the band starts at the art rim (weld_margin) and is 2.4 mm wide.
     x_edge = (s["x_mm"] - s["w_mm"] / 2) * 1000
-    band = db.DBox(x_edge + 1500, cy - s["h_mm"] * 500 + 3000, x_edge + 4200, cy + s["h_mm"] * 500 - 3000)
-    reg = db.Region(top_cell.begin_shapes_rec_touching(L, db.Box(band.to_itype(dbu))))
-    bins: dict[tuple[int, int], int] = {}
-    for poly in reg.each():
-        b = poly.bbox().to_dtype(dbu)
-        if b.width() < 4.0 and b.height() > 50.0:
-            key = (int(b.center().x // 600), int(b.center().y // 600))
-            bins[key] = bins.get(key, 0) + 1
-    if bins:
-        kx, ky = max(bins, key=bins.get)
-        gx, gy = (kx + 0.5) * 600, (ky + 0.5) * 600
-    else:
-        gx, gy = x_edge + 2800, cy
-    render(gds, out / "witness_die_garland.png", 1200, (gx - 300, gy - 300, gx + 300, gy + 300))
+    y_top = (s["y_mm"] + s["h_mm"] / 2) * 1000
+    rim = float(s["stats"].get("art_rim_um", 3637.5))
+    gx, gy = x_edge + rim + 1500, y_top - rim - 1500
+    render(gds, out / "witness_die_garland.png", 1200, (gx - 1500, gy - 1500, gx + 1500, gy + 1500))
     return 0
 
 

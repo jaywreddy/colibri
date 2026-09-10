@@ -419,23 +419,27 @@ and the sides are the portraits.
 
 | Die | Etched | What it is | Its own witness role | Written |
 |---|---|---|---|---|
-| **DIE-TOP** | `TOP F monogram-jp`, `TOP B` | the lid: J+P monogram on a 105.38 µm carrier beating the inner ply's 99 µm carrier at 1635 µm; foliage garland at 99 / 107.9 µm | travelling two-layer moiré at full size — does the 1635 µm beat move at 445 µm/° and hold contrast (§2.2)? | F 29.1 × 29.1, B 24.6 × 24.6 mm; 17,506 polygons |
-| **DIE-FRONT** | `FRONT F globe-duo-phase`, `FRONT B` | the front: California ↔ Colombia globe as a parallax barrier, comb 270.5 µm, both globes interlaced on B under a neutral slit comb on F; garland | the barrier switch at 29.1 mm: 50/50 head-on, clean swap at ±2.51°, and the bench registration tolerance | F 29.1 × 27.51, B 24.6 × 23.01 mm; 19,701 polygons |
-| **DIE-LEFT** | `LEFT F colour ZONES` | a side: the portrait at 15.4 mm, 44 µm screen, 22 levels, zone-mapped colour; a colour garland with a diffraction sub-grating per motif family (orchid 4.15, philodendron 4.7, fern 4.85, plantain 5, vine 5, wax_palm 5.16, heliconia 5.66, coffee 5.84, anthurium 6.02 µm) | the halftone and the colour ladder at production size; single-layer, no bond | F 24.6 × 27.51 mm; 202,134 band rectangles + 39,209 coloured bands as arrays |
-| **DIE-RIGHT** | `RIGHT F colour HUE` | the same portrait, hue-mapped; same garland | the subjective comparison with DIE-LEFT, on the box | F 24.6 × 27.51 mm; 204,472 + 69,867 |
+| **DIE-TOP** | `TOP F monogram-jp`, `TOP B` | the lid: J+P monogram (interlock 0.76, 0.92 of a 14.6 mm art box) on a 105.38 µm carrier beating the inner ply's 99 µm carrier at 1635 µm; foliage garland at 99 / 107.9 µm in a 2.4 mm band starting 3.64 mm from the edge | travelling two-layer moiré at full size — does the 1635 µm beat move at 445 µm/° and hold contrast (§2.2)? | F 29.1 × 29.1, B 24.6 × 24.6 mm; 16,507 written polygons, 2 DRC flags |
+| **DIE-FRONT** | `FRONT F globe-duo-phase`, `FRONT B` | the front: California ↔ Colombia globe as a parallax barrier, comb 270.5 µm, both globes interlaced on B under a neutral slit comb on F; garland | the barrier switch at 29.1 mm: 50/50 head-on, clean swap at ±2.51°, and the bench registration tolerance | F 29.1 × 27.51, B 24.6 × 23.01 mm; 14,872 polygons, 2 flags |
+| **DIE-LEFT** | `LEFT F photo-halftone beach` | a side: the beach photograph in a 10.8 mm art box, 44 µm screen, 22 levels, the faces in diffraction colour (4.15–6.0 µm sub-gratings), edge-faded into a 35% carrier; garland with leaf gratings AND the carrier on the one ply (static beat, §2.1) | the halftone, the colour ladder and the one-ply garland at production size; no bond | F 24.6 × 27.51 mm; 75,218 polygons, 37 flags |
+| **DIE-RIGHT** | `RIGHT F photo-halftone sunset` | the sunset couple, plain gold, same screen and garland | the second side; plain against coloured, on the box | F 24.6 × 27.51 mm; 59,292 polygons, 25 flags |
 
 Every die is mirrored for the chrome-down stack and carries the 80 µm (F) or
-88 µm (B) assembly verniers and a tick-code ID in the interior foil-fold band,
-plus corner scribe ticks in the street. The sides' backing plies are bare glass
-and take no plate area. The polarity is CLEAR like the rest of the plate: each
-die's gold geometry (the fine builder's merged, DRC-healed polygons) is
-inverted inside its own rectangle by one klayout Region boolean and decomposed
-to trapezoids, so no polygon carries a hole. The chrome that stays is the gold
-of the box; the clear is its bare glass.
+88 µm (B) assembly verniers and a tick-code ID in the interior foil-fold band
+(1.39 mm wide with the 3/8″ tape — with 1/4″ tape the fold was zero and the
+combs, which need 0.48 mm of band, were silently not written), plus corner
+scribe ticks in the street. The sides' backing plies are bare glass and take no
+plate area. The polarity is CLEAR like the rest of the plate: each die's gold
+geometry (the fine builder's merged, DRC-healed polygons) is opened to the 2 µm
+floor, inverted inside its own rectangle by one klayout Region boolean, the
+clear opened and settled until the shop's width/space check passes on the
+WRITTEN data, and decomposed to convex pieces so no polygon carries a hole
+(`witness_dies.clear_field`; the counts above are that check, run on the file).
+The chrome that stays is the gold of the box; the clear is its bare glass.
 
 **In-silico gates, run before ordering** (`tools/dev/validate_dies.py`):
 
-*A1 — the photo.* The left side's metal, with the sub-gratings flattened and its area accumulated exactly per 87 µm eye cell, matches the coverage the builder intends to **1.27 of the 22 tone levels** on average (95th percentile 4.9, bias -0.34); clear and metal tile the portrait to 1.000. Against the photograph's darkness itself the die reads 1.3 levels light, all of it in the 35% of cells that carry colour: a coloured band holds tone with a 50% sub-grating, so it prints at half the metal — the cost of holding tone from §1.1, here 0.9 levels averaged over the picture and about 2.7 inside the coloured zones. That is the number the prep gain has to carry if the zones are to sit at the photograph's tone.
+*A1 — the photo.* The beach side's front metal — the `build_plate_fine` polygons the die is written from — accumulated as exact area per 87 µm eye cell, matches the coverage the photo module asked for to **0.64 of the 22 tone levels** on average (95th percentile 3.6, bias −0.43); against the photograph's own darkness it reads 0.84 levels, −0.65. The 6% of cells that carry colour sit −0.21, the plain ones −0.45: the residue is the 2 µm finish shaving every band edge, not the colour. (The colour cost of §1.1 is already inside the intended coverage: a coloured band holds tone with a 50% sub-grating, and the photo module halves what it asks for there.)
 
 *A2 — the switch.* `sim2d.switch_metrics` on DIE-FRONT's own front and back
 metal, rasterised at 4 µm over the art box, comb 270.5 µm, t = 2.25 mm, n = 1.4585
@@ -444,17 +448,19 @@ the design lanes and the metric repeated:
 
 | back-ply error | lane shown at +p/4 | lane that should vanish | separation |
 |---|---|---|---|
-| 0 µm | 0.01 | 0.97 | 101.0 |
-| 8 µm | 0.04 | 0.94 | 20.5 |
-| 20 µm | 0.13 | 0.85 | 6.4 |
-| 34 µm | 0.22 | 0.76 | 3.5 |
-| 51 µm | 0.36 | 0.62 | 1.7 |
-| 68 µm | 0.48 | 0.50 | 1.0 |
-| 85 µm | 0.60 | 0.38 | 1.5 |
+| 0 µm | 0.03 | 0.96 | 32.8 |
+| 8 µm | 0.08 | 0.92 | 11.7 |
+| 20 µm | 0.16 | 0.83 | 5.1 |
+| 34 µm | 0.25 | 0.75 | 3.0 |
+| 51 µm | 0.39 | 0.61 | 1.6 |
+| 68 µm | 0.50 | 0.49 | 1.0 |
+| 85 µm | 0.62 | 0.38 | 1.6 |
+
+(2026-09-10 rebuild, 13.3 mm art box; the zero-error separation fell from 101 to 33 because the finished geometry no longer has perfectly clean lane edges — the 2 µm open rounds the interlace slots — while the tolerance curve, which is what the bench needs, is unchanged: ±8 µm keeps better than 10:1.)
 
 The lane pitch is p/2 = 135.25 µm, so an error of p/4 = 68 µm is a 50/50 blend
 at every tilt and past it the two globes trade places. The table is what the
-verniers have to hold: **±8 µm keeps a 20:1 swap, ±20 µm a 6.4:1 one.** The
+verniers have to hold: **±8 µm keeps a 12:1 swap, ±20 µm a 5:1 one.** The
 80/88 µm combs beat at 880 µm and read coincidence to about 1 µm, so the bond
 has margin of an order of magnitude — if it is set on the verniers and not by
 eye. The coarser comb of the 2.25 mm ply is more forgiving than the 173 µm one
@@ -465,7 +471,7 @@ was, by exactly the ratio of the pitches.
 wavelengths), eye-cell integrated, on 4 mm patches of the exact grating pairs.
 A garland at the 500 µm design pitch (22 / 23.98 µm at 2.5°) would keep 11% of
 its zero-gap fringe contrast; as built (99 / 107.9 µm) it keeps 75%; the
-monogram pair (99 / 105.38 µm) keeps 72%. That is the number that decided
+monogram pair (99 / 105.38 µm) keeps 72.5%. That is the number that decided
 the garland pitch and cut the capybara.
 
 Iso-dense bias is measured by the two M-CD strips and needs no cell of its own.

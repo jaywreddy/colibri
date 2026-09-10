@@ -309,6 +309,9 @@ def generate(
 # --- edge specification ------------------------------------------------------
 
 
+_EDGE_PHASE = {"bottom": 37, "right": 101, "top": 173, "left": 229}
+
+
 @dataclass
 class _Edge:
     # midpoint of the edge (on the rim), inward normal, tangent toward corner B,
@@ -395,7 +398,9 @@ def _lay_half_edge(
     for i in range(n_ctrl + 1):
         f = i / n_ctrl
         along = f * span
-        u = noise.fbm((edge.key.__hash__() & 255) * 0.3 + along * 0.0016, 7.3,
+        # A fixed per-edge phase: str.__hash__ is salted per process
+        # (PYTHONHASHSEED), which made every build grow a different vine.
+        u = noise.fbm(_EDGE_PHASE[edge.key] * 0.3 + along * 0.0016, 7.3,
                       octaves=2)
         wob = (u - 0.5) * 2.0 * amp * 0.55 + math.sin(f * math.pi) * amp * 0.9
         depth = ride_depth + wob

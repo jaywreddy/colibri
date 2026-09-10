@@ -471,18 +471,36 @@ export const FACE_IDS = ['front', 'back', 'top', 'bottom', 'left', 'right'] as c
  * DataTexture, BoxScene::makeBlankTexture), and `maskMatchesManifest` proves
  * the bound image URL is the one THIS face's manifest declared — the outer
  * plane must carry `files.front_png`, the inner plane `files.back_png`.
+ *
+ * LITERAL faces bind the same axiom to a different pair of slots. Their two
+ * layers are composited in ONE pass on the OUTER plane (the eye integrates the
+ * PRODUCT of the two layers' transmissions, which two independently filtered
+ * planes cannot express — see plate.frag::runLiteralLayer), so the inner PATTERN
+ * plane is hidden and the back raster arrives as `uBackCoverage` on the OUTER
+ * material. `maskBackW` / `maskBackMatchesManifest` therefore read that uniform
+ * on a literal face and `uFront` of the inner plane on a procedural one: same
+ * question — "is THIS face's declared back mask actually feeding the pixels?" —
+ * asked of whichever slot carries it. `visibleBack` is reported as-is (false on
+ * a literal face, by construction); `literal` says which contract applies.
  */
 export type FaceRenderState = {
   face: string;
   /** render_recipe as shipped by the backend for this face (null if no entry). */
   manifestRecipe: string | null;
+  /** recipe_data.literal — the face draws the fabricated raster, one-pass. */
+  literal: boolean;
   /** uRecipe on the outer / inner plane material. */
   recipe: number;
   recipeBack: number;
   visible: boolean;
+  /** Inner PATTERN plane visibility. Always false on a literal face. */
   visibleBack: boolean;
   /** Bound uFront image width per plane; 1 = still the blank placeholder. */
   maskW: number;
+  /**
+   * Width of the BACK layer's bound raster: `uBackCoverage` on the outer
+   * material for a literal face, `uFront` on the inner plane otherwise.
+   */
   maskBackW: number;
   maskMatchesManifest: boolean;
   maskBackMatchesManifest: boolean;
@@ -502,8 +520,8 @@ export async function allFaceRenderState(page: Page): Promise<FaceRenderState[]>
   return await page.evaluate((ids) => {
     const s = (window as any).__studio;
     const bm = s.store.getState().boxManifest as any;
-    const imgOf = (mat: any): { w: number; src: string } => {
-      const img = mat?.uniforms?.uFront?.value?.image;
+    const imgOf = (mat: any, uniform: string): { w: number; src: string } => {
+      const img = mat?.uniforms?.[uniform]?.value?.image;
       return {
         w: Number(img?.width ?? 0),
         src: typeof img?.src === 'string' ? (img.src as string) : '',
@@ -514,12 +532,18 @@ export async function allFaceRenderState(page: Page): Promise<FaceRenderState[]>
     return (ids as readonly string[]).map((fid) => {
       const rt = s.faces?.[fid];
       const fm = bm?.faces?.[fid] ?? null;
-      const outer = imgOf(rt?.shader);
-      const inner = imgOf(rt?.shaderBack);
+      const literal = !!fm?.recipe_data?.literal;
+      const outer = imgOf(rt?.shader, 'uFront');
+      // Where this face's BACK layer actually feeds the pixels: the composite
+      // uniform on the outer material (literal) or the inner plane's own mask.
+      const inner = literal
+        ? imgOf(rt?.shader, 'uBackCoverage')
+        : imgOf(rt?.shaderBack, 'uFront');
       return {
         face: fid,
         blank: !!fm?.recipe_data?.blank,
         singlePly: !!fm?.recipe_data?.single_ply,
+        literal,
         manifestRecipe: (fm?.render_recipe as string | undefined) ?? null,
         recipe: Number(rt?.shader?.uniforms?.uRecipe?.value ?? -1),
         recipeBack: Number(rt?.shaderBack?.uniforms?.uRecipe?.value ?? -1),
@@ -570,8 +594,8 @@ export async function waitForAllFaceMasks(page: Page, timeoutMs = 30_000): Promi
       if (!s?.faces) return false;
       const bm = s.store?.getState?.().boxManifest;
       if (!bm) return false;
-      const bound = (mat: any, declared: unknown): boolean => {
-        const img = mat?.uniforms?.uFront?.value?.image;
+      const bound = (mat: any, uniform: string, declared: unknown): boolean => {
+        const img = mat?.uniforms?.[uniform]?.value?.image;
         if (Number(img?.width ?? 0) <= 1) return false;
         const src = typeof img?.src === 'string' ? (img.src as string) : '';
         return typeof declared === 'string' && declared.length > 0 && src.endsWith(declared);
@@ -580,16 +604,26 @@ export async function waitForAllFaceMasks(page: Page, timeoutMs = 30_000): Promi
         const rt = s.faces[fid];
         const files = bm.faces?.[fid]?.files;
         const literal = !!bm.faces?.[fid]?.recipe_data?.literal;
-        // literal faces may legitimately drop an EMPTY plane (blank / bare inner ply)
-        const boundOr = (mat: any, a: unknown, b: unknown) => bound(mat, a) || bound(mat, b);
+        // literal faces may legitimately drop an EMPTY layer (blank / bare inner ply)
+        const boundOr = (mat: any, u: string, a: unknown, b: unknown) =>
+          bound(mat, u, a) || bound(mat, u, b);
         if (literal) {
           const rd = bm.faces?.[fid]?.recipe_data ?? {};
-          if (rd.blank) return true; // bare glass: nothing to bind on either plane
-          const outerOk = boundOr(rt?.shader, files?.front_png, files?.literal_front);
-          const innerOk = rd.single_ply || boundOr(rt?.shaderBack, files?.back_png, files?.literal_back);
+          if (rd.blank) return true; // bare glass: nothing to bind on either layer
+          // ONE-PASS COMPOSITE: both layers live on the outer material (uFront =
+          // the outer chrome, uBackCoverage = the inner). The inner PATTERN plane
+          // is hidden and binds nothing that reaches a pixel, so waiting on it
+          // would wait on a slot the renderer no longer reads.
+          const outerOk = boundOr(rt?.shader, 'uFront', files?.front_png, files?.literal_front);
+          const innerOk =
+            rd.single_ply ||
+            boundOr(rt?.shader, 'uBackCoverage', files?.back_png, files?.literal_back);
           return outerOk && innerOk;
         }
-        return bound(rt?.shader, files?.front_png) && bound(rt?.shaderBack, files?.back_png);
+        return (
+          bound(rt?.shader, 'uFront', files?.front_png) &&
+          bound(rt?.shaderBack, 'uFront', files?.back_png)
+        );
       });
     },
     FACE_IDS,

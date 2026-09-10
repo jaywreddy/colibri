@@ -86,6 +86,10 @@ uniform float uCenterPeriodUm;     // centerpiece stripe period (um)
 // surfaces, as validated in the two-plane rig. Each plane binds its own mask to
 // uFront; output alpha = the layer's gold coverage so the glass gaps are
 // transparent and the inner plane shows through the outer one.
+// (LITERAL faces are the one exception: both layers are composited on the OUTER
+// plane in ONE pass, because the eye integrates the PRODUCT of the two layers and
+// two independently filtered planes cannot express that — see uLiteral. Their
+// inner pattern plane is hidden and uLayer is 0 for everything that draws.)
 uniform float uLayer;              // 0 = outer/front plane, 1 = inner/back plane
 
 // --- litho metal (renderer-audit item 5) -------------------------------------
@@ -296,12 +300,37 @@ uniform float uAccentMoirePeriodUm;// the moire band's louvre period
 // T/n gap: exactly the mechanism the honesty contract asks for, now with the
 // mask itself as the only source of geometry.
 //
-// Mipmapped LINEAR sampling is not a smoothing hack here — it IS the eye's
-// integration of a sub-acuity lattice at viewing distance. The mip level the GPU
-// picks is the footprint of one screen pixel on the plate, so the returned value
-// is the average metal coverage over exactly that footprint. Do NOT threshold it
-// back to binary: that would throw away the integration and alias.
+// EYE INTEGRATION — and why it is done by explicit SUPERSAMPLING here rather than
+// by the GPU's mipmap chain. The eye integrates the TRANSMISSION OF THE STACK over
+// its resolution cell, and the stack's metal coverage is c = 1 - (1-A)(1-B): a
+// PRODUCT of the two layers. Mip-filtering each layer separately and compositing
+// the results afterwards computes <1-A>·<B> instead of <(1-A)·B>, and those are not
+// equal whenever A and B are correlated across the footprint — which is exactly the
+// case for every cross-layer effect this renderer exists to show. At the default
+// camera one screen pixel spans ~1 carrier period (99 um), so the pre-averaged form
+// collapses the globe barrier switch, the monogram moire and the garland fringes to
+// a flat quarter tone. The composite below therefore forms the product PER
+// SUBSAMPLE at full raster resolution and averages afterwards, and the coverage
+// rasters are uploaded WITHOUT mipmaps (BoxScene::loadCoverageTexture) so every tap
+// is an honest LOD-0 bilinear read. Do NOT threshold the average back to binary:
+// that would throw away the integration and alias.
 uniform float uLiteral;            // 1 = sample the literal raster, 0 = procedural
+// The INNER layer's fabricated-chrome raster (files.literal_back), bound on the
+// OUTER plane's material — a literal face draws its two layers as ONE composite on
+// the outer plane and its inner pattern plane is hidden (see runLiteralLayer).
+// uBackCoverageReady is 0 on a single-ply / blank face, where B is simply zero.
+uniform sampler2D uBackCoverage;
+uniform float uBackCoverageReady;
+// Pixel dimensions of the literal rasters, so the composite can size its
+// subsample grid to at most one texel per step.
+uniform vec2 uCoverageSizePx;
+// LIVE outer->inner plane separation in um. Bound per frame from the ACTUAL mesh
+// positions (BoxScene attaches an onBeforeRender to the outer plane), not from
+// uThicknessUm/uN: the honesty harness manipulates the substrate by moving the
+// inner plane mesh (effectsHelpers::scaleBackPlaneGap), and reading the geometry
+// is what keeps that anti-cheat live now that the inner plane no longer draws.
+// Its design value is the paraxial air gap T/n the scene places the plane at.
+uniform float uInnerGapUm;
 // Sub-grating period map for the FRONT layer: R = period um * 25 (so the byte
 // range 0..255 covers 0..10.2 um; 0 = no sub-grating on this pixel). The ONE
 // non-literal term left on this path — a 2-4 um diffraction grating is far below
@@ -706,7 +735,7 @@ float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
 // (it was lifted out of runFoliageMoireLayer, and keeping it in place keeps that
 // move reviewable as the mechanical edit it is).
 vec4 shadeCoverage(float cov, float dimCov, float hotCov, float accentDiffFrac,
-                   float sheenPeriodUm, bool isBack,
+                   float sheenPeriodUm, bool isBack, bool buried,
                    vec3 viewTangent, vec3 lightTangent, float envUp);
 
 // Single real surface (outer front OR inner back, per uLayer). Draws ONLY this
@@ -892,8 +921,11 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
     }
   }
 
+  // `buried` = false: the procedural path models the legacy single-plate stack,
+  // whose outer gold is deposited on the AIR-side face. Unchanged — the @effects
+  // suite pins these pixels.
   return shadeCoverage(cov, dimCov, hotCov, accentDiffFrac, uRainbowPeriodUm,
-                       isBack, viewTangent, lightTangent, envUp);
+                       isBack, false, viewTangent, lightTangent, envUp);
 }
 
 // ----------------------------------------------------------------------------
@@ -911,9 +943,11 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
 //                  changing occlusion (the water barrier and the water behind it)
 //   accentDiffFrac share of the fragment sitting in a diffraction sub-grating
 //   sheenPeriodUm  that grating's fabricated pitch
+//   buried         this coverage sits UNDER at least one full glass ply even
+//                  though it is drawn on the outer plane (see layerT)
 // ----------------------------------------------------------------------------
 vec4 shadeCoverage(float cov, float dimCov, float hotCov, float accentDiffFrac,
-                   float sheenPeriodUm, bool isBack,
+                   float sheenPeriodUm, bool isBack, bool buried,
                    vec3 viewTangent, vec3 lightTangent, float envUp) {
   float ndl = max(0.0, lightTangent.z);
   vec3 color;
@@ -1007,8 +1041,18 @@ vec4 shadeCoverage(float cov, float dimCov, float hotCov, float accentDiffFrac,
     r0 = r0 * r0;                                   // 0.035 at n = 1.46
     float Rq = r0 + (1.0 - r0) * schlick;           // Schlick, shares item 4's term
     float T2 = (1.0 - Rq) * (1.0 - Rq);
-    // Outer gold is deposited on the AIR-side face, so nothing attenuates it.
-    float layerT = isBack ? T2 : 1.0;
+    // Outer gold is deposited on the AIR-side face, so nothing attenuates it —
+    // TRUE only for the legacy single-plate stack the procedural path models.
+    //
+    // BONDED stacks (every literal face) are chrome-DOWN: the "outer" chrome sits
+    // at the BOND LINE, under one full ply, and the inner chrome under two. Both
+    // layers are therefore seen through glass, and the entering/exiting pair of
+    // air-glass interfaces gives both the same (1-Rq)^2. `buried` carries that
+    // construction in, so the literal composite — which draws BOTH layers on the
+    // outer plane — is transmitted, not left at the air-side 1.0 the old code
+    // applied to it. (The extra internal glass-glass interfaces of the bond are
+    // index-matched by the adhesive; there is no second air gap to reflect at.)
+    float layerT = (isBack || buried) ? T2 : 1.0;
     //
     // DELIBERATE DEVIATION from the plan, which also asked for `Rq` as a veiling-glare
     // term on the outer plane: there is no physical source for it here. The outer gold
@@ -1089,42 +1133,120 @@ vec4 shadeCoverage(float cov, float dimCov, float hotCov, float accentDiffFrac,
 }
 
 // ----------------------------------------------------------------------------
-// LITERAL layer (uLiteral == 1). One real surface, one texture fetch: the
-// fabricated chrome raster IS the geometry. No gratings are synthesized, no
-// graylevel is decoded as a region code, no lattice is reconstructed from a
-// published period — if it is not in the mask, it is not on the wall.
+// LITERAL stack (uLiteral == 1). The fabricated chrome raster IS the geometry:
+// no gratings are synthesized, no graylevel is decoded as a region code, no
+// lattice is reconstructed from a published period — if it is not in the mask,
+// it is not on the wall.
 //
-// Everything the procedural path builds by hand comes out of the two planes for
-// free: the frame moiré is the outer louvre raster seen across the T/n gap
-// against the inner carrier raster, a barrier switch is the outer slit raster
-// walking over the inner interlace raster, and a halftone photo is simply its
-// own bands. Single-ply faces (empty back raster), blank faces (both empty) and
-// photo faces need no code here at all — the CPU side drops an empty plane and
-// this function never runs for it.
+// SINGLE-PASS TWO-LAYER COMPOSITE. A literal face draws BOTH of its layers here,
+// on the OUTER plane only (BoxScene hides the inner pattern plane's mesh and
+// keeps the inner glass ply). The two planes are still physically real and still
+// geometrically separated — the inner layer is sampled at the uv the eye ray
+// actually reaches after crossing the plane gap — but the two coverages are
+// MULTIPLIED BEFORE they are averaged over the pixel footprint, which independent
+// per-plane filtering could never do (see the uLiteral comment: <(1-A)·B> is not
+// <1-A>·<B>, and at ~1 screen pixel per carrier period the difference is the
+// whole effect).
 //
-// The coverage is the sampled value, LINEAR and mipmapped, used as-is: see the
-// uLiteral comment for why that sample is the honest eye-integration and why
-// thresholding it would be the lie.
+// So the moiré, the barrier switches and the shimmer still EMERGE from the
+// geometry with nothing faked; the only change is that the integration that used
+// to be delegated to two independent mip chains is now performed explicitly, on
+// the product, at raster resolution.
+//
+// INNER-LAYER PARALLAX (the "second plane", in closed form). Work in the plane's
+// tangent frame, which plate.vert emits: tangent = model +x, bitangent =
+// normal x tangent = model +y, so a tangent-frame in-plane displacement maps
+// componentwise onto uv through uExtentUm. Put the fragment at P on the outer
+// plane (local z = 0); the inner layer lies at z = -g, where g = uInnerGapUm is
+// the paraxial air gap the scene places the inner plane at (T/n — the view ray
+// refracts into the glass to theta_glass = asin(sin(theta)/n) and travels the
+// full ply T, which to the paraxial order this whole renderer uses is the same
+// ray as a straight one across T/n). The eye ray continues past P along
+// -viewTangent, so it meets the inner layer at
+//
+//     Q = P - viewTangent.xy * (g / viewTangent.z)          [um, tangent frame]
+//
+// i.e. a shift of g·tan(theta) along the projected view direction — arithmetically
+// the same displacement the two real meshes produced by perspective, which is why
+// the swap still crosses where switch_half_angle_deg = asin(n·sin(atan(s/T))) says
+// (2.51 deg at s = p/4 on the production front). g is read from the LIVE mesh
+// separation, so collapsing the gap in the honesty harness still collapses the
+// cross-layer effect here.
 // ----------------------------------------------------------------------------
 vec4 runLiteralLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
-  bool isBack = uLayer > 0.5;
-  float cov = clamp(texture2D(uFront, vUv).r, 0.0, 1.0);
+  if (uLayer > 0.5) {
+    // The inner plane of a literal face draws NOTHING — the composite above is
+    // the entire stack, and drawing the back layer again on its own plane would
+    // paint it twice. BoxScene hides this material; this is the belt-and-braces
+    // so a regression there cannot double-expose the back chrome.
+    return vec4(0.0, 0.0, 0.0, 0.0);
+  }
+
+  // Inner-layer uv at this fragment (derivation above). uExtentUm is (width,
+  // height) in um and uv u spans the width, v the height, so the conversion is
+  // componentwise — wall plates are not square.
+  float ndv = max(viewTangent.z, 1e-3);
+  vec2 shiftUv = (viewTangent.xy * (uInnerGapUm / ndv)) / max(uExtentUm, vec2(1.0));
+  vec2 uvB = vUv - shiftUv;
+
+  // SUBSAMPLE GRID. dFdx/dFdy of vUv are the pixel footprint's two edge vectors
+  // in uv; scaled by the raster size they are its extent in TEXELS. Choose N so
+  // one N x N stratified step is at most one texel, floor 4 (the composite of two
+  // fine lattices deserves real antialiasing even when the raster is magnified)
+  // and cap 8 (64 taps x 2 textures is the laptop-GPU budget). Loop bounds stay
+  // constant for GLSL ES 1.00; the gate skips the taps N does not need.
+  vec2 dux = dFdx(vUv);
+  vec2 duy = dFdy(vUv);
+  vec2 texelSpan = (abs(dux) + abs(duy)) * max(uCoverageSizePx, vec2(1.0));
+  float nSub = clamp(ceil(max(texelSpan.x, texelSpan.y)), 4.0, 8.0);
+  float inv = 1.0 / nSub;
+
+  bool hasBack = uBackCoverageReady > 0.5;   // false on a single-ply / blank face
+  float acc = 0.0;
+  float taps = 0.0;
+  for (int i = 0; i < 8; i++) {
+    for (int j = 0; j < 8; j++) {
+      if (float(i) < nSub && float(j) < nSub) {
+        // Stratified sample centres across the footprint, in [-0.5, 0.5) of a
+        // pixel. No jitter: the frame must be bit-identical from frame to frame
+        // (time-invariance axiom), and the alpha-to-coverage hash below already
+        // decorrelates the quantization.
+        vec2 duv = dux * ((float(i) + 0.5) * inv - 0.5)
+                 + duy * ((float(j) + 0.5) * inv - 0.5);
+        // LOD 0 by construction: the coverage rasters carry no mip chain, so
+        // texture2D is a plain bilinear read of the fabricated chrome.
+        float a = texture2D(uFront, vUv + duv).r;
+        float b = hasBack ? texture2D(uBackCoverage, uvB + duv).r : 0.0;
+        // Metal coverage of the STACK. Both layers are opaque chrome, so the
+        // viewer sees metal wherever EITHER layer has metal; the open fraction
+        // is the product of the two transmissions, (1-a)(1-b). This product is
+        // the quantity that has to be formed before averaging.
+        acc += 1.0 - (1.0 - a) * (1.0 - b);
+        taps += 1.0;
+      }
+    }
+  }
+  float cov = clamp(acc / max(taps, 1.0), 0.0, 1.0);
 
   // The one non-literal term on this path (flagged in the uPeriodMap comment):
   // a sub-5 µm colour grating is orders of magnitude below what a 2048 px raster
   // can carry, so where the period map says one was fabricated we hand it to the
   // same diffractionSheen() stand-in the RAINBOW accent uses, at the per-pixel
   // pitch. r is the byte/255, and the byte is period_um * 25, so the pitch in µm
-  // is r * 255/25 = r * 10.2.
+  // is r * 255/25 = r * 10.2. Sampled ONCE at the pixel centre (LOD 0, like every
+  // read on this path): it is a slowly varying zone map, not a lattice.
   float sheenPeriodUm = 0.0;
   float diffFrac = 0.0;
-  if (!isBack && uPeriodReady > 0.5) {
+  if (uPeriodReady > 0.5) {
     sheenPeriodUm = texture2D(uPeriodMap, vUv).r * 10.2;
     // A pitch below the litho floor is "no grating here", not a tiny one.
     diffFrac = step(0.5, sheenPeriodUm) * cov;
   }
+  // isBack = false (this IS the outer plane) but buried = true: a literal face is
+  // always the BONDED chrome-down stack, so both layers sit under glass and take
+  // the (1-R)^2 transmission the inner layer used to get alone.
   return shadeCoverage(cov, 0.0, 0.0, diffFrac, sheenPeriodUm,
-                       isBack, viewTangent, lightTangent, envUp);
+                       false, true, viewTangent, lightTangent, envUp);
 }
 
 void main() {

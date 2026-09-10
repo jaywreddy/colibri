@@ -6,7 +6,7 @@ import {
   type FaceId,
   type FoilFinish,
 } from '../api';
-import { copperTapeLengthCm, cutList, keepoutUm, overlapUm, FOIL_COLORS } from '../assembly';
+import { bondedArtKeepoutUm, copperTapeLengthCm, cutList, keepoutUm, overlapUm, FOIL_COLORS } from '../assembly';
 import { log } from '../logger';
 import { useStore } from '../store';
 import { FACE_LABELS } from './FacesPanel';
@@ -185,6 +185,9 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
 
   const ko = keepoutUm(boxSpec);
   const ov = overlapUm(boxSpec);
+  // Bonded: the front art starts at the inner ply's window when that is
+  // further in than the foil rim (mirrors assembly.bonded_art_keepout_um).
+  const artRim = boxSpec.bonded ? bondedArtKeepoutUm(boxSpec) : ko;
   const cuts = cutList(boxSpec);
   const tapeCm = copperTapeLengthCm(boxSpec);
 
@@ -605,9 +608,13 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           data-testid="keepout-readout"
           style={{ marginTop: 8, fontSize: 11, opacity: 0.7, lineHeight: 1.5 }}
         >
-          Pattern keep-out: <b>{mm1(ko)} mm</b> per edge
+          Pattern keep-out: <b>{mm1(artRim)} mm</b> per edge
           <br />
-          (foil overlap {mm1(ov)} mm + safety {mm1(boxSpec.foil.safety_um)} mm)
+          (foil overlap {mm1(ov)} mm + safety {mm1(boxSpec.foil.safety_um)} mm
+          {boxSpec.bonded && artRim > ko
+            ? `; art starts at the inner ply's window, ${mm1(boxSpec.glass.thickness_um)} mm ply + ${mm1(ov)} mm fold`
+            : ''}
+          )
         </div>
         <div
           data-testid="tape-length"

@@ -230,7 +230,7 @@ export type GlassSpec = {
 export type FoilFinish = 'bright' | 'copper' | 'patina' | 'gold' | 'rose' | 'gunmetal';
 
 export type FoilSpec = {
-  /** Copper foil tape width. Presets: 4763 (3/16"), 5556 (7/32"), 6350 (1/4"). */
+  /** Copper foil tape width. Presets: 4763 (3/16"), 5556 (7/32"), 6350 (1/4"), 7938 (5/16"), 9525 (3/8"). */
   tape_width_um: number;
   /** Extra pattern keep-out beyond the tape overlap. */
   safety_um: number;
@@ -243,6 +243,8 @@ export const FOIL_TAPE_PRESETS_UM = [
   { label: '3/16″', um: 4763 },
   { label: '7/32″', um: 5556 },
   { label: '1/4″', um: 6350 },
+  { label: '5/16″', um: 7938 },
+  { label: '3/8″', um: 9525 },
 ] as const;
 
 export type HingeSpec = {
@@ -509,8 +511,13 @@ export function defaultGlassSpec(): GlassSpec {
   return { thickness_um: 2250.0, material: 'fused quartz', n: 1.4585 };
 }
 
+/**
+ * PRODUCTION foil: 3/8" copper. A bonded 2.25 mm stack wraps a 6.75 mm stepped
+ * edge; 1/4" tape is 0.4 mm short of it and leaves no fold. Mirrors backend
+ * boxes.PRODUCTION_TAPE_UM.
+ */
 export function defaultFoilSpec(): FoilSpec {
-  return { tape_width_um: 6350.0, safety_um: 500.0, bead_um: 2000.0, finish: 'bright' };
+  return { tape_width_um: 9525.0, safety_um: 500.0, bead_um: 2000.0, finish: 'bright' };
 }
 
 export function defaultHingeSpec(): HingeSpec {
@@ -554,7 +561,9 @@ export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxS
     // single-ply walls, back + bottom = bare glass. A caller-supplied
     // `patternSlug` overrides only the FRONT face (themed override boxes).
     const slug = fid === 'front' ? patternSlug : plan.slug;
-    faces[fid] = defaultPlateSpec(slug, seed, { ...frameOverrides, motif_scale: 0.75 }, {
+    // motif_scale / band_um mirror backend boxes.PRODUCTION_MOTIF_SCALE /
+    // PRODUCTION_BAND_UM: one 2.4 mm band on every face, foliage at 0.68.
+    faces[fid] = defaultPlateSpec(slug, seed, { ...frameOverrides, motif_scale: 0.68, band_um: 2400 }, {
       params: plan.params,
       singlePly: plan.singlePly,
     });

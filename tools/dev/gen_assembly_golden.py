@@ -53,6 +53,7 @@ from app.assembly import (  # noqa: E402
     FoilSpec,
     HingeSpec,
     back_window_um,
+    bonded_art_keepout_um,
     bonded_back_window_um,
     bonded_cut_list,
     bonded_keepout_um,
@@ -100,6 +101,7 @@ def case(
             {
                 "overlap_um": bonded_overlap_um(foil, glass_thickness_um),
                 "keepout_um": bonded_keepout_um(foil, glass_thickness_um),
+                "art_keepout_um": bonded_art_keepout_um(foil, glass_thickness_um),
                 "back_window_um": bonded_back_window_um(foil, glass_thickness_um),
                 "cut_list": bonded_cut_list(width_um, depth_um, height_um, glass_thickness_um),
                 "seams": {
@@ -230,10 +232,21 @@ def main() -> None:
             HingeSpec(segments=3, coverage=0.7),
             bonded=True,
         ),
-        # Bonded overlap clamp: tape (4 mm) narrower than the 3p stepped edge
-        # (4.5 mm) -> overlap max(0,...) = 0, keep-out = safety alone.
+        # The PRODUCTION box: 2.25 mm fused-quartz plies, 3/8" tape. The stepped
+        # edge eats 6750 of 9525 -> overlap 1387.5, keep-out 1887.5, back window
+        # 1387.5, and the front-art rim is the inner-ply window 2250 + 1387.5 =
+        # 3637.5 (bonded_art_keepout_um), not the foil rim.
         case(
-            "bonded-tape-narrower-than-step-clamped",
+            "bonded-production-quartz-3-8-tape",
+            29100.0, 29100.0, 32010.0, 2250.0,
+            FoilSpec(tape_width_um=9525.0),
+            HingeSpec(),
+            bonded=True,
+        ),
+        # Bonded tape narrower than the 3p stepped edge (4 mm vs 4.5 mm): no
+        # fold lands on either face, so the assembly is REJECTED (was a clamp).
+        case(
+            "invalid-bonded-tape-narrower-than-step",
             34000.0, 34000.0, 30000.0, 1500.0,
             FoilSpec(tape_width_um=4000.0),
             HingeSpec(segments=3, coverage=0.7),

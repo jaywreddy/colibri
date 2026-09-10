@@ -69,10 +69,16 @@ SUBJECT_SUFFIX = ".subject.png"
 FADE_SUFFIX = ".fade.png"
 
 # The coverage a single-ply garland's carrier holds outside the art box, and
-# therefore the level the picture's edge must dissolve INTO. 0.5 is the carrier
-# duty (plates.GRATING_DUTY); a fade toward anything else would leave a visible
-# step where the art box ends.
-CARRIER_COV = 0.5
+# therefore the level the picture's edge must dissolve INTO. This IS the
+# single-ply carrier duty — ``export_fine`` writes the carrier at it
+# (``plates.SINGLE_PLY_CARRIER_DUTY`` re-exports it) — so the fade has a real
+# target; a fade toward anything else would leave a visible step where the art
+# box ends. 0.35 rather than the two-ply 0.5: on one ply the leaves (50% gratings)
+# lie ON the carrier, so a 50% field left them 25 points of contrast and read as
+# a mid-grey slab the picture vanished into. At 35% the field is a light veil,
+# the leaves stand off it by 33 points, the static beat between the two gratings
+# keeps its modulation, and the picture's edge visibly dissolves into it.
+CARRIER_COV = 0.35
 
 # The reference screen (witness_geom.REF_SCREEN_UM / REF_TONE_STEPS): 44 um
 # carries 22 grey levels at a 2.0 um finest band — right on the litho floor —

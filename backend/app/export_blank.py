@@ -81,7 +81,7 @@ BLANK_GLASS_MATERIAL = "soda lime"
 
 # 1/4" copper foil: the bonded stepped edge consumes 3 plies (4.5 mm at the
 # 1.5 mm default) of tape width; 1/4" (6350) leaves a 925 µm fold per face.
-BLANK_TAPE_WIDTH_UM = 6_350.0
+BLANK_TAPE_WIDTH_UM = 9_525.0        # 3/8" foil: wraps the 3-ply stepped edge of 2.25 mm plies
 
 # Upright ring box: taller than wide so the ring can stand.
 DEFAULT_ASPECT_H_OVER_W = 1.1
@@ -309,9 +309,10 @@ def solve_blank_max_scale(
     street_um: float = BLANK_STREET_UM,
     spare_faces: tuple[str, ...] = DEFAULT_SPARE_FACES,
     # lo must itself be a VALID bonded box (the search brackets from it): at
-    # 1.5 mm plies + 1/4" tape the aperture floor rejects anything much under
-    # ~12 mm, so start comfortably above that.
-    lo_um: float = 14_000.0,
+    # 2.25 mm plies + 3/8" tape the inner left/right ply (D - 4p) must clear
+    # 2 x 1387.5 + 3000 = 5.8 mm of aperture floor, so anything under ~15 mm is
+    # rejected; start comfortably above that.
+    lo_um: float = 20_000.0,
     hi_um: float = 60_000.0,
     iters: int = 40,
 ) -> BlankPlanResult | None:

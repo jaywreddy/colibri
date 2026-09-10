@@ -39,6 +39,9 @@ const spec = (): BoxSpec => {
     depth_um: 50000,
     height_um: 40000,
     glass: { thickness_um: 500, material: 'fused silica', n: 1.46 },
+    // The classic single-ply numbers below assume 1/4" tape (the production
+    // default is now 3/8" for the bonded quartz stack).
+    foil: { ...s.foil, tape_width_um: 6350 },
     bonded: false,
   };
 };

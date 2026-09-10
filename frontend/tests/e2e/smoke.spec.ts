@@ -37,8 +37,9 @@ test.describe('smoke', () => {
     await page.goto('/');
     await waitForStudio(page);
     await expect(page.getByTestId('cut-list')).toBeVisible();
-    // Defaults: front plate 50.0 x 39.0 mm; keep-out 3.4 mm.
-    await expect(page.getByTestId('cut-front')).toContainText('39.0');
-    await expect(page.getByTestId('keepout-readout')).toContainText('3.4 mm');
+    // Production defaults: front outer ply 29.1 x 27.5 mm; the art rim is the
+    // inner ply's window, 2.25 mm ply + 1.4 mm fold of 3/8" tape = 3.6 mm.
+    await expect(page.getByTestId('cut-front')).toContainText('27.5');
+    await expect(page.getByTestId('keepout-readout')).toContainText('3.6 mm');
   });
 });

@@ -165,8 +165,10 @@ def test_the_production_dies_are_the_panelized_box_plies():
 
 def test_the_die_inversion_is_the_exact_complement_of_its_metal():
     """``die box - metal`` through the klayout Region, decomposed to hole-free
-    trapezoids: the pieces tile the box with the metal exactly (area), and no
-    piece carries a hole or leaves the box."""
+    convex pieces: the pieces tile the box with the metal (area, to the few
+    square micrometres the 2 µm finish takes off the triangle's acute tip and
+    the nanometre slivers a decomposition leaves along its cuts), and no piece
+    carries a hole or leaves the box."""
     from app.witness_dies import clear_field
 
     W, H = 3000.0, 2000.0
@@ -175,9 +177,9 @@ def test_the_die_inversion_is_the_exact_complement_of_its_metal():
     clear = clear_field(W, H, metal)
     a_metal = _area(metal[0]) + _poly_area(tri)
     a_clear = sum(_poly_area(p) for p in clear)
-    assert a_metal + a_clear == pytest.approx(W * H, rel=1e-6)
+    assert a_metal + a_clear == pytest.approx(W * H, rel=1e-5)
     for p in clear:
-        assert len(p) <= 4, "trapezoids only"
+        assert len(p) <= 6, "convex pieces only"
         assert p[:, 0].min() >= -W / 2 - 1e-6 and p[:, 0].max() <= W / 2 + 1e-6
         assert p[:, 1].min() >= -H / 2 - 1e-6 and p[:, 1].max() <= H / 2 + 1e-6
 

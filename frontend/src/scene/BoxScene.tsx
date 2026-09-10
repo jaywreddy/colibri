@@ -463,34 +463,40 @@ function makeBlankTexture(): THREE.DataTexture {
 }
 
 /**
- * Load one mode-L PNG as a SINGLE-CHANNEL, mipmapped, anisotropic texture —
- * the loader for the literal fabricated-chrome rasters and their period maps.
+ * Load one mode-L PNG as a SINGLE-CHANNEL LOD-0 texture — the loader for the
+ * literal fabricated-chrome rasters and their period maps.
  *
  * Why not `TextureLoader`: it hands the browser's decoded `<img>` straight to
  * `texImage2D`, which uploads RGBA. Twelve 2048² rasters plus period maps at
  * 4 bytes/texel is ~200 MB of VRAM for data that is one byte wide; decoding to
- * `RedFormat` here makes it ~50 MB (~67 MB with the mip chain). The shader only
- * ever reads `.r`, so nothing downstream changes.
+ * `RedFormat` here makes it ~50 MB. The shader only ever reads `.r`, so nothing
+ * downstream changes.
  *
- * Filtering is deliberately the OPPOSITE of the level-coded masks, which are
- * sampled NEAREST because bilinear interpolation between region CODES invents
- * codes that never existed. A literal raster is not a code — it is metal
- * coverage — so mipmapped trilinear + max anisotropy is exactly the eye's
- * integration of a sub-acuity lattice at viewing distance, and is what keeps the
- * fine chrome from aliasing into screen-space moiré.
+ * NO MIPMAPS, deliberately. These used to be mipmapped + anisotropic, on the
+ * reasoning that the mip level the GPU picks IS the eye's integration over the
+ * pixel footprint. That is true of ONE layer in isolation and false of the pair:
+ * what the eye integrates is the transmission of the STACK, and the stack's
+ * coverage 1 - (1-A)(1-B) is a product, so pre-averaging each layer and combining
+ * afterwards computes <1-A>·<B> instead of <(1-A)·B>. Those differ exactly where
+ * the two layers are correlated across the footprint — i.e. on every cross-layer
+ * effect the renderer exists to show — and at the default camera (~1 screen pixel
+ * per 99 µm carrier period) the pre-averaged form flattens the barrier switches,
+ * the moiré and the fringes to a uniform quarter tone. plate.frag now supersamples
+ * the PRODUCT at raster resolution instead (runLiteralLayer), so every tap must be
+ * an honest LOD-0 read: no mip chain, LinearFilter both ways (a mipmap minFilter
+ * without a chain is an incomplete texture), and anisotropy is meaningless without
+ * mips. The level-coded procedural masks stay NEAREST for their own reason —
+ * interpolating region CODES invents codes that never existed.
  *
  * Returns `null` for an all-zero raster (a blank face, or the back of a
- * single-ply one): the caller drops that plane rather than uploading 4 MB of
- * zeros and drawing a fully transparent surface over the glass.
+ * single-ply one): the caller drops that layer rather than uploading 4 MB of
+ * zeros.
  *
  * Rows are flipped here, not by `flipY`: three leaves `flipY` false on a
  * DataTexture, and matching the `TextureLoader` convention (image row 0 at
  * v = 1) in the copy is deterministic across drivers.
  */
-async function loadCoverageTexture(
-  url: string,
-  anisotropy: number
-): Promise<THREE.DataTexture | null> {
+async function loadCoverageTexture(url: string): Promise<THREE.DataTexture | null> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`);
   const bitmap = await createImageBitmap(await res.blob(), {
@@ -528,9 +534,9 @@ async function loadCoverageTexture(
   tex.colorSpace = THREE.NoColorSpace; // coverage, not colour — never transfer-decoded
   tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.magFilter = THREE.LinearFilter;
-  tex.minFilter = THREE.LinearMipmapLinearFilter;
-  tex.generateMipmaps = true;
-  tex.anisotropy = anisotropy;
+  tex.minFilter = THREE.LinearFilter; // no mip chain — see the doc comment
+  tex.generateMipmaps = false;
+  tex.anisotropy = 1; // irrelevant without mips
   tex.unpackAlignment = 1; // one byte per texel: rows are not 4-aligned
   // The honesty harness identifies a bound mask by the URL of its image; a
   // DataTexture's image is a bare {data,width,height}, so record the source
@@ -793,6 +799,21 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       // Per-pixel sub-grating pitch (files.period_front), front plane only.
       uPeriodMap: { value: blank },
       uPeriodReady: { value: 0.0 },
+      // The INNER layer's chrome raster, bound on the OUTER plane's material: a
+      // literal face composites both layers in ONE pass there (the eye integrates
+      // their PRODUCT, which two independently filtered planes cannot express —
+      // see plate.frag::runLiteralLayer), and its inner pattern plane is hidden.
+      uBackCoverage: { value: blank },
+      uBackCoverageReady: { value: 0.0 },
+      // Raster dimensions, so the composite can size its subsample grid to at
+      // most one texel per step.
+      uCoverageSizePx: { value: new THREE.Vector2(2048.0, 2048.0) },
+      // LIVE outer→inner plane separation (µm), refreshed every frame from the
+      // real mesh positions by the outer plane's onBeforeRender (see buildPlate).
+      // Design value = the paraxial air gap T/n; read from the GEOMETRY so the
+      // honesty harness's scaleBackPlaneGap still collapses the cross-layer
+      // effect on a literal face, whose inner plane no longer draws.
+      uInnerGapUm: { value: 0.0 },
     },
   });
   m.alphaToCoverage = true;
@@ -1465,6 +1486,20 @@ export default function BoxScene() {
       inner.renderOrder = 0;
       pg.add(inner);
       ctx.raycastTargets.push(inner);
+      // LITERAL faces composite BOTH layers on the outer plane (plate.frag::
+      // runLiteralLayer) and hide this inner pattern plane, so the plane gap stops
+      // being expressed by the scene graph and becomes a shader parameter. Publish
+      // it from the REAL mesh separation every frame rather than recomputing T/n:
+      // the honesty harness manipulates the substrate by moving this very mesh
+      // (effectsHelpers::scaleBackPlaneGap mutates inner.position.z directly, with
+      // no uniform to update), and the anti-cheat only stays live if the composite
+      // reads the geometry. Scene units are mm and mm = µm/1000, so ×1000 converts;
+      // both meshes are siblings in `pg`, so their local z difference is the gap.
+      // onBeforeRender runs immediately before this material's draw call, in every
+      // pass (including the glass transmission backdrop), so the value is never stale.
+      outer.onBeforeRender = () => {
+        rt.shader.uniforms.uInnerGapUm.value = (outer.position.z - inner.position.z) * 1000;
+      };
       // (c) copper foil overlap strips, outer AND inner borders. Bonded: the
       // outer fold lands on the outer ply's face (its edge = the stack edge),
       // the interior fold on the INNER ply's face — measured from the inner
@@ -2281,23 +2316,34 @@ export default function BoxScene() {
     const token = ++ctx.bindToken;
     const loader = new THREE.TextureLoader();
     const retryTimers: number[] = [];
-    const anisotropy = ctx.renderer.capabilities.getMaxAnisotropy();
 
     /**
      * Bind one LITERAL face: the backend published a raster of the FABRICATED
-     * CHROME per layer, so both planes just sample their own file and the shader
-     * synthesizes no gratings at all (see plate.frag::runLiteralLayer). Moiré,
-     * switches and shimmer emerge from the perspective projection of the two
-     * real planes across the paraxial T/n gap, exactly as they do on the
-     * procedural path — only the source of the geometry changes.
+     * CHROME per layer, so the shader synthesizes no gratings at all (see
+     * plate.frag::runLiteralLayer). Moiré, switches and shimmer emerge from the
+     * geometric separation of the two layers across the paraxial T/n gap, exactly
+     * as they do on the procedural path — only the source of the geometry, and
+     * where the two layers are combined, changes.
+     *
+     * ONE PASS, ON THE OUTER PLANE. Both rasters bind to the outer material and
+     * the inner pattern plane is hidden. That is not a shortcut: the eye
+     * integrates the transmission of the STACK over its resolution cell, so the
+     * PRODUCT of the two layers has to be formed at raster resolution and only
+     * then averaged. Two separately filtered planes alpha-blended afterwards
+     * compute <1-A>·<B> rather than <(1-A)·B>, and at the default camera (~1
+     * screen pixel per 99 µm carrier period) that flattened every cross-layer
+     * effect on the box to a uniform quarter tone. The inner GLASS ply and the
+     * real plane separation are untouched — the gap is still read from the scene
+     * graph (see buildPlate's uInnerGapUm sync).
      *
      * A layer whose raster carries NO chrome (loadCoverageTexture returns null:
      * a blank face, or the back of a single-ply one) gets no texture upload and
-     * its plane is switched off. `recipe_data.single_ply` / `.blank` say the
-     * same thing, but the raster is the primary source — believing the flag over
-     * the file would put a face's appearance one manifest field away from its
-     * fabrication. The glass slabs are untouched, so a blank face still reads as
-     * the bare quartz wall it is.
+     * drops out of the composite (B = 0); a face with no FRONT chrome draws
+     * nothing at all. `recipe_data.single_ply` / `.blank` say the same thing, but
+     * the raster is the primary source — believing the flag over the file would
+     * put a face's appearance one manifest field away from its fabrication. The
+     * glass slabs are untouched, so a blank face still reads as the bare quartz
+     * wall it is.
      */
     const bindLiteralFace = (fid: FaceId, fm: PlateManifest, rt: FaceRT): void => {
       const rd = fm.recipe_data ?? {};
@@ -2331,9 +2377,9 @@ export default function BoxScene() {
 
       const attemptLiteral = (attempt: number): void => {
         Promise.all([
-          loadCoverageTexture(frontUrl, anisotropy),
-          backUrl ? loadCoverageTexture(backUrl, anisotropy) : Promise.resolve(null),
-          periodUrl ? loadCoverageTexture(periodUrl, anisotropy) : Promise.resolve(null),
+          loadCoverageTexture(frontUrl),
+          backUrl ? loadCoverageTexture(backUrl) : Promise.resolve(null),
+          periodUrl ? loadCoverageTexture(periodUrl) : Promise.resolve(null),
         ])
           .then(([front, back, period]) => {
             if (ctxRef.current !== ctx || ctx.bindToken !== token) {
@@ -2358,22 +2404,43 @@ export default function BoxScene() {
             };
             applyShared(rt.shader.uniforms);
             applyShared(rt.shaderBack.uniforms);
-            // Per-plane: OUTER samples the front raster, INNER the back. uBack is
-            // kept bound (legacy single-plane recipes read it); runLiteralLayer
-            // reads only uFront — this layer's own fabricated geometry.
+            // SINGLE-PASS COMPOSITE. The OUTER plane material carries BOTH
+            // rasters — uFront the outer chrome, uBackCoverage the inner — and
+            // plate.frag forms their product per subsample before averaging over
+            // the pixel footprint. Two independently mip-filtered planes could not:
+            // the eye integrates the transmission of the STACK, and
+            // <(1-A)·B> != <1-A>·<B> wherever the layers correlate across a
+            // footprint, which is every cross-layer effect on the box. So the inner
+            // pattern plane draws nothing (below); the inner glass ply is untouched.
             rt.shader.uniforms.uFront.value = front ?? ctx.blank;
             rt.shader.uniforms.uBack.value = back ?? ctx.blank;
+            rt.shader.uniforms.uBackCoverage.value = back ?? ctx.blank;
+            rt.shader.uniforms.uBackCoverageReady.value = back ? 1.0 : 0.0;
+            // Subsample sizing: the raster's own texel grid. Both layers of a face
+            // are published at the same resolution; front is the one that always
+            // exists (a missing front already refused the face above).
+            (rt.shader.uniforms.uCoverageSizePx.value as THREE.Vector2).set(
+              front?.image.width ?? 2048,
+              front?.image.height ?? 2048
+            );
+            // The inner material keeps its own bindings — it is inert here, but a
+            // dangling sampler and a silently-unbound face are both worse than a
+            // bound invisible one, and `face_layer_empty` below stays diagnosable.
             rt.shaderBack.uniforms.uFront.value = back ?? ctx.blank;
             rt.shaderBack.uniforms.uBack.value = front ?? ctx.blank;
-            // Sub-grating period map: FRONT plane only (the backend publishes
-            // period_front alone), and the one non-literal term on this path.
+            rt.shaderBack.uniforms.uBackCoverage.value = ctx.blank;
+            rt.shaderBack.uniforms.uBackCoverageReady.value = 0.0;
+            // Sub-grating period map: the composite plane only (the backend
+            // publishes period_front alone), and the one non-literal term here.
             rt.shader.uniforms.uPeriodMap.value = period ?? ctx.blank;
             rt.shader.uniforms.uPeriodReady.value = period ? 1.0 : 0.0;
             rt.shaderBack.uniforms.uPeriodMap.value = ctx.blank;
             rt.shaderBack.uniforms.uPeriodReady.value = 0.0;
-            // Drop the planes that carry no chrome (see the doc comment).
+            // The composite plane draws when there is any chrome at all; the inner
+            // pattern plane NEVER draws on a literal face — drawing the back layer
+            // again on its own plane would paint it twice.
             rt.shader.visible = front !== null;
-            rt.shaderBack.visible = back !== null;
+            rt.shaderBack.visible = false;
             for (const [layer, tex] of [
               ['front', front],
               ['back', back],
@@ -2564,6 +2631,12 @@ export default function BoxScene() {
               u.uLiteral.value = 0.0;
               u.uPeriodReady.value = 0.0;
               u.uPeriodMap.value = ctx.blank;
+              // Same reason: the single-pass composite belongs to the literal
+              // path only. The procedural path keeps the TWO-PLANE construction,
+              // where each plane draws its own layer and the beat emerges from
+              // perspective across the real gap.
+              u.uBackCoverageReady.value = 0.0;
+              u.uBackCoverage.value = ctx.blank;
               // uViewA/uViewB belong to the legacy stereo_lenticular path (recipe 0),
               // which a composed plate can never be — the guard above refused
               // anything but foliage_moire. Point them at a real texture anyway so no

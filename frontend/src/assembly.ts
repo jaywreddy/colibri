@@ -105,6 +105,17 @@ export function backWindowUm(spec: FoilGlassSpec): number {
   return overlapUm(spec);
 }
 
+/**
+ * FRONT-art rim of a BONDED face, from the OUTER ply edge: the larger of the
+ * foil keep-out and the inner ply's carrier window seen in the outer frame
+ * (one ply of ledge + the interior fold). Art between the two would sit over
+ * copper tape with no back grating behind it. Mirrors backend
+ * ``assembly.py::bonded_art_keepout_um``. Only meaningful when spec.bonded.
+ */
+export function bondedArtKeepoutUm(spec: FoilGlassSpec): number {
+  return Math.max(keepoutUm(spec), spec.glass.thickness_um + backWindowUm(spec));
+}
+
 // -----------------------------------------------------------------------------
 // Cut list — walls sit ON the bottom plate; lid rests on the wall rim.
 // Local dims are width x height of each rectangular plate.
@@ -203,7 +214,9 @@ export function copperTapeLengthCm(spec: BoxSpec): number {
  * serialize differently depending on which side normalized it last.
  */
 export function stampFaces(spec: BoxSpec): BoxSpec {
-  const ko = keepoutUm(spec);
+  // Bonded: front art starts at the larger of the foil rim and the inner ply's
+  // window (mirrors backend boxes.normalize_face_dims / bonded_art_keepout_um).
+  const ko = spec.bonded ? bondedArtKeepoutUm(spec) : keepoutUm(spec);
   // Bonded: the back layer lives on the INNER ply, whose edge is already one
   // ply in — expressed in the shared outer-ply frame its window insets by
   // ply + interior fold (mirrors backend boxes.normalize_face_dims).
@@ -529,7 +542,15 @@ export function validateBondedBox(spec: BoxSpec): string[] {
   if (spec.foil.safety_um < 0) {
     errors.push(`Foil safety margin cannot be negative (got ${spec.foil.safety_um} um).`);
   }
-  const ko = keepoutUm(spec); // bonded-aware: stepped-edge overlap + safety
+  if (spec.foil.tape_width_um < 3.0 * p) {
+    errors.push(
+      `Foil tape ${(spec.foil.tape_width_um / 1000).toFixed(2)} mm is narrower than the ` +
+        `${((3.0 * p) / 1000).toFixed(2)} mm stepped edge it must wrap (three plies of ` +
+        `${(p / 1000).toFixed(2)} mm): nothing folds onto either face. Use wider tape ` +
+        `(3/8″ for 2.25 mm plies) or thinner stock.`
+    );
+  }
+  const ko = bondedArtKeepoutUm(spec); // front art: foil rim or inner-ply window, whichever is larger
   const bw = backWindowUm(spec); // from the INNER ply's own edge
   if (p > 0 && spec.height_um > 4 * p && spec.depth_um > 4 * p) {
     for (const cut of bondedCutList(spec)) {

@@ -664,6 +664,7 @@
         "valid": true,
         "overlap_um": 925.0,
         "keepout_um": 1425.0,
+        "art_keepout_um": 2425.0,
         "back_window_um": 925.0,
         "cut_list": [
           {
@@ -815,6 +816,7 @@
         "valid": true,
         "overlap_um": 131.5,
         "keepout_um": 631.5,
+        "art_keepout_um": 1631.5,
         "back_window_um": 131.5,
         "cut_list": [
           {
@@ -941,7 +943,159 @@
       }
     },
     {
-      "name": "bonded-tape-narrower-than-step-clamped",
+      "name": "bonded-production-quartz-3-8-tape",
+      "spec": {
+        "width_um": 29100.0,
+        "depth_um": 29100.0,
+        "height_um": 32010.0,
+        "glass_thickness_um": 2250.0,
+        "bonded": true,
+        "foil": {
+          "tape_width_um": 9525.0,
+          "safety_um": 500.0,
+          "bead_um": 2000.0,
+          "finish": "bright"
+        },
+        "hinge": {
+          "style": "tube",
+          "tube_od_um": 2400.0,
+          "rod_od_um": 1600.0,
+          "segments": 5,
+          "coverage": 0.8
+        }
+      },
+      "expected": {
+        "valid": true,
+        "overlap_um": 1387.5,
+        "keepout_um": 1887.5,
+        "art_keepout_um": 3637.5,
+        "back_window_um": 1387.5,
+        "cut_list": [
+          {
+            "face": "bottom",
+            "ply": "outer",
+            "width_um": 29100.0,
+            "height_um": 29100.0,
+            "width_mm": 29.1,
+            "height_mm": 29.1
+          },
+          {
+            "face": "bottom",
+            "ply": "inner",
+            "width_um": 24600.0,
+            "height_um": 24600.0,
+            "width_mm": 24.6,
+            "height_mm": 24.6,
+            "inset_um": 2250.0
+          },
+          {
+            "face": "top",
+            "ply": "outer",
+            "width_um": 29100.0,
+            "height_um": 29100.0,
+            "width_mm": 29.1,
+            "height_mm": 29.1
+          },
+          {
+            "face": "top",
+            "ply": "inner",
+            "width_um": 24600.0,
+            "height_um": 24600.0,
+            "width_mm": 24.6,
+            "height_mm": 24.6,
+            "inset_um": 2250.0
+          },
+          {
+            "face": "front",
+            "ply": "outer",
+            "width_um": 29100.0,
+            "height_um": 27510.0,
+            "width_mm": 29.1,
+            "height_mm": 27.51
+          },
+          {
+            "face": "front",
+            "ply": "inner",
+            "width_um": 24600.0,
+            "height_um": 23010.0,
+            "width_mm": 24.6,
+            "height_mm": 23.01,
+            "inset_um": 2250.0
+          },
+          {
+            "face": "back",
+            "ply": "outer",
+            "width_um": 29100.0,
+            "height_um": 27510.0,
+            "width_mm": 29.1,
+            "height_mm": 27.51
+          },
+          {
+            "face": "back",
+            "ply": "inner",
+            "width_um": 24600.0,
+            "height_um": 23010.0,
+            "width_mm": 24.6,
+            "height_mm": 23.01,
+            "inset_um": 2250.0
+          },
+          {
+            "face": "left",
+            "ply": "outer",
+            "width_um": 24600.0,
+            "height_um": 27510.0,
+            "width_mm": 24.6,
+            "height_mm": 27.51
+          },
+          {
+            "face": "left",
+            "ply": "inner",
+            "width_um": 20100.0,
+            "height_um": 23010.0,
+            "width_mm": 20.1,
+            "height_mm": 23.01,
+            "inset_um": 2250.0
+          },
+          {
+            "face": "right",
+            "ply": "outer",
+            "width_um": 24600.0,
+            "height_um": 27510.0,
+            "width_mm": 24.6,
+            "height_mm": 27.51
+          },
+          {
+            "face": "right",
+            "ply": "inner",
+            "width_um": 20100.0,
+            "height_um": 23010.0,
+            "width_mm": 20.1,
+            "height_mm": 23.01,
+            "inset_um": 2250.0
+          }
+        ],
+        "seams": {
+          "bottom-front": 29100.0,
+          "bottom-back": 29100.0,
+          "bottom-left": 29100.0,
+          "bottom-right": 29100.0,
+          "corner-front-left": 27510.0,
+          "corner-front-right": 27510.0,
+          "corner-back-left": 27510.0,
+          "corner-back-right": 27510.0
+        },
+        "hinge": {
+          "run_length_um": 23280.0,
+          "segment_length_um": 4336.0,
+          "gap_um": 400.0,
+          "rod_length_um": 26480.0,
+          "body_segments": 3,
+          "lid_segments": 2
+        }
+      }
+    },
+    {
+      "name": "invalid-bonded-tape-narrower-than-step",
       "spec": {
         "width_um": 34000.0,
         "depth_um": 34000.0,
@@ -963,132 +1117,8 @@
         }
       },
       "expected": {
-        "valid": true,
-        "overlap_um": 0.0,
-        "keepout_um": 500.0,
-        "back_window_um": 0.0,
-        "cut_list": [
-          {
-            "face": "bottom",
-            "ply": "outer",
-            "width_um": 34000.0,
-            "height_um": 34000.0,
-            "width_mm": 34.0,
-            "height_mm": 34.0
-          },
-          {
-            "face": "bottom",
-            "ply": "inner",
-            "width_um": 31000.0,
-            "height_um": 31000.0,
-            "width_mm": 31.0,
-            "height_mm": 31.0,
-            "inset_um": 1500.0
-          },
-          {
-            "face": "top",
-            "ply": "outer",
-            "width_um": 34000.0,
-            "height_um": 34000.0,
-            "width_mm": 34.0,
-            "height_mm": 34.0
-          },
-          {
-            "face": "top",
-            "ply": "inner",
-            "width_um": 31000.0,
-            "height_um": 31000.0,
-            "width_mm": 31.0,
-            "height_mm": 31.0,
-            "inset_um": 1500.0
-          },
-          {
-            "face": "front",
-            "ply": "outer",
-            "width_um": 34000.0,
-            "height_um": 27000.0,
-            "width_mm": 34.0,
-            "height_mm": 27.0
-          },
-          {
-            "face": "front",
-            "ply": "inner",
-            "width_um": 31000.0,
-            "height_um": 24000.0,
-            "width_mm": 31.0,
-            "height_mm": 24.0,
-            "inset_um": 1500.0
-          },
-          {
-            "face": "back",
-            "ply": "outer",
-            "width_um": 34000.0,
-            "height_um": 27000.0,
-            "width_mm": 34.0,
-            "height_mm": 27.0
-          },
-          {
-            "face": "back",
-            "ply": "inner",
-            "width_um": 31000.0,
-            "height_um": 24000.0,
-            "width_mm": 31.0,
-            "height_mm": 24.0,
-            "inset_um": 1500.0
-          },
-          {
-            "face": "left",
-            "ply": "outer",
-            "width_um": 31000.0,
-            "height_um": 27000.0,
-            "width_mm": 31.0,
-            "height_mm": 27.0
-          },
-          {
-            "face": "left",
-            "ply": "inner",
-            "width_um": 28000.0,
-            "height_um": 24000.0,
-            "width_mm": 28.0,
-            "height_mm": 24.0,
-            "inset_um": 1500.0
-          },
-          {
-            "face": "right",
-            "ply": "outer",
-            "width_um": 31000.0,
-            "height_um": 27000.0,
-            "width_mm": 31.0,
-            "height_mm": 27.0
-          },
-          {
-            "face": "right",
-            "ply": "inner",
-            "width_um": 28000.0,
-            "height_um": 24000.0,
-            "width_mm": 28.0,
-            "height_mm": 24.0,
-            "inset_um": 1500.0
-          }
-        ],
-        "seams": {
-          "bottom-front": 34000.0,
-          "bottom-back": 34000.0,
-          "bottom-left": 34000.0,
-          "bottom-right": 34000.0,
-          "corner-front-left": 27000.0,
-          "corner-front-right": 27000.0,
-          "corner-back-left": 27000.0,
-          "corner-back-right": 27000.0
-        },
-        "hinge": {
-          "run_length_um": 23800.0,
-          "segment_length_um": 7666.666666666667,
-          "gap_um": 400.0,
-          "rod_length_um": 27000.0,
-          "body_segments": 2,
-          "lid_segments": 1
-        }
+        "valid": false,
+        "backend_error": "Foil tape 4.00 mm is narrower than the 4.50 mm stepped edge it must wrap (three plies of 1.50 mm): nothing folds onto either face, so the seam has no lap and the hinge nothing to solder to. Use wider tape (3/8\" for 2.25 mm plies) or thinner stock."
       }
     },
     {
@@ -1169,7 +1199,7 @@
       },
       "expected": {
         "valid": false,
-        "backend_error": "Foil keep-out swallows the left inner ply: the ply is 4.85 x 24.0 mm but its keep-out rim is 0.93 mm per edge, leaving under 3 mm of patternable aperture. Use narrower foil tape, thinner stock, or enlarge the box."
+        "backend_error": "Foil keep-out swallows the left outer ply: the ply is 7.85 x 27.0 mm but its keep-out rim is 2.42 mm per edge, leaving under 3 mm of patternable aperture. Use narrower foil tape, thinner stock, or enlarge the box."
       }
     },
     {

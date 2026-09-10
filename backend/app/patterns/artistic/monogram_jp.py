@@ -72,7 +72,10 @@ class MonogramJP(Pattern):
     params = [
         ParamSpec("period_um", "Carrier period", "float", 22.0, 6.0, 80.0, 0.5, "μm"),
         ParamSpec("extent_um", "Extent", "float", 2000.0, 500.0, 5000.0, 100.0, "μm"),
-        ParamSpec("overlap", "Glyph interlock", "float", 0.68, 0.4, 0.85, 0.01),
+        # 0.76: the P's bowl rides over the J's stem so the pair is one knot,
+        # 0.92 of the art box wide and two-thirds as tall (was 0.68 / 0.82 wide /
+        # half as tall — a low, loose pair with the letters barely touching).
+        ParamSpec("overlap", "Glyph interlock", "float", 0.76, 0.4, 0.85, 0.01),
         # Band spacing — the ONE knob that sets how bold the fringes are. The
         # pitch mismatch that produces it is solved from this (beat_delta_um),
         # not the other way round, so the look survives a change of carrier
@@ -88,7 +91,7 @@ class MonogramJP(Pattern):
         cls,
         period_um: float = 22.0,
         extent_um: float = 2000.0,
-        overlap: float = 0.68,
+        overlap: float = 0.76,
         beat_um: float = 1635.0,
     ) -> float:
         return _resolve_grid(period_um, extent_um)[1]
@@ -98,7 +101,7 @@ class MonogramJP(Pattern):
         cls,
         period_um: float = 22.0,
         extent_um: float = 2000.0,
-        overlap: float = 0.68,
+        overlap: float = 0.76,
         beat_um: float = 1635.0,
     ) -> float:
         # Both gratings are 50% duty; the FINER of the two sets the limit.
@@ -109,7 +112,7 @@ class MonogramJP(Pattern):
         cls,
         period_um: float = 22.0,
         extent_um: float = 2000.0,
-        overlap: float = 0.68,
+        overlap: float = 0.76,
         beat_um: float = 1635.0,
     ) -> tuple[dict, dict, tuple[str, ...]]:
         # Now that the back layer carries a real carrier, there IS a mask-level
@@ -139,7 +142,7 @@ class MonogramJP(Pattern):
         cls,
         period_um: float = 22.0,
         extent_um: float = 2000.0,
-        overlap: float = 0.68,
+        overlap: float = 0.76,
         beat_um: float = 1635.0,
     ) -> GeneratedPattern:
         extent = (extent_um, extent_um)

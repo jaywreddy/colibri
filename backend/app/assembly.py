@@ -58,8 +58,10 @@ FINISH_COLORS = {
     "gunmetal": "#3a3f47",
 }
 
-# Common copper foil tape widths (µm): 3/16", 7/32", 1/4".
-FOIL_TAPE_PRESETS_UM = (4763.0, 5556.0, 6350.0)
+# Common copper foil tape widths (µm): 3/16", 7/32", 1/4", 5/16", 3/8".
+# A BONDED stack wraps a 3-ply stepped edge, so 2.25 mm quartz plies (6.75 mm
+# of edge) need the 3/8" tape before any fold-over remains.
+FOIL_TAPE_PRESETS_UM = (4763.0, 5556.0, 6350.0, 7938.0, 9525.0)
 
 
 @dataclass
@@ -284,6 +286,22 @@ def bonded_back_window_um(foil: FoilSpec, ply_um: float) -> float:
     return bonded_overlap_um(foil, ply_um)
 
 
+def bonded_art_keepout_um(foil: FoilSpec, ply_um: float) -> float:
+    """FRONT-art rim of a bonded face, measured from the OUTER ply edge.
+
+    The larger of two rims: the foil keep-out (tape fold + safety) and the
+    inner ply's carrier window seen in the outer frame (one ply of ledge plus
+    the interior fold). Front art drawn between those two — over the ledge
+    and the interior fold — has copper tape behind it and no back grating to
+    beat against, so a garland there prints as leaves on tape rather than as a
+    moiré. Starting the art at the back window keeps every front feature over
+    the inner ply's carrier. Single-ply faces use the same rim so all six
+    borders of a box start on one line.
+    """
+    return max(bonded_keepout_um(foil, ply_um),
+               ply_um + bonded_back_window_um(foil, ply_um))
+
+
 def bonded_face_cut_dims(
     face_id: str,
     width_um: float,
@@ -389,8 +407,16 @@ def validate_bonded_assembly(
         raise ValueError(f"Foil tape width must be positive (got {foil.tape_width_um} um).")
     if foil.safety_um < 0:
         raise ValueError(f"Foil safety margin cannot be negative (got {foil.safety_um} um).")
+    if foil.tape_width_um < 3.0 * p:
+        raise ValueError(
+            f"Foil tape {foil.tape_width_um / 1000:.2f} mm is narrower than the "
+            f"{3.0 * p / 1000:.2f} mm stepped edge it must wrap (three plies of "
+            f"{p / 1000:.2f} mm): nothing folds onto either face, so the seam has "
+            "no lap and the hinge nothing to solder to. Use wider tape "
+            "(3/8\" for 2.25 mm plies) or thinner stock."
+        )
 
-    ko = bonded_keepout_um(foil, p)
+    ko = bonded_art_keepout_um(foil, p)
     bw = bonded_back_window_um(foil, p)
     for entry in bonded_cut_list(width_um, depth_um, height_um, p):
         rim = ko if entry["ply"] == "outer" else bw
@@ -446,6 +472,7 @@ def bonded_assembly_summary(
         "ply_um": ply_um,
         "wall_um": bonded_wall_um(ply_um),
         "keepout_um": bonded_keepout_um(foil, ply_um),
+        "art_keepout_um": bonded_art_keepout_um(foil, ply_um),
         "back_window_um": bonded_back_window_um(foil, ply_um),
         "overlap_um": bonded_overlap_um(foil, ply_um),
         "cut_list": bonded_cut_list(width_um, depth_um, height_um, ply_um),

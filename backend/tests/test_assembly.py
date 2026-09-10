@@ -233,6 +233,7 @@ def test_golden_fixture_matches_backend() -> None:
         FoilSpec,
         HingeSpec,
         back_window_um,
+        bonded_art_keepout_um,
         bonded_back_window_um,
         bonded_cut_list,
         bonded_keepout_um,
@@ -281,6 +282,7 @@ def test_golden_fixture_matches_backend() -> None:
         if bonded:
             assert bonded_overlap_um(foil, args[3]) == exp["overlap_um"], case["name"]
             assert bonded_keepout_um(foil, args[3]) == exp["keepout_um"], case["name"]
+            assert bonded_art_keepout_um(foil, args[3]) == exp["art_keepout_um"], case["name"]
             assert bonded_back_window_um(foil, args[3]) == exp["back_window_um"], case["name"]
             assert bonded_cut_list(*args) == exp["cut_list"], case["name"]
         else:

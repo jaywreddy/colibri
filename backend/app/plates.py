@@ -208,9 +208,9 @@ class PlateSpec:
     # — and the BACK layer is left empty. The garland's shimmer then comes from
     # each leaf's grating beating against the carrier IN THE PLANE (the two-ply
     # moiré at zero gap: static fringes rather than travelling ones), which is
-    # the honest thing a single ply can do. Reference geometry:
-    # ``witness_dies._static_garland_metal``, which is what the production
-    # witness plate's colour sides are actually written from.
+    # the honest thing a single ply can do. Reference geometry: the single-ply
+    # block in ``export_fine.build_plate_fine``, which is what the production
+    # witness dies (and every other single-ply face) are actually written from.
     single_ply: bool = False
     label: str = ""
 
@@ -408,6 +408,10 @@ BACK_CARRIER_PERIOD_UM = 22.0     # back uniform grating period (fab)
 FRONT_GRATING_RATIO = 1.09
 CARRIER_ANGLE_OFFSET_DEG = 2.5    # fan centre; see FRAME_ANGLE_SPAN_DEG
 GRATING_DUTY = 0.5                # gold-line fraction of a period
+# SINGLE-PLY faces: the carrier shares the outer ply with the leaves and the
+# picture's edge fades into it, so it is written lighter. One number, owned by
+# the photo module (the fade target) and read here by the fine export.
+from .patterns.bitmap.photo import CARRIER_COV as SINGLE_PLY_CARRIER_DUTY  # noqa: E402
 # Preview (shader) grating period, in µm of PLATE surface. The shader draws the
 # gratings ANALYTICALLY (fwidth-AA), so this is a resolution-independent visual
 # scale, not a rastered feature — it can be far finer than the plate raster
@@ -1547,9 +1551,9 @@ def _paste_front_carrier(
     The carrier spans the whole exposed face (``back_dims`` — foil overlap only,
     the window it would occupy on the inner ply of a bonded face) MINUS the
     centerpiece art box, which the picture/motif fills itself. That subtraction
-    is the geometry ``witness_dies._static_garland_metal`` writes for the
-    production plate's colour sides, and it is why the picture's edge fade has a
-    50 % gold field to dissolve into rather than bare glass.
+    is the geometry the single-ply block in ``export_fine.build_plate_fine``
+    writes for the production plate's colour sides, and it is why the picture's
+    edge fade has a 50 % gold field to dissolve into rather than bare glass.
 
     Painted at FRAME_LEVEL, the same level the two-ply back window uses, so the
     shader's frame branch handles it — with ``recipe_data['single_ply']`` telling
@@ -1780,9 +1784,10 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 
     # On a SINGLE-PLY face the carrier is the back layer moved onto the outer
     # ply, so its keep-out is the BACK window (foil overlap only), not the front
-    # weld margin — the same split witness_dies._static_garland_metal makes. The
-    # frame band is bounded by the active rect and the centerpiece by the art
-    # box, so nothing else can reach into the ring between the two rims; taking
+    # weld margin — the same split the single-ply block in
+    # ``export_fine.build_plate_fine`` makes. The frame band is bounded by the
+    # active rect and the centerpiece by the art box, so nothing else can
+    # reach into the ring between the two rims; taking
     # the smaller of them keeps the frame's own keep-out honest whichever way
     # round the two margins happen to fall for a given foil/glass pair.
     _zero_rim(
@@ -1864,12 +1869,6 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 # written as all zeros — a blank face, or the back of a single-ply one — never
 # left as a missing file.
 LITERAL_RASTER_PX = 2048
-# The mask is binary, so no anti-aliasing is wanted; but a bare centre-sampling
-# polygon fill DROPS every sub-pixel line, and at ~14 µm/px on a production
-# face that silently deletes the entire 5 µm colour sub-grating. Fill at 2× and
-# BOX-downsample so each line averages in at its true coverage instead. This is
-# coverage, not smoothing.
-LITERAL_SUPERSAMPLE = 2
 # ``period_front.png`` packs the sub-grating period as period_um × 25, so the
 # whole diffractive family fits an 8-bit channel (0-10.2 µm at 0.04 µm steps)
 # and 0 keeps its meaning: no sub-grating here.
@@ -1891,37 +1890,26 @@ def _literal_layer_raster(
     """One layer's plate-frame polygon rings → an ``L`` coverage raster.
 
     ``polys`` are ``build_plate_fine``'s healed EXTERIOR rings (holes already
-    dropped by ``drc_clean_region`` — a fill-only gold mask), so a plain
-    fill-255 polygon draw is the whole rasterization. Plate µm (origin centre,
-    y up) map to pixels exactly as ``_raster_compose_plate`` maps them: x + W/2
-    scaled across the width, H/2 - y scaled down the height.
+    dropped by ``drc_clean_region`` — a fill-only gold mask), so filling every
+    ring is the whole rasterization. Plate µm (origin centre, y up) map to
+    pixels exactly as ``_raster_compose_plate`` maps them: x + W/2 scaled
+    across the width, H/2 - y scaled down the height.
+
+    The coverage is computed ANALYTICALLY (``literal_raster.layer_coverage``),
+    not by supersampling a fill. Every feature here is far below a texel — a
+    27.5 mm face is ~13.4 µm/texel while the colour sub-gratings are 2.5 µm
+    lines — so a boundary-inclusive fill biases the whole raster bright
+    (measured +6% on a 50%-duty carrier, and the 5 µm colour bands read 0.71
+    with 46% of their texels pinned at 255). See that module for why no
+    supersample/shrink combination fixes it and how the exact accumulation
+    works. 255 = chrome over the whole texel, 0 = bare glass.
     """
+    from .literal_raster import layer_coverage
+
     import numpy as np
 
-    ss = max(1, int(LITERAL_SUPERSAMPLE))
-    img = Image.new("L", (w_px * ss, h_px * ss), 0)
-    if polys:
-        draw = ImageDraw.Draw(img)
-        w_um = max(1e-6, float(spec.width_um))
-        h_um = max(1e-6, float(spec.height_um))
-        sx = (w_px * ss) / w_um
-        sy = (h_px * ss) / h_um
-        hx, hy = 0.5 * w_um, 0.5 * h_um
-        for ring in polys:
-            r = np.asarray(ring, dtype=float)
-            if r.ndim != 2 or r.shape[0] < 3:
-                continue
-            xs = (r[:, 0] + hx) * sx
-            ys = (hy - r[:, 1]) * sy
-            draw.polygon(
-                [(float(a), float(b)) for a, b in zip(xs.tolist(), ys.tolist())],
-                fill=255,
-            )
-    if ss > 1:
-        # BOX = exact area average of each ss×ss block, i.e. the coverage the
-        # supersample was taken for. Any other filter would ring.
-        img = img.resize((w_px, h_px), Image.BOX)
-    return img
+    cov = layer_coverage(polys or [], spec.width_um, spec.height_um, w_px, h_px)
+    return Image.fromarray(np.round(cov * 255.0).astype(np.uint8), mode="L")
 
 
 def _literal_period_raster(spec: PlateSpec, w_px: int, h_px: int) -> Image.Image | None:
@@ -1939,32 +1927,51 @@ def _literal_period_raster(spec: PlateSpec, w_px: int, h_px: int) -> Image.Image
     thinner than a pixel at this scale, and a label field that rounds its thin
     bands away publishes "no sub-grating here" — a worse lie than a band one
     pixel too wide.
+
+    A texel therefore lands inside several stacked bands at once, so the one
+    that WINS it is the one whose exact overlap area is largest — not whichever
+    was painted last. Bands with no sub-grating (period 0) never enter the
+    contest, so the map stays 0 wherever there is nothing to diffract.
     """
+    import numpy as np
+
+    from .literal_raster import rect_texel_overlaps
+
     rects, periods = photo_colour_band_periods(spec)
     if rects.shape[0] == 0:
         return None
-    img = Image.new("L", (w_px, h_px), 0)
-    draw = ImageDraw.Draw(img)
+    values = np.minimum(
+        255, np.round(np.asarray(periods, dtype=float) * LITERAL_PERIOD_SCALE)
+    ).astype(np.int64)
+    has = values > 0
+    if not has.any():
+        return None
+    rects, values = rects[has], values[has]
+
     w_um = max(1e-6, float(spec.width_um))
     h_um = max(1e-6, float(spec.height_um))
     sx, sy = w_px / w_um, h_px / h_um
     hx, hy = 0.5 * w_um, 0.5 * h_um
-    painted = False
-    for (x0, x1, y0, y1), period in zip(rects.tolist(), periods.tolist()):
-        value = min(255, int(round(float(period) * LITERAL_PERIOD_SCALE)))
-        if value <= 0:
-            continue
-        px0 = int(math.floor((x0 + hx) * sx))
-        px1 = max(px0, int(math.ceil((x1 + hx) * sx)) - 1)
-        py0 = int(math.floor((hy - y1) * sy))
-        py1 = max(py0, int(math.ceil((hy - y0) * sy)) - 1)
-        if px1 < 0 or py1 < 0 or px0 >= w_px or py0 >= h_px:
-            continue
-        draw.rectangle((px0, py0, px1, py1), fill=value)
-        painted = True
-    if not painted or img.getextrema()[1] == 0:
+    flat, band, area = rect_texel_overlaps(
+        (rects[:, 0] + hx) * sx,
+        (rects[:, 1] + hx) * sx,
+        (hy - rects[:, 3]) * sy,
+        (hy - rects[:, 2]) * sy,
+        w_px,
+        h_px,
+    )
+    if flat.size == 0:
         return None
-    return img
+    # Largest overlap wins each texel: sort by (texel, area) and keep the last
+    # entry of every texel's run.
+    order = np.lexsort((area, flat))
+    flat, band = flat[order], band[order]
+    last = np.nonzero(np.diff(flat, append=flat[-1] + 1))[0]
+    out = np.zeros(h_px * w_px, dtype=np.uint8)
+    out[flat[last]] = values[band[last]].astype(np.uint8)
+    if not out.any():
+        return None
+    return Image.fromarray(out.reshape(h_px, w_px), mode="L")
 
 
 def _write_literal_rasters(spec: PlateSpec, out_dir: Path, pid: str) -> dict[str, str]:
@@ -2078,7 +2085,17 @@ def _write_literal_rasters(spec: PlateSpec, out_dir: Path, pid: str) -> dict[str
 #     keys and a new recipe_data key — and the payload PNGs do not exist beside
 #     a v14 manifest at all, so a warm slot must re-derive rather than serve a
 #     manifest whose renderer contract it cannot satisfy.
-PLATE_COMPOSE_VERSION = 15
+# v16: the literal rasters become EXACT coverage. v15 filled the rings with a 2×
+#     supersampled PIL polygon draw, whose boundary-inclusive, phase-QUANTISED
+#     fill fattened every line by a whole sample: a 50%-duty carrier rastered at
+#     0.532 and the 5 µm colour bands at 0.71 with 46% of their texels pinned to
+#     255, i.e. the preview showed the colour zones as near-solid gold and the
+#     whole plate too heavy. ``literal_raster.layer_coverage`` now accumulates
+#     the analytic area instead (see that module). ``period_front`` picks each
+#     texel's band by overlap AREA rather than by paint order. Every
+#     ``literal_*``/``period_front`` PNG on disk is therefore wrong under a v15
+#     manifest and must be re-derived.
+PLATE_COMPOSE_VERSION = 16
 
 
 # Plate ids whose ``scene.json`` was written by the compose CURRENTLY running on
@@ -2965,10 +2982,10 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
                 )
         if single_ply:
             # SINGLE PLY: the uniform carrier rides on the OUTER ply with the
-            # leaves, over the back window MINUS the art box — the geometry
-            # ``witness_dies._static_garland_metal`` writes for the production
-            # plate's colour sides. Each leaf's grating then beats against this
-            # carrier IN THE PLANE (static fringes, the two-ply moiré at zero
+            # leaves, over the back window MINUS the art box — the geometry the
+            # single-ply block in ``export_fine.build_plate_fine`` writes for
+            # the production plate's colour sides. Each leaf's grating then
+            # beats against this carrier IN THE PLANE (static fringes, the two-ply moiré at zero
             # gap), which is the effect a single sheet of glass can actually
             # deliver. The back layer is left empty below.
             carrier_zone = _back_window_grid(spec, fw, fh, pitch)
@@ -3142,7 +3159,7 @@ _SVG_BAKE_KEYS = (
 #     line-screen bands and their colour sub-gratings as exact rectangles at the
 #     art box, front layer only — vector geometry that never passes through the
 #     coarse budget raster, so it is period-exact even here.
-PLATE_SVG_VERSION = "plate-svg-v12"
+PLATE_SVG_VERSION = "plate-svg-v13"
 
 
 def _svg_is_current(svg_path: Path) -> bool:

@@ -65,7 +65,7 @@ describe('api', () => {
     expect(body.force).toBe(true);
     expect(body.width_um).toBe(29100);
     expect(body.glass.n).toBe(1.4585);
-    expect(body.foil.tape_width_um).toBe(6350);
+    expect(body.foil.tape_width_um).toBe(9525);
     expect(body.hinge.style).toBe('tube');
     expect(Object.keys(body.faces)).toHaveLength(6);
   });
@@ -80,7 +80,7 @@ describe('defaultBoxSpec (contract defaults)', () => {
     expect(s.bonded).toBe(true);
     expect(s.glass).toEqual({ thickness_um: 2250, material: 'fused quartz', n: 1.4585 });
     expect(s.foil).toEqual({
-      tape_width_um: 6350,
+      tape_width_um: 9525,
       safety_um: 500,
       bead_um: 2000,
       finish: 'bright',
@@ -115,15 +115,18 @@ describe('defaultBoxSpec (contract defaults)', () => {
     api.FACE_IDS.forEach((fid) => {
       const f = s.faces[fid]!;
       expect(f.frame.seed).toBe(expectedSeed[fid]);
-      expect(f.frame.motif_scale).toBe(0.75);
+      expect(f.frame.motif_scale).toBe(0.68);
+      expect(f.frame.band_um).toBe(2400);
       expect(f.glass).toEqual(s.glass);
       // Only the two photo walls leave their inner ply bare.
       expect(f.single_ply).toBe(fid === 'left' || fid === 'right');
-      // Stamped keep-out = foil overlap + safety. The bonded 2.25 mm plies make
-      // the tape wrap a stepped edge that consumes 3p = 6750 um, wider than the
-      // 6350 um (1/4") tape, so the overlap floors at 0 and only the safety
-      // margin remains: the tape does not fold over a production wall at all.
-      expect(f.weld_margin_um).toBe(500);
+      // Stamped front-art rim (bondedArtKeepoutUm). The bonded 2.25 mm plies
+      // make the 3/8" (9525 um) tape wrap a stepped edge that consumes 3p =
+      // 6750 um, leaving a 1387.5 um fold; the foil rim is 1887.5 but the art
+      // starts at the inner ply's window, 2250 + 1387.5 = 3637.5 from the edge,
+      // so every front feature has the back carrier behind it.
+      expect(f.weld_margin_um).toBe(3637.5);
+      expect(f.back_margin_um).toBe(3637.5);
     });
   });
 });

@@ -10,9 +10,10 @@ Per photo a RECIPE says how it is prepared:
   fade        (start, gate) of the edge fade as fractions of the half-width
 
 The garland on a single-ply side is the leaf gratings AND the carrier on the one
-ply (witness_dies.GARLAND_MODE = "moire"): the carrier fills the window outside
-the art box at 50%, and each leaf carries the beat of its grating against the
-carrier -- static fringes, the two-ply pattern at zero gap. So the portrait's
+ply (the single-ply block in export_fine.build_plate_fine): the carrier fills
+the window outside the art box at 50%, and each leaf carries the beat of its
+grating against the carrier -- static fringes, the two-ply pattern at zero gap.
+So the portrait's
 edge fades into a 50% gold field, not into glass, and the fade is done in
 COVERAGE space after the tone prep (the prep is image-relative, so a source-level
 target grey does not exist):

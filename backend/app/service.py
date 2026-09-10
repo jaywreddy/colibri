@@ -149,7 +149,7 @@ heavy_compute_gate = threading.BoundedSemaphore(1)
 #     ``photo-halftone``'s metadata on the box path and the manifest shape grows
 #     the ``art_solid`` recipe_data key, so a warm ``backend/data`` must
 #     re-derive rather than serve variants written before either existed.
-PATTERN_GEN_VERSION = 7
+PATTERN_GEN_VERSION = 8
 
 
 def _params_hash(params: dict[str, Any]) -> str:

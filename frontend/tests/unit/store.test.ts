@@ -29,7 +29,7 @@ describe('store (Ring Box Studio v2)', () => {
     expect(s.depth_um).toBe(29100);
     expect(s.height_um).toBe(32010);
     expect(s.bonded).toBe(true);
-    expect(s.foil.tape_width_um).toBe(6350);
+    expect(s.foil.tape_width_um).toBe(9525);
     expect(s.hinge.segments).toBe(5);
   });
 
