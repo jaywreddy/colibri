@@ -148,7 +148,7 @@ def sheet(entry: dict, notes_dir: Path, out: Path) -> dict:
         d.text((x, P + 14), f"{key.upper()}: period field, {st['rungs_used']} rungs, {st['coloured_fraction']:.0%} coloured", fill=FG, font=font(11))
         im.paste(renders[key][0], (x, 10 + P + 26)); d.text((x, 2 * P + 40), f"{key} · tilt 0°", fill=DIM, font=font(11))
         im.paste(renders[key][1], (x, 10 + 2 * (P + 26))); d.text((x, 3 * P + 66), f"{key} · tilt 1°", fill=DIM, font=font(11))
-    d.text((10, H - 26), "period field: red = long period (6.0 um) ... violet = short (4.15 um), grey = plain gold. Renders: specular gold + first-order sheen, lamp, eye-cell integrated, 15.4 mm art box.",
+    d.text((10, H - 26), "period field: red = long period (6.0 um) ... violet = short (4.15 um), grey = plain gold. Renders: specular gold + first-order sheen, lamp, eye-cell integrated, 13.3 mm art box.",
            fill=DIM, font=font(10))
     p = out / f"{stem}_colour.png"
     im.save(p)

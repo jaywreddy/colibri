@@ -183,27 +183,43 @@ def _close_colinear_gaps(a: np.ndarray, *, axis: str, gap: float, tol: float, st
     else:
         band_lo, band_hi, run_lo, run_hi = 0, 1, 2, 3  # group by x, run along y
 
+    # Sort once by (band, run) instead of walking the groups: the old loop did
+    # ``np.where(inv == g)`` per group, an O(groups x rects) scan, and then
+    # merged rect by rect in Python. A coloured photo face hands this ~200 000
+    # rectangles in tens of thousands of bands, which is quadratic time for a
+    # linear job. The result is identical, including ROW ORDER — groups still
+    # come out in ascending key order and each group in ascending ``run_lo``.
+    n = a.shape[0]
     key = np.round(np.stack([a[:, band_lo], a[:, band_hi]], axis=1), 6)
     _, inv = np.unique(key, axis=0, return_inverse=True)
     inv = inv.ravel()
-    out = []
-    for g in range(inv.max() + 1 if inv.size else 0):
-        idx = np.where(inv == g)[0]
-        grp = a[idx]
-        order = np.argsort(grp[:, run_lo])
-        grp = grp[order]
-        merged = grp[0].copy()
-        for r in grp[1:]:
-            gap_here = r[run_lo] - merged[run_hi]
-            if gap_here < gap - _EPS_UM:
-                # Bridge: extend the running rect over the gap and the neighbour.
-                merged[run_hi] = max(merged[run_hi], r[run_hi])
-                stats.gaps_closed += 1
-            else:
-                out.append(merged)
-                merged = r.copy()
-        out.append(merged)
-    return np.stack(out, axis=0) if out else a[:0]
+    order = np.lexsort((a[:, run_lo], inv))
+    b = a[order]
+    g = inv[order]
+    lo, hi = b[:, run_lo], b[:, run_hi]
+    new_band = np.empty(n, dtype=bool)
+    new_band[0] = True
+    np.not_equal(g[1:], g[:-1], out=new_band[1:])
+    # Running maximum of ``run_hi`` WITHIN each band — the "merged" rect's far
+    # edge in the old loop. One accumulate per band: linear overall, and exact
+    # (no offset arithmetic that would round the coordinates).
+    gstart = np.flatnonzero(new_band).tolist()
+    cm = np.empty(n, dtype=np.float64)
+    for s, e in zip(gstart, gstart[1:] + [n]):
+        np.maximum.accumulate(hi[s:e], out=cm[s:e])
+    # A run breaks at a new band, or where this rect starts a full gap past
+    # everything merged so far. After a break the running max IS this rect's own
+    # far edge (the break condition says the previous max is below its near
+    # edge), so the within-band accumulate doubles as the per-run one.
+    brk = new_band.copy()
+    brk[1:] |= lo[1:] - cm[:-1] >= gap - _EPS_UM
+    starts = np.flatnonzero(brk)
+    if starts.size == 0:
+        return a[:0]
+    out = b[starts].copy()
+    out[:, run_hi] = cm[np.append(starts[1:], n) - 1]
+    stats.gaps_closed += int(n - starts.size)
+    return out
 
 
 @dataclass
@@ -587,18 +603,27 @@ def _region_entries(region, kdb, *, dbu_um: float, tile_um: float):
     """
     entries: list[tuple[float, float, float, float, object]] = []
     big = kdb.Region()
+    add = entries.append          # hoisted: this loop runs 250k times per check
+    poly_cls = kdb.Polygon
     for poly in region.each():
         if poly.holes():
-            poly = kdb.Polygon(list(poly.each_point_hull()))
+            poly = poly_cls(list(poly.each_point_hull()))
         bb = poly.bbox()
         lo_x, lo_y = bb.left * dbu_um, bb.bottom * dbu_um
         hi_x, hi_y = bb.right * dbu_um, bb.top * dbu_um
         if poly.is_box():
-            entries.append((lo_x, lo_y, hi_x, hi_y, (lo_x, lo_y, hi_x, hi_y)))
+            # Box payload carried in DBU INTEGERS, not µm floats: the tile loop
+            # clips it and clipping in DBU is `max`/`min` on ints, where clipping
+            # in µm cost four float multiplies and four ``round()`` calls PER
+            # TILE the box touches (25 M round() calls, 17 s, on one garden die).
+            # Identical result — round() is monotone, so
+            # round(max(a, b)) == max(round(a), round(b)).
+            add((lo_x, lo_y, hi_x, hi_y,
+                 (bb.left, bb.bottom, bb.right, bb.top)))
         elif hi_x - lo_x > 2 * tile_um or hi_y - lo_y > 2 * tile_um:
             big.insert(poly)
         else:
-            entries.append((lo_x, lo_y, hi_x, hi_y, poly))
+            add((lo_x, lo_y, hi_x, hi_y, poly))
     return entries, big
 
 
@@ -612,6 +637,7 @@ def _tiled_check_stats(
     tile_um: float = _CHECK_TILE_UM,
     border_um: float = _CHECK_BORDER_UM,
     include_touching: bool = False,
+    only_near=None,
 ) -> tuple[int, float, int, float, Any, Any]:
     """Tile-by-tile width/space checks; returns
     ``(n_width, min_w_um, n_space, min_s_um, w_markers, s_markers)``.
@@ -631,6 +657,16 @@ def _tiled_check_stats(
     itself does taper below the floor. The QA report wants them out (they are
     not a gap or a sliver, and a 0 µm headline is meaningless); a caller that
     HEALS by chroming markers over wants them in, because the taper is real.
+
+    ``only_near`` is an iterable of ``(x0, y0, x1, y1)`` µm boxes. Given one, only
+    the tiles whose CORE meets a box are checked, and the answer is EXACTLY the
+    whole-input answer restricted to those tiles: a tile's region is built from
+    every input polygon whose bbox touches its window, so what a tile measures
+    does not depend on which other tiles ran, and a violation is attributed to
+    the one tile whose half-open core holds its centre. It is for a repair loop
+    re-checking after a local patch — the caller is asserting that nothing
+    outside those boxes can have changed, which is a statement about ITS patch,
+    not about the tiling.
     """
     import time as _time
 
@@ -648,8 +684,12 @@ def _tiled_check_stats(
             hi_x = np.maximum(a[:, 0], a[:, 1])
             lo_y = np.minimum(a[:, 2], a[:, 3])
             hi_y = np.maximum(a[:, 2], a[:, 3])
-            for box in np.stack([lo_x, lo_y, hi_x, hi_y], axis=1).tolist():
-                entries.append((box[0], box[1], box[2], box[3], tuple(box)))
+            # µm bbox for the binning, DBU integers for the payload (see
+            # _region_entries: clipping in DBU costs no round() per tile).
+            box_um = np.stack([lo_x, lo_y, hi_x, hi_y], axis=1)
+            for box, dbu in zip(box_um.tolist(),
+                                np.rint(box_um * scale).astype(np.int64).tolist()):
+                entries.append((box[0], box[1], box[2], box[3], tuple(dbu)))
         elif a.ndim == 2 and a.shape[1] == 2 and a.shape[0] >= 3:  # vertex ring
             lo_x, lo_y = a[:, 0].min(), a[:, 1].min()
             hi_x, hi_y = a[:, 0].max(), a[:, 1].max()
@@ -659,12 +699,18 @@ def _tiled_check_stats(
             # and healed full-height carrier lines; without it a 40 mm line
             # ring re-enters every tile unclipped and the superlinear
             # long-edge check cost returns through the back door.
+            # ``len(set(col))`` on four floats, not ``np.unique`` — same test
+            # (exactly two distinct values), without a sort and two array
+            # allocations per ring; np.unique was 915 k calls / 11 s on one
+            # garden die.
             if (
                 a.shape[0] == 4
-                and np.unique(a[:, 0]).size == 2
-                and np.unique(a[:, 1]).size == 2
+                and len(set(a[:, 0].tolist())) == 2
+                and len(set(a[:, 1].tolist())) == 2
             ):
-                entries.append((lo_x, lo_y, hi_x, hi_y, (lo_x, lo_y, hi_x, hi_y)))
+                entries.append((lo_x, lo_y, hi_x, hi_y,
+                                tuple(np.rint(np.array([lo_x, lo_y, hi_x, hi_y]) * scale)
+                                      .astype(np.int64).tolist())))
             elif hi_x - lo_x > 2 * tile_um or hi_y - lo_y > 2 * tile_um:
                 # Rings spanning many tiles — LONG ANGLED grating lines (an
                 # 11 µm × 40 mm line at 30° has a ~20 × 35 mm bbox) and any
@@ -704,6 +750,23 @@ def _tiled_check_stats(
     nx = max(1, int(math.ceil((gx1 - gx0) / tile_um)))
     ny = max(1, int(math.ceil((gy1 - gy0) / tile_um)))
 
+    # Tiles the caller has restricted the re-check to (see ``only_near``). A
+    # payload is still binned into every tile it can reach — a kept tile must see
+    # all of its own geometry — but tiles outside the set are never built.
+    allowed: set[tuple[int, int]] | None = None
+    if only_near is not None:
+        allowed = set()
+        for bx0, by0, bx1, by1 in only_near:
+            jx0 = max(0, int((bx0 - gx0) / tile_um))
+            jx1 = min(nx - 1, int((bx1 - gx0) / tile_um))
+            jy0 = max(0, int((by0 - gy0) / tile_um))
+            jy1 = min(ny - 1, int((by1 - gy0) / tile_um))
+            for ix in range(jx0, jx1 + 1):
+                for iy in range(jy0, jy1 + 1):
+                    allowed.add((ix, iy))
+        if not allowed:
+            return 0, float("inf"), 0, float("inf"), kdb.Region(), kdb.Region()
+
     buckets: dict[tuple[int, int], list] = {}
     for lo_x, lo_y, hi_x, hi_y, payload in entries:
         ix0 = max(0, int((lo_x - border_um - gx0) / tile_um))
@@ -712,6 +775,8 @@ def _tiled_check_stats(
         iy1 = min(ny - 1, int((hi_y + border_um - gy0) / tile_um))
         for ix in range(ix0, ix1 + 1):
             for iy in range(iy0, iy1 + 1):
+                if allowed is not None and (ix, iy) not in allowed:
+                    continue
                 buckets.setdefault((ix, iy), []).append(payload)
     if have_big:
         # Pre-clip the plate-spanning/angled geometry into tile-COLUMN strips
@@ -720,7 +785,8 @@ def _tiled_check_stats(
         # per-tile selection overselects brutally). Strip pieces are ≤ one
         # window wide and a window-diagonal long, so binning them by row and
         # inserting them whole keeps every edge bounded by the window size.
-        for ix in range(nx):
+        cols = range(nx) if allowed is None else sorted({ix for ix, _ in allowed})
+        for ix in cols:
             sx0 = gx0 + ix * tile_um - border_um
             sx1 = gx0 + (ix + 1) * tile_um + border_um
             strip = big & kdb.Region(
@@ -734,6 +800,8 @@ def _tiled_check_stats(
                 iy0 = max(0, int((pb.bottom * dbu_um - border_um - gy0) / tile_um))
                 iy1 = min(ny - 1, int((pb.top * dbu_um + border_um - gy0) / tile_um))
                 for iy in range(iy0, iy1 + 1):
+                    if allowed is not None and (ix, iy) not in allowed:
+                        continue
                     buckets.setdefault((ix, iy), []).append(poly.dup())
 
     _t_bin = _time.time()
@@ -764,26 +832,31 @@ def _tiled_check_stats(
         # Analytic box clipping is exact; the artificial cut edges it creates
         # sit ON the window boundary, ≥ border > check distance from the core,
         # so the center-in-core filter below discards any pair they join.
-        wx0 = gx0 + ix * tile_um - border_um
-        wy0 = gy0 + iy * tile_um - border_um
-        wx1 = gx0 + (ix + 1) * tile_um + border_um
-        wy1 = gy0 + (iy + 1) * tile_um + border_um
+        # Window in DBU. round() is monotone, so clipping the (already rounded)
+        # DBU payload against the rounded window is the same integer box the
+        # µm-space clip-then-round produced — at zero float work per payload.
+        wx0 = int(round((gx0 + ix * tile_um - border_um) * scale))
+        wy0 = int(round((gy0 + iy * tile_um - border_um) * scale))
+        wx1 = int(round((gx0 + (ix + 1) * tile_um + border_um) * scale))
+        wy1 = int(round((gy0 + (iy + 1) * tile_um + border_um) * scale))
         reg = kdb.Region()
+        _box, _ins = kdb.Box, reg.insert
         for payload in payloads:
-            if isinstance(payload, tuple):
+            if type(payload) is tuple:
                 lo_x, lo_y, hi_x, hi_y = payload
-                lo_x, hi_x = max(lo_x, wx0), min(hi_x, wx1)
-                lo_y, hi_y = max(lo_y, wy0), min(hi_y, wy1)
+                if lo_x < wx0:
+                    lo_x = wx0
+                if hi_x > wx1:
+                    hi_x = wx1
+                if lo_y < wy0:
+                    lo_y = wy0
+                if hi_y > wy1:
+                    hi_y = wy1
                 if hi_x <= lo_x or hi_y <= lo_y:
                     continue
-                reg.insert(
-                    kdb.Box(
-                        int(round(lo_x * scale)), int(round(lo_y * scale)),
-                        int(round(hi_x * scale)), int(round(hi_y * scale)),
-                    )
-                )
+                _ins(_box(lo_x, lo_y, hi_x, hi_y))
             else:  # kdb.Polygon: a small ring, a Region input, a clipped strip
-                reg.insert(payload)
+                _ins(payload)
         if reg.is_empty():
             continue
         reg.merge()
@@ -831,6 +904,57 @@ def _tiled_check_stats(
     return int(w_markers.count()), mnw, int(s_markers.count()), mns, w_markers, s_markers
 
 
+def patched_neighbourhood(reg, patch, floor_dbu: int):
+    """The only part of ``reg`` whose width/space result a ``patch`` can change.
+
+    Both repair loops that use this (the metal-side weld in
+    :func:`drc_clean_region` and the written-clear settle in
+    ``witness_dies.clear_field``) are the same shape: check, patch every flagged
+    site, check again. The re-check does not have to look at the whole die, and
+    on a 250 000-piece photo die a whole-die tiled check is ~5 s, so re-checking
+    it up to eleven more times is where those dies spent their minutes.
+
+    Why a neighbourhood is the WHOLE answer, not an approximation. Round k's
+    check is complete, so every violation site of R(k) lies inside the markers,
+    and the patch covers the markers. R(k+1) differs from R(k) only inside the
+    patch. So a site of R(k+1) is either a residue of a patched site or one the
+    patch's own boundary created, and both lie within one floor of the patch;
+    anywhere further out the geometry is bit-identical to R(k)'s and R(k) had no
+    site there. Taking WHOLE polygons that touch ``patch`` grown by 2× the floor
+    keeps BOTH flanks of any such pair (each flank is within one floor of a site
+    that is within one floor of the patch), and the check is unshielded, so no
+    third polygon can influence a pair. The result is therefore the same site set
+    the whole-die check would return, at the cost of the patched area.
+
+    ``floor_dbu`` is the check distance in DBU; the halo is 4× it, i.e. double
+    what the argument needs.
+
+    ONLY VALID ON A MERGED REGION, and the reason is worth stating because the
+    obvious other use is wrong. Selecting whole polygons is safe here because a
+    merged region's polygons do not touch each other: dropping a distant one
+    cannot change the shape — and so the WIDTH — of a kept one. On a set of
+    ABUTTING pieces (the written-clear settle's convex decomposition) it is not:
+    the tiled check merges each tile, so a piece's measured width is that of the
+    shape it fuses into, and dropping a neighbour that fell outside the halo
+    reports the piece's own width as a violation. Measured on the garden die,
+    that turned the settle's honest 7 width sites into 11 phantom ones. A piece
+    set restricts by TILE instead (``_tiled_check_stats(only_near=...)``).
+
+    Raw semantics for the selection itself: klayout Regions default to merged
+    semantics, under which ``interacting`` returns the polygons of a VIRTUAL
+    MERGE of its input. On the merged input this function requires that is the
+    same set, but asking for it explicitly costs nothing and cannot surprise.
+    """
+    was = reg.merged_semantics
+    reg.merged_semantics = False
+    try:
+        near = reg.interacting(patch.sized(4 * floor_dbu))
+    finally:
+        reg.merged_semantics = was
+    near.merged_semantics = False
+    return near
+
+
 def _region_from_polys(polys, dbu_um: float):
     """Build a merged klayout Region (integer DBU) from plate-frame polygons.
 
@@ -842,22 +966,27 @@ def _region_from_polys(polys, dbu_um: float):
 
     reg = kdb.Region()
     scale = 1.0 / dbu_um
+    box, poly, ins = kdb.Box, kdb.Polygon, reg.insert
+    # The DBU rounding is done by numpy, in bulk, and only the object
+    # construction is left to Python: ``np.rint`` IS Python's ``round()`` (both
+    # half-to-even), so the integers are the ones the per-coordinate
+    # ``int(round(...))`` loop produced. A photo die hands this ~215 000 rings
+    # and the per-coordinate loop was 25 M ``round()`` calls.
     for item in polys:
         a = np.asarray(item, dtype=float)
         if a.ndim == 2 and a.shape[1] == 4:      # rect array (N,4)
-            for x0, x1, y0, y1 in a:
-                reg.insert(
-                    kdb.Box(
-                        int(round(min(x0, x1) * scale)),
-                        int(round(min(y0, y1) * scale)),
-                        int(round(max(x0, x1) * scale)),
-                        int(round(max(y0, y1) * scale)),
-                    )
-                )
+            if a.shape[0] == 0:
+                continue
+            lo_x = np.minimum(a[:, 0], a[:, 1])
+            hi_x = np.maximum(a[:, 0], a[:, 1])
+            lo_y = np.minimum(a[:, 2], a[:, 3])
+            hi_y = np.maximum(a[:, 2], a[:, 3])
+            grid = np.rint(np.stack([lo_x, lo_y, hi_x, hi_y], axis=1) * scale)
+            for x0, y0, x1, y1 in grid.astype(np.int64).tolist():
+                ins(box(x0, y0, x1, y1))
         elif a.ndim == 2 and a.shape[1] == 2:    # vertex ring (K,2)
-            pts = [kdb.Point(int(round(x * scale)), int(round(y * scale))) for x, y in a]
-            if len(pts) >= 3:
-                reg.insert(kdb.Polygon(pts))
+            if a.shape[0] >= 3:
+                ins(poly(np.rint(a * scale).astype(np.int64).tolist()))
     reg.merge()
     return reg, kdb
 
@@ -930,8 +1059,9 @@ def drc_report_region(
 
 
 def drc_clean_region(
-    polys, *, min_width_um: float = 2.0, min_gap_um: float = 2.0, dbu_um: float = 0.001
-) -> list:
+    polys, *, min_width_um: float = 2.0, min_gap_um: float = 2.0, dbu_um: float = 0.001,
+    report: bool = False,
+):
     """Heal the merged printed geometry of one plate-layer to the litho floor.
 
     CLOSE (fill sub-floor gaps) then OPEN (shave sub-floor slivers/wedge tips) on
@@ -939,10 +1069,26 @@ def drc_clean_region(
     rings (holes dropped: a fill-only gold mask needs exterior rings, and the heal
     removes any sub-floor interior neck anyway). Never takes a shapely/GEOS union;
     the Region is a bounded per-layer C++ edge set.
+
+    ``report=True`` returns ``(rings, report_dict)`` instead, where the dict is
+    exactly what :func:`drc_report_region` would return for those rings — because
+    it IS the loop's own last measurement, not a second one. The loop already
+    ends by checking the healed region with the identical options
+    (Euclidian / ignore_angle 80 / shielded False / NeverIncludeZeroDistance,
+    same floor, same tiling, ``include_touching=False``), and running that check
+    again on the rings extracted from the same Region measured the same geometry
+    twice: 14 s of the 163 s a coloured photo die took. The one case where the
+    loop's last check is NOT of the final geometry — it ran out of rounds and
+    patched on the way out — is re-measured here, which is what the separate
+    report call did anyway. It also carries ``rounds``: the per-round site counts,
+    so a die that spent its budget chasing sites says so.
     """
     reg, kdb = _region_from_polys(polys, dbu_um)
     if reg.is_empty():
-        return []
+        empty = {"kind": "region", "n_polys": 0, "n_width_viol": 0, "n_space_viol": 0,
+                 "min_width_um": float("inf"), "min_space_um": float("inf"),
+                 "rounds": []}
+        return ([], empty) if report else []
     reg.merge()
     open_dbu = max(1, int(round((min_width_um / 2.0) / dbu_um)))
     # SLIVER removal, WITHOUT reshaping legal lines. A global morphological open
@@ -976,6 +1122,9 @@ def drc_clean_region(
     width_dbu = max(1, int(round(min_width_um / dbu_um)))
     pad_dbu = max(1, int(round((min_gap_um / 2.0) / dbu_um)))
 
+    rounds: list[list[int]] = []
+    final: tuple[int, float, int, float] | None = None
+    patch = None
     for it in range(12):  # a weld can expose a thin ledge; usually converges in 1-2
         # NEVER a raw whole-region width/space check here — that is the
         # measured ~27-minute superlinear pathology the tiled checker exists
@@ -986,10 +1135,18 @@ def drc_clean_region(
         # used to build): every round rebuilt the whole layer as Python floats
         # and klayout rebuilt it from them again — on a 190k-polygon face that
         # was the bulk of the round, for geometry klayout already held.
-        _, _, _, _, w_markers, s_markers = _tiled_check_stats(
-            reg, kdb, width_dbu=width_dbu, gap_dbu=gap_dbu, dbu_um=dbu_um
+        #
+        # Round 0 checks the whole layer. Every round after it checks only the
+        # neighbourhood of the previous round's weld — the same site set, for
+        # the reason :func:`patched_neighbourhood` sets out, and the difference
+        # between one whole-die check and twelve of them.
+        target = reg if patch is None else patched_neighbourhood(reg, patch, gap_dbu)
+        nw, mnw, ns, mns, w_markers, s_markers = _tiled_check_stats(
+            target, kdb, width_dbu=width_dbu, gap_dbu=gap_dbu, dbu_um=dbu_um
         )
+        rounds.append([nw, ns])
         if w_markers.is_empty() and s_markers.is_empty():
+            final = (nw, mnw, ns, mns)
             break
         # OR the padded markers back in: welding a sub-floor GAP makes the
         # bridge litho would form anyway explicit, and thickening a sub-floor
@@ -1015,4 +1172,20 @@ def drc_clean_region(
         ring = [(pt.x * dbu_um, pt.y * dbu_um) for pt in hull]
         if len(ring) >= 3:
             out.append(np.asarray(ring, dtype=float))
-    return out
+    if not report:
+        return out
+    if final is None:
+        # The loop patched on its way out of the round budget, so its last
+        # measurement predates the final geometry: measure once, exactly as the
+        # standalone report call used to.
+        nw, mnw, ns, mns, _, _ = _tiled_check_stats(
+            reg, kdb, width_dbu=width_dbu, gap_dbu=gap_dbu, dbu_um=dbu_um
+        )
+        final = (nw, mnw, ns, mns)
+        rounds.append([nw, ns])
+    return out, {
+        "kind": "region", "n_polys": len(out),
+        "n_width_viol": final[0], "n_space_viol": final[2],
+        "min_width_um": final[1], "min_space_um": final[3],
+        "rounds": rounds,
+    }

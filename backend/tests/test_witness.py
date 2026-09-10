@@ -18,13 +18,12 @@ import pytest
 from app import witness_cells as wc
 from app import witness_moire as wm
 from app.export_witness import (
-    BEAT_LADDER_UM,
+    BEAT_H_MM,
     C3_DUTY_LADDER,
     MM,
     NEAR_FIELD_LADDER_UM,
     PERIOD_LADDER_UM,
     RESOLUTION_LADDER_UM,
-    ROTATION_LADDER_DEG,
     _beat_w_mm,
     _label_h,
     _plan,
@@ -382,7 +381,10 @@ def test_clipping_a_convex_polygon_is_exact():
 
 
 def test_the_beat_is_solved_from_the_beat_not_from_delta():
-    for b in BEAT_LADDER_UM:
+    # The BEAT ladder was cut from the plate on 2026-09-10 (its area went to the
+    # production dies), but the SOLVER is what the box's shading moire uses, so
+    # the physics stays pinned over the rungs the plate used to carry.
+    for b in (500.0, 1000.0, 1635.0, 3000.0, 6000.0):
         d = wm.beat_delta_for(63.5, b)
         assert 63.5 * (63.5 + d) / d == pytest.approx(b, rel=1e-9)
     with pytest.raises(ValueError):
@@ -402,7 +404,10 @@ def test_the_beat_amplifies_a_pitch_error():
 def test_rotation_and_vector_beats_agree_where_they_overlap():
     """``p/(2 sin(a/2))`` is the equal-pitch case of ``|k1 - k2|``; if they
     disagreed the perimeter frame's numbers would be wrong."""
-    for a in ROTATION_LADDER_DEG:
+    # The ROTATION ladder is off the plate too (see above); the identity it
+    # checks is the one the frame's angle fan is designed on, so it stays pinned
+    # over the angles that fan spans.
+    for a in (0.5, 1.0, 2.0, 3.0, 6.0):
         rot = 63.5 / (2 * math.sin(math.radians(a) / 2))
         assert wm.combined_beat_um(63.5, 63.5, a) == pytest.approx(rot, rel=1e-9)
     assert wm.combined_beat_um(63.5, 66.07, 0.0) == pytest.approx(
@@ -487,17 +492,21 @@ def test_beat_cells_are_wide_not_square():
     """Beat fringes are spaced along ONE axis, so these cells need width, not
     area. Drawn square, the 6000 µm rung forced a 20.9 mm row that was a third
     full and cost the plate 10 mm of height for one cell."""
+    # The sizing RULE holds whether or not the ladder is on this plate: width
+    # tracks the beat, height does not.
+    assert _beat_w_mm(6000.0) > _beat_w_mm(500.0)
+    assert _beat_w_mm(6000.0) > BEAT_H_MM
+
     placed, _ = layout(doe_cells())
     beats = [p.cell for p in placed if p.cell.cid.startswith("BEAT")]
     if not beats:
-        pytest.skip("the BEAT ladder was cut from the plate on 2026-09-10 (eight production plies)")
+        pytest.skip("the BEAT ladder was cut from the plate on 2026-09-10 "
+                    "(eight production plies); the sizing rule is checked above")
     heights = {c.h_um for c in beats}
     assert len(heights) == 1, "every beat cell shares one height, so they pack"
     for c in beats:
         b = float(c.cid[4:])
         assert c.w_um / b >= 3.0, f"{c.cid} holds only {c.w_um/b:.1f} fringes"
-    # width tracks the beat; height does not
-    assert _beat_w_mm(6000.0) > _beat_w_mm(500.0)
     widest = max(beats, key=lambda c: c.w_um)
     assert widest.w_um > widest.h_um, "the coarsest beat must be wide, not tall"
 

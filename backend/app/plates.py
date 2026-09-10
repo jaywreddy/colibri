@@ -415,9 +415,14 @@ GRATING_DUTY = 0.5                # gold-line fraction of a period
 # leaves at lambda/p = 5.3 deg (green) in the plane perpendicular to the lines,
 # so under a lamp each leaf flashes spectral colour at its own tilt and azimuth
 # — a real single-layer, view-dependent shimmer (the physics of the colour
-# zones in the photographs). 6 um keeps the lines at 3 um, a micron above the
+# zones in the photographs). 10 um keeps the lines at 5 um, well above the
 # litho floor even at the acute tips where an angled line meets a leaf edge;
-# 0.07 arcmin at 300 mm, so the leaf reads as smooth gold, never as a hatch.
+# 0.11 arcmin at 300 mm, so the leaf reads as smooth gold, never as a hatch.
+#
+# This is the period of the fills that HAVE one period ("lines", "crossed",
+# "dots"). The shipping fill is "hue", whose period is per-family — see
+# SINGLE_PLY_LEAF_HUE_PERIODS_UM and ``single_ply_leaf_period_um`` below, which
+# is what the manifest and the preview period map both read.
 SINGLE_PLY_LEAF_PERIOD_UM = 10.0
 
 # HOW each family's leaf is filled. See ``app/leaf_fills.py`` for the physics and
@@ -452,6 +457,28 @@ SINGLE_PLY_LEAF_HUE_PERIODS_UM = (4.15, 4.47, 4.82, 5.19, 5.59, 6.02)
 # Gold fraction of a "dots" leaf. The pad is p·√c and the clear gap between pads
 # is p(1 − √c), so at 50 % coverage the 2 µm floor needs p ≥ 6.83 µm.
 SINGLE_PLY_LEAF_DOT_COVERAGE = 0.5
+
+
+def single_ply_leaf_period_um(spec: "PlateSpec") -> float:
+    """The leaf grating period a single-ply face's garland is WRITTEN at (0 on a
+    two-ply face, whose leaves are moiré louvres rather than diffractive).
+
+    ONE answer for both consumers — the manifest key ``single_ply_leaf_period_um``
+    and the preview period map ``_single_ply_leaf_period_raster`` — because they
+    describe the same gold. Under the ``"hue"``/``"hue2"`` fills the ladder IS the
+    period (one rung per motif family, ``SINGLE_PLY_LEAF_HUE_PERIODS_UM``), so a
+    single scalar can only be its MEAN; ``SINGLE_PLY_LEAF_PERIOD_UM`` is the
+    period only for the fills that use one ("lines", "crossed", "dots"). The two
+    used to disagree — the manifest advertised the 10 µm ``"lines"`` constant
+    while the plate was written on the 4.15–6.02 µm ladder — which is how a
+    renderer ends up drawing a sheen the mask does not have.
+    """
+    if not getattr(spec, "single_ply", False):
+        return 0.0
+    if SINGLE_PLY_LEAF_FILL in ("hue", "hue2") and SINGLE_PLY_LEAF_HUE_PERIODS_UM:
+        return float(sum(SINGLE_PLY_LEAF_HUE_PERIODS_UM)
+                     / len(SINGLE_PLY_LEAF_HUE_PERIODS_UM))
+    return float(SINGLE_PLY_LEAF_PERIOD_UM)
 
 # Preview (shader) grating period, in µm of PLATE surface. The shader draws the
 # gratings ANALYTICALLY (fwidth-AA), so this is a resolution-independent visual
@@ -824,9 +851,9 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         # truth about this face and not a limitation of the preview.
         "single_ply": bool(getattr(spec, "single_ply", False)),
         # the per-leaf diffractive grating a single-ply face writes its
-        # garland at (0 on a two-ply face, whose leaves are moire louvres)
-        "single_ply_leaf_period_um": (SINGLE_PLY_LEAF_PERIOD_UM
-                                      if getattr(spec, "single_ply", False) else 0.0),
+        # garland at (0 on a two-ply face, whose leaves are moire louvres).
+        # Under the "hue" fill this is the ladder's mean — see the helper.
+        "single_ply_leaf_period_um": single_ply_leaf_period_um(spec),
         # RENDER IT LITERALLY: this face publishes ``files.literal_front`` /
         # ``files.literal_back`` — coverage rasters of the ACTUAL DRC-healed
         # chrome geometry the mask writer emits (``export_fine.build_plate_fine``),
@@ -1236,8 +1263,11 @@ def _front_accent_zone(slug: str, art: "np.ndarray") -> "np.ndarray | None":
         # Gear HUB: the central boss/bore of the centered gear.
         zone = _ellipse(0.5, 0.5, 0.11, 0.11)
     elif slug == "monogram-jp":
-        # No accent. The monogram is ONE shading moiré: its 105.38 um carrier
-        # beats against the 99 um back carrier over the whole silhouette. The
+        # No accent. The monogram is ONE shading moiré: its front carrier
+        # (witness_geom.BOX_MONO_UM, 68.23 um) beats against the back carrier
+        # (BOX_CARRIER_UM, 65.5 um) at BOX_BEAT_UM over the whole silhouette.
+        # (The 105.38/99 um pair this note used to quote was the gap-SCALED
+        # carrier; the faces run carrier_scale_mode "fixed" since 2026-09-10.) The
         # old "flourish tips" patches (two ellipses at the swash ends) cut a
         # 4.4 um rainbow grating into the letters with their own back patch,
         # and read as two arbitrary grey strips on the lid rather than as part
@@ -1589,44 +1619,6 @@ def _paste_centerpiece(
         _paste(front, water_full, with_accent=False, box=(wx0, y0))
     else:
         _paste(back, back_art, with_accent=False)
-
-
-def _paste_front_carrier(
-    spec: PlateSpec,
-    front: Image.Image,
-    pitch_um: float,
-    plate_w: int,
-    plate_h: int,
-) -> None:
-    """SINGLE-PLY: paint the uniform carrier window onto the FRONT mask.
-
-    The carrier spans the whole exposed face (``back_dims`` — foil overlap only,
-    the window it would occupy on the inner ply of a bonded face) MINUS the
-    centerpiece art box, which the picture/motif fills itself. That subtraction
-    is the geometry the single-ply block in ``export_fine.build_plate_fine``
-    writes for the production plate's colour sides, and it is why the picture's
-    edge fade has a 50 % gold field to dissolve into rather than bare glass.
-
-    Painted at FRAME_LEVEL, the same level the two-ply back window uses, so the
-    shader's frame branch handles it — with ``recipe_data['single_ply']`` telling
-    it the grating sits on the OUTER plane.
-    """
-    back_w, back_h = spec.back_dims()
-    if back_w <= 0 or back_h <= 0:
-        return
-    d = ImageDraw.Draw(front)
-    bw_px = max(1, int(round(back_w / pitch_um)))
-    bh_px = max(1, int(round(back_h / pitch_um)))
-    bx0 = (plate_w - bw_px) // 2
-    by0 = (plate_h - bh_px) // 2
-    d.rectangle((bx0, by0, bx0 + bw_px - 1, by0 + bh_px - 1), fill=FRAME_LEVEL)
-    aperture = _aperture(spec)
-    if aperture <= 0:
-        return
-    side_px = max(8, int(round(CENTERPIECE_FILL * aperture / pitch_um)))
-    ax0 = plate_w // 2 - side_px // 2
-    ay0 = plate_h // 2 - side_px // 2
-    d.rectangle((ax0, ay0, ax0 + side_px - 1, ay0 + side_px - 1), fill=0)
 
 
 def compose_plate(spec: PlateSpec) -> GeneratedPattern:
@@ -2025,7 +2017,8 @@ def _single_ply_leaf_period_raster(
 ) -> Image.Image | None:
     """Add the leaf grating's period to the period map of a single-ply face.
 
-    On one ply the garland is fine diffractive gratings (SINGLE_PLY_LEAF_PERIOD_UM)
+    On one ply the garland is fine diffractive gratings
+    (``single_ply_leaf_period_um`` — the same value the manifest advertises)
     that a 2048 px raster cannot resolve — ``literal_front`` carries their 50%
     coverage. Every front texel OUTSIDE the centerpiece art box that carries
     metal is a leaf (nothing else is written there on a single ply), so it gets
@@ -2045,12 +2038,7 @@ def _single_ply_leaf_period_raster(
     outside = np.ones((h_px, w_px), dtype=bool)
     outside[max(0, y0):min(h_px, y1), max(0, x0):min(w_px, x1)] = False
     leaf = outside & (cov > 5) & (out == 0)
-    leaf_p = SINGLE_PLY_LEAF_PERIOD_UM
-    if str(globals().get("SINGLE_PLY_LEAF_FILL", "lines")) == "hue":
-        hp = tuple(globals().get("SINGLE_PLY_LEAF_HUE_PERIODS_UM", ()) or ())
-        if hp:
-            leaf_p = float(sum(hp) / len(hp))   # one map value: the ladder's mean period
-    value = int(min(255, round(leaf_p * LITERAL_PERIOD_SCALE)))
+    value = int(min(255, round(single_ply_leaf_period_um(spec) * LITERAL_PERIOD_SCALE)))
     out[leaf] = value
     if not out.any():
         return None
@@ -2182,7 +2170,30 @@ def _write_literal_rasters(spec: PlateSpec, out_dir: Path, pid: str) -> dict[str
 #     texel's band by overlap AREA rather than by paint order. Every
 #     ``literal_*``/``period_front`` PNG on disk is therefore wrong under a v15
 #     manifest and must be re-derived.
-PLATE_COMPOSE_VERSION = 22
+# v17-v22: the PLATE FOR WRITING (2026-09-10) — one entry, because the six bumps
+#     were one design landing in stages and no cache survived any of them.
+#     (a) literal rasters exact, continued: the literal bake is the ACTUAL healed
+#     chrome for every face, so a composed face's PNGs and its ``files`` entries
+#     both move. (b) The lid's monogram carries NO diffraction accent — one
+#     shading moiré over the whole silhouette instead of two flourish-tip
+#     patches — so ``monogram-jp`` masks change on both layers. (c) SINGLE-PLY
+#     faces drop the carrier entirely (``photo.CARRIER_COV`` = 0): the front mask
+#     is the picture and the leaf garland on bare glass, the back stays empty,
+#     and the picture's edge fade now dissolves to glass rather than to a 50%
+#     field. (d) The leaf fill knob (``SINGLE_PLY_LEAF_FILL`` = "hue") and the
+#     period ladder arrive with the recipe key ``single_ply_leaf_period_um`` and
+#     a ``period_front`` map over the leaves. (e) The box's own dials move under
+#     every face: the art rim starts at the inner ply's window
+#     (``assembly.bonded_art_keepout_um``), the band is a fixed 2.4 mm, and the
+#     faces run ``carrier_scale_mode`` "fixed" at the eye-sized 65.5 µm carrier —
+#     all of which land in the frame geometry and in ``_carrier_recipe_data``.
+# v23: ``single_ply_leaf_period_um`` (recipe key AND ``period_front``) comes from
+#     ONE helper, ``single_ply_leaf_period_um(spec)``, and under the shipping
+#     "hue" fill that is the LADDER'S MEAN. v17-v22 advertised the 10 µm "lines"
+#     constant in the manifest while writing the 4.15-6.02 µm ladder, so the
+#     renderer drew a sheen at twice the period of the gold in front of it. The
+#     PNG masks are unchanged; recipe_data is not, and it is cached.
+PLATE_COMPOSE_VERSION = 23
 
 
 # Plate ids whose ``scene.json`` was written by the compose CURRENTLY running on
@@ -3067,24 +3078,15 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
                     accent_max_pitch,
                     DIFFRACTION_ACCENT_PERIOD_UM,
                 )
-        if single_ply:
-            # SINGLE PLY: the uniform carrier rides on the OUTER ply with the
-            # leaves, over the back window MINUS the art box — the geometry the
-            # single-ply block in ``export_fine.build_plate_fine`` writes for
-            # the production plate's colour sides. Each leaf's grating then
-            # beats against this carrier IN THE PLANE (static fringes, the two-ply moiré at zero
-            # gap), which is the effect a single sheet of glass can actually
-            # deliver. The back layer is left empty below.
-            carrier_zone = _back_window_grid(spec, fw, fh, pitch)
-            if side_px > 0:
-                ax0 = max(0, cxg - side_px // 2)
-                ay0 = max(0, cyg - side_px // 2)
-                carrier_zone[
-                    ay0 : min(fh, ay0 + side_px), ax0 : min(fw, ax0 + side_px)
-                ] = False
-            front_grid |= carrier_zone & _grating_grid(
-                fw, fh, pitch, back_period, duty, base_angle
-            )
+        # SINGLE PLY: nothing extra on this layer. One sheet has no second plane
+        # for a carrier to beat against, so (2026-09-10) the face writes the
+        # photograph and the leaf gratings on bare glass and NOTHING else — the
+        # same geometry ``_raster_compose_plate`` composes and the single-ply
+        # block in ``export_fine.build_plate_fine`` writes ("fab SVG = preview
+        # PNG", CLAUDE.md). The carrier this branch used to bake over the back
+        # window was the earlier design; on one ply its beat with the leaves was
+        # static bars, not a moiré, so it went — and a bake that still emitted it
+        # would have put ~500 mm² of gold on the mask that no other path has.
         front_polys = raster_to_polygons(front_grid, pitch, (W, H))
         if is_photo:
             # The line screen is EXACT vector geometry — bands plus, inside each
@@ -3246,7 +3248,21 @@ _SVG_BAKE_KEYS = (
 #     line-screen bands and their colour sub-gratings as exact rectangles at the
 #     art box, front layer only — vector geometry that never passes through the
 #     coarse budget raster, so it is period-exact even here.
-PLATE_SVG_VERSION = "plate-svg-v17"
+# v13-v17: the PLATE FOR WRITING (2026-09-10), one entry for the five bumps of a
+#     single design. The frame band moves on EVERY face — the art rim now starts
+#     at the inner ply's window (``assembly.bonded_art_keepout_um``) and the band
+#     is a fixed 2.4 mm at motif_scale 0.68 — and the carrier bakes at the
+#     eye-sized 65.5 µm fixed pitch instead of the gap-scaled one. The lid bakes
+#     no diffraction accent (one shading moiré over the whole monogram), and a
+#     single-ply photo face bakes the leaf gratings of the chosen fill
+#     (``SINGLE_PLY_LEAF_FILL``) rather than a common-pitch louvre.
+# v18: a SINGLE-PLY face bakes NO carrier. v12 put a carrier grating in front.svg
+#     over the back window minus the art box; compose stopped painting it and
+#     ``export_fine.build_plate_fine`` never wrote it, so the fab SVG was the only
+#     path still emitting ~500 mm² of gold that the mask does not have — the
+#     exact drift "fab SVG = preview PNG" (CLAUDE.md) exists to catch. Only
+#     single-ply faces change; every other face's SVG is byte-identical.
+PLATE_SVG_VERSION = "plate-svg-v18"
 
 
 def _svg_is_current(svg_path: Path) -> bool:

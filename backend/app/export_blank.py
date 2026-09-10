@@ -37,7 +37,14 @@ What this module produces:
      blank's usable SQUARE (edge margin excluded), ≥ one dicing street apart.
   2. :func:`solve_blank_max_scale` — binary-search the largest UPRIGHT box
      (H/W held, default 1.1) whose 12 sub-plates pack onto one blank AND pass
-     ``validate_bonded_assembly``.
+     ``validate_bonded_assembly``. This sizes THIS PANEL, not the product: the
+     PRODUCTION box is sized by the ring (``boxes.RING_*``, 32 x 32 x 35 mm) and
+     the solve is what it is measured against — asked the other way round, the
+     solve returned a 29.1 mm box with a 20.1 mm interior that no adult ring
+     stands in. The witness plate takes the box's own faces from
+     ``boxes.default_box_spec`` (see ``witness_dies.blank_plan``) and carries
+     what fits; this module's own deliverable (3) still panelizes at whatever
+     size the solve or the caller gives it.
   3. :func:`build_blank_gds` — the deliverable: every sub-plate's fine
      geometry (via ``export_fine.build_plate_fine`` — glass-derived periods,
      DRC healing) mirrored/rotated/placed into a SINGLE chrome layer, plus
@@ -319,7 +326,14 @@ def solve_blank_max_scale(
     """Binary-search the largest box (W = D, H/W held) whose 12 bonded-pair
     sub-plates pack onto ONE blank and whose bonded assembly validates
     (nested-shell existence, per-ply apertures, hinge). Width rounded down to
-    100 µm. Same bracketing scheme as ``export_wafer.solve_max_scale``."""
+    100 µm. Same bracketing scheme as ``export_wafer.solve_max_scale``.
+
+    A CONSTRAINT REPORT, not the product's size: what fits on a blank is a
+    budget the ring-sized production box (``boxes.default_box_spec``) is checked
+    against, and at 2.25 mm plies + 3/8" tape it comes out under that box — which
+    is why the plate carries a subset of plies rather than all twelve. Still the
+    sizing input for this module's own panel deliverable and for
+    ``GET /export/blank/plan``."""
     from .assembly import FoilSpec, HingeSpec, validate_bonded_assembly
 
     p = plate_thickness_um

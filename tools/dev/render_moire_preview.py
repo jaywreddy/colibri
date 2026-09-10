@@ -10,6 +10,12 @@ No analytic fringe model: each panel rasterises the rectangles the writer emits
 and block-averages to the 87 um eye cell, so the fringes are the geometry's,
 not the formula's.
 
+Being driven by the plate cuts both ways: the 2026-09-10 plate gave the moire
+ladders' area to the production dies, so most of these panels have no cell to
+build and are SKIPPED (named on stdout) rather than drawn from a formula the
+mask does not carry. Restore a ladder in export_witness.doe_cells and its figure
+comes back. The builders themselves are still in witness_moire/witness_cells.
+
     uv run --directory backend python ../tools/dev/render_moire_preview.py OUTDIR
 """
 from __future__ import annotations
@@ -121,9 +127,22 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     cells = {c.cid: c for band in doe_cells() for c in band}
 
+    skipped: list[str] = []
+
     def build(cid):
-        c = cells[cid]
+        """``(cell, art)``, or None when that cell is not on the current plate."""
+        c = cells.get(cid)
+        if c is None:
+            skipped.append(cid)
+            return None
         return c, c.build(0.0, 0.0, c.w_um, c.h_um)
+
+    def add_row(tiles, labs, title, sub):
+        """Append a row, or note that every cell in it is off-plate."""
+        if not tiles:
+            print(f"  skipping (no cells on the plate): {title.split(':')[0]}")
+            return
+        rows.append(row(tiles, labs, title, sub))
 
     # ---- Figure A: beat + rotation ladders at built widths
     rows = []
@@ -132,22 +151,26 @@ def main():
         c, a = build(cid)
         tiles.append(tile(raster(a, 0, 0, c.w_um, c.h_um), 120, c.w_um, c.h_um))
         labs.append(f"{c.label}\nd = {a.stats['delta_um']:.2f} um\n{c.w_um/1000:g} x {c.h_um/1000:g} mm, {a.stats['fringes_across']:.1f} fringes")
-    rows.append(row(tiles, labs, "B-BEAT: two pitches on ONE plane -- fringes ACROSS the lines",
-                    "static fringes, no bond. The count inverts to the pitch error through p/delta = 24.7x. Each panel: emitted rectangles, averaged over the 87 um eye cell."))
+    add_row(tiles, labs, "B-BEAT: two pitches on ONE plane -- fringes ACROSS the lines",
+                    "static fringes, no bond. The count inverts to the pitch error through p/delta = 24.7x. Each panel: emitted rectangles, averaged over the 87 um eye cell.")
     tiles, labs = [], []
     for cid in sorted((k for k in cells if k.startswith("ROT")), key=lambda k: float(k[3:])):
         c, a = build(cid)
         tiles.append(tile(raster(a, 0, 0, c.w_um, c.h_um), 120, c.w_um, c.h_um))
         labs.append(f"{c.label}\nbeat {a.stats['beat_um']:.0f} um\n{c.w_um/1000:g} x {c.h_um/1000:g} mm, {a.stats['fringes_across']:.1f} fringes")
-    rows.append(row(tiles, labs, "B-ROT: equal pitch, one rotated -- fringes ALONG the lines",
-                    "p/(2 sin(a/2)). k1 - k2 is perpendicular to the bisector of the two grating vectors, which is why rotation moire looks nothing like pitch moire."))
-    stack(rows, out / "witness_moire.png")
+    add_row(tiles, labs, "B-ROT: equal pitch, one rotated -- fringes ALONG the lines",
+                    "p/(2 sin(a/2)). k1 - k2 is perpendicular to the bisector of the two grating vectors, which is why rotation moire looks nothing like pitch moire.")
+    if rows:
+        stack(rows, out / "witness_moire.png")
 
     # ---- Figure B: harmonic with profiles, contrast, crossed
     rows = []
     tiles, labs = [], []
     for cid in ("HARM0.42", "HARM0.50", "HARM0.58"):
-        c, a = build(cid)
+        got = build(cid)
+        if got is None:
+            continue
+        c, a = got
         cov = raster(a, 0, 0, c.w_um, c.h_um, px_um=1.0)
         t = tile(cov, 110, c.w_um, c.h_um)
         # The profile must come from the RAW 1 um raster, not the eye-integrated
@@ -197,24 +220,33 @@ def main():
         t0 = max(even, key=lambda t: t["amplitude"]) if even else {"m": 1, "n": 2, "beat_um": 0}
         bias = 2 * A(t0["m"], duty) * A(t0["n"], duty) / (1 - duty) ** 2
         labs.append(f"{c.label}  true contrast\n({t0['m']},{t0['n']}) {t0['beat_um']:.0f} um, bias case {bias*100:.1f}%")
-    rows.append(row(tiles, labs, f"B-HARM: 44 um screen over the {BOX_CARRIER_UM:g} um carrier, both at the swept duty -- TRUE contrast, no stretch",
-                    "the even-harmonic component is in the profile at 0.42 and 0.58 and at a MINIMUM at 0.50: the (1,2) term vanishes at exactly 50% duty, but 99/44 = 9/4 is commensurate and the odd (3,7) term shares its 396 um period, leaving a floor of about 1% after the cascade (~2% true). The panels themselves carry the (1,3) 132 um texture."))
+    add_row(tiles, labs, f"B-HARM: 44 um screen over the {BOX_CARRIER_UM:g} um carrier, both at the swept duty -- TRUE contrast, no stretch",
+                    "the even-harmonic component is in the profile at 0.42 and 0.58 and at a MINIMUM at 0.50: the (1,2) term vanishes at exactly 50% duty, but 99/44 = 9/4 is commensurate and the odd (3,7) term shares its 396 um period, leaving a floor of about 1% after the cascade (~2% true). The panels themselves carry the (1,3) 132 um texture.")
     tiles, labs = [], []
     for cid in ("BCON0.25", "BCON0.50", "BCON0.75"):
-        c, a = build(cid)
+        got = build(cid)
+        if got is None:
+            continue
+        c, a = got
         tiles.append(tile(raster(a, 0, 0, c.w_um, c.h_um), 110, c.w_um, c.h_um))
         s = a.stats
         labs.append(f"{c.label}\nmean  T {s['mean_T']:.2f} / R {s['mean_R']:.2f}\ncontrast  T {s['contrast_T']:.2f} / R {s['contrast_R']:.2f}")
     for cid in ("CROSS5x5", "CROSS5x8"):
-        c, a = build(cid)
+        got = build(cid)
+        if got is None:
+            continue
+        c, a = got
         win = 100.0
         aa = wm.build_crossed(0, 0, win, win, period_x_um=a.stats["period_x_um"], period_y_um=a.stats["period_y_um"])
         g = raster(aa, 0, 0, win, win, px_um=0.5, eye_um=0.5)
         tiles.append(tile(g, 110, win, win))
         labs.append(f"{c.label}\n100 um window\nnot eye-integrated")
-    rows.append(row(tiles, labs, "B-CONT: duty against brightness (transmission and reflection rank them differently)  |  D-CROSS: the 2-D lattice",
-                    "B-CONT rendered as metal coverage. D-CROSS at 0.5 um/px over 100 um: at 87 um a 5 um lattice averages to a flat tone, which is correct and shows nothing."))
-    stack(rows, out / "witness_moire_b.png")
+    add_row(tiles, labs, "B-CONT: duty against brightness (transmission and reflection rank them differently)  |  D-CROSS: the 2-D lattice",
+                    "B-CONT rendered as metal coverage. D-CROSS at 0.5 um/px over 100 um: at 87 um a 5 um lattice averages to a flat tone, which is correct and shows nothing.")
+    if rows:
+        stack(rows, out / "witness_moire_b.png")
+    if skipped:
+        print("  off-plate cells, nothing drawn for them: " + ", ".join(skipped))
     return 0
 
 

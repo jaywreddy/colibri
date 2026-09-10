@@ -318,9 +318,13 @@ export type PlateRecipeData = Record<string, unknown> & {
   blank?: boolean;
   /** The per-leaf diffractive grating pitch (µm) a single-ply face writes its
    * garland at (0, or absent, on a two-ply face, whose leaves are moiré
-   * louvres instead). Mirrors backend `plates._carrier_recipe_data`'s
-   * `single_ply_leaf_period_um`; also the pitch `files.period_front` carries
-   * over that face's leaf texels, outside the art box. */
+   * louvres instead). Mirrors backend `plates.single_ply_leaf_period_um()` —
+   * ONE helper answers here and in `files.period_front`, so the advertised
+   * pitch is the pitch that map carries over the leaf texels outside the art
+   * box. Under the shipping "hue" fill the leaves are written at one PERIOD
+   * PER MOTIF FAMILY (4.15–6.02 µm), which a single scalar can only summarise:
+   * this is that ladder's mean (≈5.04 µm), and the per-family split is in the
+   * period map itself. */
   single_ply_leaf_period_um?: number;
 };
 
@@ -542,8 +546,13 @@ export function defaultPlateSpec(
     frame: defaultFrameSpec(seed, frameOverrides),
     glass: defaultGlassSpec(),
     single_ply: opts.singlePly ?? false,
-    width_um: 50000,
-    height_um: 50000,
+    // Backend `plates.PlateSpec` dataclass defaults. Every one of these is
+    // stamped over by `stampFaces` (cut dims, keep-out) or by defaultBoxSpec
+    // (carrier pitch, carrier scale mode) before the spec is POSTed — but they
+    // are the documented mirror, so they must be the backend's numbers and not
+    // a second set that merely happens never to be read.
+    width_um: 30000,
+    height_um: 30000,
     weld_margin_um: 1000,
     back_margin_um: null,
     carrier_pitch_um: 22.0,

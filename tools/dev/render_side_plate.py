@@ -1,5 +1,6 @@
 """Prepare the candidate side-plate photographs and render each as the finished
-plate: portrait in the 15.4 mm art box, faded into the carrier field, inside the
+plate: portrait in the 13.3 mm art box (inside a 15.4 mm aperture), dissolving
+to bare glass inside the
 garland, as the eye sees it under a lamp.
 
 Per photo a RECIPE says how it is prepared:
@@ -9,14 +10,16 @@ Per photo a RECIPE says how it is prepared:
   plan        the colour plan: plain / auto-zones / an authored rule list
   fade        (start, gate) of the edge fade as fractions of the half-width
 
-The garland on a single-ply side is the leaf gratings AND the carrier on the one
-ply (the single-ply block in export_fine.build_plate_fine): the carrier fills
-the window outside the art box at 50%, and each leaf carries the beat of its
-grating against the carrier -- static fringes, the two-ply pattern at zero gap.
-So the portrait's
-edge fades into a 50% gold field, not into glass, and the fade is done in
+The garland on a single-ply side is the leaf gratings and NOTHING else (the
+single-ply block in export_fine.build_plate_fine): one sheet has no second plane
+for a carrier to beat against, and a carrier on the SAME ply printed as static
+bars, so it went on 2026-09-10. Each leaf family is a fine 50% diffractive
+grating at its own PERIOD from the colour ladder (plates.SINGLE_PLY_LEAF_FILL =
+"hue"), which is what the sheen below is driven by. The portrait therefore
+dissolves to BARE GLASS (photo.CARRIER_COV = 0), and the fade is done in
 COVERAGE space after the tone prep (the prep is image-relative, so a source-level
-target grey does not exist):
+target grey does not exist) by photo.context_fade -- the shipping function, so
+this preview and the fab path cannot drift:
 
   stage 1  detail: cross-fade coverage to its 8%-of-width blur over the edge
            distance d in [s, s + 0.30] -- detail dies before level
@@ -46,6 +49,13 @@ sys.path.insert(0, str(HERE))
 from app import witness_dies as wd  # noqa: E402
 from app.patterns.bitmap import colourplan as cp  # noqa: E402
 from app.patterns.bitmap import imageprep as ip  # noqa: E402
+# The fade lives in the package now (photo.py's "fade primitives", ported OUT of
+# this file). Import it back rather than keeping a second copy: this tool is what
+# a photograph is chosen on, so it has to dissolve exactly the way the fab path
+# will. CARRIER_COV came with it -- 0.0 since 2026-09-10, bare glass.
+from app.patterns.bitmap.photo import (  # noqa: E402
+    CARRIER_COV, blur, box_edge, context_fade, smootherstep,
+)
 from render_witness_preview import ETA0, ETA1, EYE_UM, GOLD, K0, TILT_GAIN, sheen  # noqa: E402
 
 ROOT = HERE.parents[1]
@@ -53,7 +63,6 @@ SRC_PX = 1400
 BG = (13, 17, 19)
 FG = (214, 224, 227)
 DIM = (150, 165, 172)
-CARRIER_COV = 0.5     # the field the portrait dissolves into
 
 
 def font(sz=12):
@@ -108,38 +117,6 @@ RECIPES = {
 # --- small image helpers ---------------------------------------------------------
 
 
-def _box1d(a, r, axis):
-    if r < 1:
-        return a
-    a = np.moveaxis(a, axis, 0)
-    pad = np.concatenate([a[r:0:-1], a, a[-2:-r - 2:-1]], axis=0)
-    c = np.cumsum(pad, axis=0, dtype=np.float32)
-    c = np.concatenate([np.zeros_like(c[:1]), c], axis=0)
-    out = (c[2 * r + 1:] - c[:-2 * r - 1]) / float(2 * r + 1)
-    return np.moveaxis(out[:a.shape[0]], 0, axis)
-
-
-def blur(a, r, passes=3):
-    out = np.asarray(a, np.float32)
-    rb = max(1, int(round(r * 0.85)))
-    for _ in range(passes):
-        out = _box1d(_box1d(out, rb, 0), rb, 1)
-    return out
-
-
-def smootherstep(e0, e1, x):
-    t = np.clip((x - e0) / max(1e-6, e1 - e0), 0.0, 1.0)
-    return t * t * t * (t * (t * 6 - 15) + 10)
-
-
-def box_edge(n):
-    """0 at the centre .. 1 at the art-box border, rounded-square metric."""
-    y, x = np.mgrid[0:n, 0:n].astype(np.float32)
-    u = np.abs((x + 0.5) / n - 0.5) * 2
-    v = np.abs((y + 0.5) / n - 0.5) * 2
-    return 0.7 * np.maximum(u, v) + 0.3 * np.hypot(u, v) / math.sqrt(2)
-
-
 def resize(a, n, mode=Image.BOX):
     return np.asarray(Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8)).resize((n, n), mode)) / 255.0
 
@@ -169,22 +146,6 @@ def people_matte(im):
     return blur(a, 0.02 * a.shape[1])
 
 
-def context_fade(cov, subj, start, gate):
-    """Two-stage fade of a COVERAGE map into the carrier field (0.5), pushed
-    outward where ``subj`` is. Returns the faded coverage and the fade weight."""
-    n = cov.shape[0]
-    d = box_edge(n)
-    hold = np.clip(0.75 * subj, 0, 1)
-    s = start + (gate - start - 0.06) * hold
-    detail = smootherstep(0.0, 1.0, np.clip((d - s) / 0.30, 0, 1))          # 0 inside .. 1 = fully blurred
-    level = smootherstep(0.0, 1.0, np.clip((d - (s + 0.25)) / np.maximum(1e-3, gate - (s + 0.25)), 0, 1))
-    cov_blur = blur(cov, 0.08 * n)
-    cov1 = cov * (1 - detail) + cov_blur * detail
-    out = cov1 * (1 - level) + CARRIER_COV * level
-    out = np.where(d > gate, CARRIER_COV, out)
-    return out.astype(np.float32), (1 - level).astype(np.float32)
-
-
 def prepare(stem, r, photos, fade_dir):
     if r.get("source_png"):
         im = Image.open(fade_dir / r["source_png"]).convert("RGB").resize((SRC_PX, SRC_PX), Image.LANCZOS)
@@ -204,39 +165,41 @@ def prepare(stem, r, photos, fade_dir):
 
 
 def garland_field(pspec, w, h, pitch):
-    """Coverage and period maps of the single-ply garland at the boundary
-    raster: carrier at 0.5 over the window outside the art box; each leaf at the
-    union coverage of its grating with the carrier, 0.75 + 0.25 cos(phase) --
-    the beat that the two-ply garland shows at zero gap."""
+    """Coverage and period maps of the single-ply garland at the boundary raster.
+
+    The shipping construction (plates.SINGLE_PLY_LEAF_FILL = "hue",
+    leaf_fills.bucket_layers, and the single-ply block in
+    export_fine.build_plate_fine): NO carrier — the window outside the art box is
+    bare glass — and every motif family filled with a fine 50%-duty grating at
+    its own PERIOD from the colour ladder. Zero order is flat 50% gold whatever
+    the period, so the coverage map is the duty; the family's period goes in the
+    PERIOD map, which is what makes each one flash its own hue in the sheen
+    below. (This used to draw a 0.5 carrier and paint each leaf with its beat
+    against it: the pre-2026-09-10 design, and a second copy of geometry the
+    package already owns.)
+    """
     from app import plates as P
     from app.export_fine import _build_zone_masks
+    from app import leaf_fills as LF
 
     rd = P._carrier_recipe_data(pspec)
     zm = _build_zone_masks(pspec, pitch)
     fh, fw = zm.frame_level.shape
-    y, x = np.mgrid[0:fh, 0:fw].astype(np.float64)
-    xu = (x + 0.5 - fw / 2) * pitch
-    yu = (fh / 2 - y - 0.5) * pitch
     cov = np.zeros((fh, fw), np.float32)
     per = np.zeros((fh, fw), np.float32)
-    carrier = zm.back_window.copy()
-    if zm.art_box is not None:
-        carrier &= ~zm.art_box
-    cov[carrier] = CARRIER_COV
-    pb, pf = float(rd["carrier_period_um"]), float(rd["slit_period_um"])
-    ab = math.radians(float(rd["carrier_angle_deg"]))
+    duty = float(rd["grating_duty"])
     n_b = int(round(float(rd["frame_bucket_count"])))
-    span = float(rd["frame_angle_span_deg"])
-    phase_b = 2 * math.pi * (xu * math.cos(ab) + yu * math.sin(ab)) / pb
+    fill = P.SINGLE_PLY_LEAF_FILL
     for b in range(n_b):
         lo = P.FRAME_BUCKET0 + b * P.FRAME_BUCKET_STEP - P.FRAME_BUCKET_STEP // 2
         hi = lo + P.FRAME_BUCKET_STEP
         m = (zm.frame_level > max(0, lo)) & (zm.frame_level <= hi)
         if not m.any():
             continue
-        af = math.radians(float(rd["slit_axis_deg"]) + (b - 0.5 * (n_b - 1)) * span)
-        phase_f = 2 * math.pi * (xu * math.cos(af) + yu * math.sin(af)) / pf
-        cov[m] = 0.75 + 0.25 * np.cos(phase_f - phase_b)[m]
+        layers = LF.bucket_layers(fill, b, n_b, 0.0, P.SINGLE_PLY_LEAF_PERIOD_UM,
+                                  P.SINGLE_PLY_LEAF_HUE_PERIODS_UM)
+        cov[m] = duty * len(layers)          # "crossed" writes two sets, hence the count
+        per[m] = layers[0][0] if layers else 0.0
     return cov, per, zm
 
 
@@ -307,7 +270,7 @@ def render_plate(stem, rgb, subj, fade_field, r, out, face="left"):
     sheet.paste(src, (x, 10 + (700 - src.height) // 2)); dr.text((x, 718), "prepared source (art box scale)", fill=DIM, font=font(11)); x += src.width + 10
     for t, tilt in zip(tiles, (0.0, 1.0)):
         sheet.paste(t, (x, 10)); dr.text((x, 718), f"the {face} plate, tilt {tilt:g}°  ({W/1000:.1f} × {H/1000:.2f} mm, art box {side/1000:.1f} mm)", fill=FG, font=font(11)); x += t.width + 10
-    dr.text((10, 740), f"{stem}: {r['why']}. Garland: leaf gratings + carrier on the one ply (static beat); portrait fades into the 0.5 carrier field; eye-cell integrated, lamp.", fill=DIM, font=font(10))
+    dr.text((10, 740), f"{stem}: {r['why']}. Garland: fine leaf gratings on the one ply, one period per motif family, no carrier; the portrait dissolves to bare glass; eye-cell integrated, lamp.", fill=DIM, font=font(10))
     p = out / f"{stem}_plate.png"
     sheet.save(p)
     print("  saved", p)

@@ -102,6 +102,37 @@ def test_tiled_matches_direct_on_big_ring_decomposition():
     assert tiled[3] == pytest.approx(direct[3], abs=2 * DBU)
 
 
+def test_restricting_to_the_patched_tiles_measures_what_the_whole_pass_does():
+    """``only_near`` is what makes a repair loop's re-checks cheap (the metal
+    weld and the written-clear settle both re-check after patching a handful of
+    sites). It must not change the answer: tiles are independent, so restricting
+    to the tiles a patch reaches returns exactly the whole-pass result — provided
+    every violation really is inside the boxes, which is the caller's assertion
+    about its patch, not about the tiling."""
+    rects = [
+        _grating(-100.0, 8, 25.0, 6.0, -80.0, 80.0),
+        np.array([[104.0, 110.0, -30.0, 30.0], [111.4, 118.0, -30.0, 30.0]]),
+        np.array([[149.4, 150.6, -60.0, 60.0]]),
+    ]
+    full = _tiled_stats(rects)
+    assert full[0] > 0 and full[2] > 0                # the scenario is real
+    floor_dbu = int(round(FLOOR / DBU))
+    # Boxes around the two known sites, generously haloed — the same shape a
+    # patch's grown bounding boxes have.
+    near = [(100.0, -35.0, 122.0, 35.0), (145.0, -65.0, 155.0, 65.0)]
+    restricted = D._tiled_check_stats(
+        rects, kdb, width_dbu=floor_dbu, gap_dbu=floor_dbu, dbu_um=DBU,
+        tile_um=50.0, only_near=near,
+    )[:4]
+    assert restricted == full
+    # And a restriction that reaches nothing reports nothing, without checking.
+    away = D._tiled_check_stats(
+        rects, kdb, width_dbu=floor_dbu, gap_dbu=floor_dbu, dbu_um=DBU,
+        tile_um=50.0, only_near=[(-90.0, -70.0, -85.0, -65.0)],
+    )[:4]
+    assert away[0] == 0 and away[2] == 0
+
+
 def test_deduped_gds_flattens_to_flat_geometry():
     from app.export_fine import DBU_UM, insert_polys_deduped
 

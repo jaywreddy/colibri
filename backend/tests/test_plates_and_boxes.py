@@ -459,17 +459,17 @@ def test_single_ply_face_has_no_carrier_on_either_layer(isolated_data):
     assert two_front.getpixel(px) == 0
 
 
-def test_single_ply_leaves_are_fine_gratings_one_angle_per_family(isolated_data):
-    """One ply diffracts instead of beating: the garland is written as
-    SINGLE_PLY_LEAF_PERIOD_UM (6 um, 50%) gratings, one orientation per motif
-    family fanned over the half-turn, and the recipe advertises the period so
-    the preview's sheen knows it. A two-ply face keeps its moire louvres."""
+def test_single_ply_leaves_are_fine_gratings_one_period_per_family(isolated_data):
+    """One ply diffracts instead of beating: the garland is written as fine 50%
+    gratings with one PERIOD per motif family (the colour ladder), and the
+    recipe advertises that period so the preview's sheen knows it. A two-ply
+    face keeps its moire louvres."""
     from app.export_fine import build_plate_fine
     from app.plates import (
-        SINGLE_PLY_LEAF_PERIOD_UM,
         FrameSpec,
         PlateSpec,
         _carrier_recipe_data,
+        single_ply_leaf_period_um,
     )
 
     def _spec(single_ply: bool) -> PlateSpec:
@@ -483,16 +483,28 @@ def test_single_ply_leaves_are_fine_gratings_one_angle_per_family(isolated_data)
             single_ply=single_ply,
         )
 
+    from app.plates import SINGLE_PLY_LEAF_FILL, SINGLE_PLY_LEAF_HUE_PERIODS_UM
+
     one = build_plate_fine(_spec(True), "one")
     leaves = one.stats.get("single_ply_leaves")
     assert leaves, "a single-ply face must report its diffractive leaf gratings"
-    assert leaves["period_um"] == SINGLE_PLY_LEAF_PERIOD_UM == 6.0
+    assert leaves["fill"] == SINGLE_PLY_LEAF_FILL == "hue"
     assert leaves["n_families"] >= 2, "more than one family, or nothing flashes separately"
-    assert leaves["fan_step_deg"] * leaves["n_families"] <= 180.0 + 1e-9
-    assert one.stats["front_angled"] > 0 and not one.back_polys
-    assert _carrier_recipe_data(_spec(True))["single_ply_leaf_period_um"] == 6.0
+    # one PERIOD per family, every one of them a legal rung of the colour ladder
+    assert tuple(leaves["hue_periods_um"]) == tuple(SINGLE_PLY_LEAF_HUE_PERIODS_UM)
+    assert min(SINGLE_PLY_LEAF_HUE_PERIODS_UM) >= 4.0, "2 um lines and gaps: the litho floor"
+    assert leaves["min_legal_period_um"] <= min(SINGLE_PLY_LEAF_HUE_PERIODS_UM)
+    assert not one.back_polys
+    # ONE helper answers for both the manifest key and the preview period map,
+    # and under the "hue" fill that answer is the LADDER'S MEAN — not the
+    # single-period "lines" constant, which this face never writes.
+    ladder_mean = sum(SINGLE_PLY_LEAF_HUE_PERIODS_UM) / len(SINGLE_PLY_LEAF_HUE_PERIODS_UM)
+    assert single_ply_leaf_period_um(_spec(True)) == pytest.approx(ladder_mean)
+    assert _carrier_recipe_data(_spec(True))["single_ply_leaf_period_um"] == pytest.approx(ladder_mean)
+    assert min(SINGLE_PLY_LEAF_HUE_PERIODS_UM) <= ladder_mean <= max(SINGLE_PLY_LEAF_HUE_PERIODS_UM)
     two = build_plate_fine(_spec(False), "two")
     assert "single_ply_leaves" not in two.stats
+    assert single_ply_leaf_period_um(_spec(False)) == 0.0
     assert _carrier_recipe_data(_spec(False))["single_ply_leaf_period_um"] == 0.0
 
 
@@ -549,8 +561,19 @@ def test_photo_face_composes_bands_on_the_front_only(isolated_data):
     assert period.max() > 0, "coloured bands published an empty period map"
     _bands, periods_um = photo_colour_band_periods(spec)
     assert periods_um.size > 0
-    # Every painted value decodes to a period the fab actually writes.
-    painted = np.unique(period[period > 0]) / LITERAL_PERIOD_SCALE
+    # Every painted value INSIDE THE ART BOX decodes to a period the fab
+    # actually writes. (Outside it, a single-ply face's garland leaves carry
+    # their own diffractive period — see _single_ply_leaf_period_raster.)
+    from app.plates import CENTERPIECE_FILL, _aperture
+
+    h, w = period.shape
+    side = CENTERPIECE_FILL * _aperture(spec)
+    sx, sy = w / spec.width_um, h / spec.height_um
+    x0, x1 = int((spec.width_um / 2 - side / 2) * sx) + 2, int((spec.width_um / 2 + side / 2) * sx) - 2
+    y0, y1 = int((spec.height_um / 2 - side / 2) * sy) + 2, int((spec.height_um / 2 + side / 2) * sy) - 2
+    inside = period[y0:y1, x0:x1]
+    painted = np.unique(inside[inside > 0]) / LITERAL_PERIOD_SCALE
+    assert painted.size > 0
     assert painted.min() >= periods_um.min() - 0.05
     assert painted.max() <= periods_um.max() + 0.05
     # The period field lives inside the picture, not over the whole plate.

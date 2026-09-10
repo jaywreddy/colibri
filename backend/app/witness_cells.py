@@ -9,6 +9,13 @@ rectangles and no raster at all. That is what lets a 127 mm plate be built on a
 The halftone builder is the exception that proves the rule: it has to look at a
 photograph, so it samples one at the resolution the cell actually needs
 (:func:`asset_px_for`) rather than at the plate's own cell pitch.
+
+The file is in two parts. Above the EXPERIMENTS banner are the builders the
+current plate's DoE calls (``export_witness.doe_cells``) plus
+:func:`build_halftone_bands`, which the BOX's photo faces also go through
+(``plates.photo_band_rects``) so a picture is screened identically either way.
+Below it are the cells the 2026-09-10 plate dropped to make room for the
+production dies — kept, with the question each one answers, for the next plate.
 """
 from __future__ import annotations
 
@@ -192,6 +199,15 @@ def build_halftone(
 ) -> CellArt:
     """One halftone portrait cell of the reference photo, plain or colour-shaded.
 
+    OFF-PLATE since 2026-09-10: the two colour SIDE dies are the portraits now,
+    at their 13.3 mm art box, and the plain control is H-WEDGE. Kept here
+    rather than under the
+    EXPERIMENTS banner because it is the reference caller of
+    :func:`build_halftone_bands` — the metal/clear complement property that both
+    the plate and the box's photo faces depend on is pinned through it
+    (``tests/test_witness.py``), and it is what
+    ``tools/dev/render_witness_preview.py`` renders its treatments from.
+
     The whole three-variant question reduces to which ``plan`` is passed: a
     ``plain`` plan yields an empty period field and no sub-grating at all, so
     the control cell runs the same code path rather than a different one. Any
@@ -284,103 +300,6 @@ def build_grating_patch(
             "n_rects": int(len(r)),
         },
     )
-
-
-def build_chirp(
-    cx: float, cy: float, w: float, h: float, *,
-    period_start_um: float = 22.0, period_end_um: float = 3.0, duty: float = 0.5,
-    polarity: str = METAL,
-) -> CellArt:
-    """B2 — period swept along the patch, so the fan is graded, not flat.
-
-    Doubles as a continuous resolution check: the sweep crosses the litho floor
-    somewhere, and where it stops diffracting is where the process gave out.
-
-    The fine end is 3.0 um, not the 4.0 the accent zone uses. At 4.0 the sweep
-    STOPS exactly at the floor (a 50%-duty 4 um period is a 2 um line) and never
-    crosses it, so the cell could only ever confirm the assumed limit and never
-    find the real one — which is the single thing it is for.
-    """
-    x0 = cx - w / 2.0
-    x1 = cx + w / 2.0
-    xs: list[float] = []
-    ws: list[float] = []
-    x = x0
-    while x < x1:
-        t = (x - x0) / w
-        d = period_start_um + (period_end_um - period_start_um) * t
-        xs.append(x)
-        ws.append(d * duty)
-        x += d
-    a = np.asarray(xs, dtype=np.float64)
-    b = a + np.asarray(ws, dtype=np.float64)
-    keep = b <= x1
-    a, b = a[keep], b[keep]
-    if polarity == METAL:
-        r = np.empty((a.size, 4), dtype=np.float64)
-        r[:, 0], r[:, 1] = a, b
-    else:
-        # the gaps: after each line up to the next, plus the two ends
-        g0 = np.concatenate(([x0], b))
-        g1 = np.concatenate((a, [x1]))
-        keep = g1 - g0 > 1e-9
-        r = np.empty((int(keep.sum()), 4), dtype=np.float64)
-        r[:, 0], r[:, 1] = g0[keep], g1[keep]
-    r[:, 2], r[:, 3] = cy - h / 2.0, cy + h / 2.0
-    return CellArt(
-        front=r,
-        stats={
-            "polarity": polarity,
-            "period_start_um": period_start_um,
-            "period_end_um": period_end_um,
-            "crosses_floor_at_um": round(MIN_FEATURE_UM / duty, 2),
-            "n_rects": int(len(r)),
-        },
-    )
-
-
-def build_colour_band(
-    cx: float, cy: float, w: float, h: float, *,
-    tone: float = 0.5, line_period_um: float = REF_SCREEN_UM,
-    tone_steps: int = REF_TONE_STEPS, period_um: float = 5.0, duty: float = 0.5,
-    hold_tone: bool = True,
-) -> CellArt:
-    """D1–D3 — a FLAT-tone halftone whose bands carry a sub-grating.
-
-    The clean version of the colour question, with the photograph taken out of
-    it: one tone, one period, so the only thing the cell can tell you is
-    whether a gratinged band still holds its tone and still diffracts. Beside
-    the portrait cells it separates "the colour works" from "the picture works".
-    """
-    steps = max(2, min(int(tone_steps), int(line_period_um / MIN_FEATURE_UM)))
-    eff = min(tone / duty, 1.0) if hold_tone else tone
-    band_h = (math.floor(eff * steps) / steps) * line_period_um
-    n = max(1, int(h / line_period_um))
-    cyc = cy + h / 2.0 - (np.arange(n) + 0.5) * line_period_um
-    bands = np.empty((n, 4), dtype=np.float64)
-    bands[:, 0], bands[:, 1] = cx - w / 2.0, cx + w / 2.0
-    bands[:, 2], bands[:, 3] = cyc - band_h / 2.0, cyc + band_h / 2.0
-    art = CellArt(front=np.empty((0, 4)))
-    art.arrays.append(
-        {
-            "rects": bands,
-            "period_um": np.full(n, period_um),
-            "line_um": np.full(n, period_um * duty),
-            "phase_um": 0.0,
-        }
-    )
-    art.stats = {
-        "tone": tone,
-        "hold_tone": hold_tone,
-        "band_um": round(band_h, 3),
-        "period_um": period_um,
-        "line_um": round(period_um * duty, 3),
-        "periods_per_band": round(band_h / period_um, 2),
-        "clears_litho_floor": bool(period_um * duty >= MIN_FEATURE_UM - 1e-9),
-        "enough_periods_for_a_spectrum": bool(band_h >= 2.0 * period_um),
-        "n_bands": n,
-    }
-    return art
 
 
 def build_vernier(
@@ -476,41 +395,6 @@ def build_barrier_switch(
     return art
 
 
-def build_scanimation(
-    cx: float, cy: float, w: float, h: float, *, comb_um: float = BOX_COMB_UM,
-    phases: int = 4, polarity: str = METAL,
-) -> CellArt:
-    """P-SCAN test panel — N-phase kinegram, N frames in 1/N-pitch lanes.
-
-    The bare-line version, where the direction of travel is unambiguous. The
-    comb is anchored to the cell's left edge like the lanes (see
-    :func:`build_barrier_switch` for what origin-anchoring did).
-    """
-    lane = comb_um / phases
-    n = max(phases, int(w / lane))
-    k = np.arange(n)
-    x_left = cx - w / 2.0
-    x0 = x_left + k * lane
-    ph = k % phases
-    back = np.empty((n, 4), dtype=np.float64)
-    back[:, 0], back[:, 1] = x0, x0 + lane
-    y = cy - h / 2.0 + (ph / float(phases)) * h * 0.78
-    back[:, 2], back[:, 3] = y, y + h * 0.18
-    f = grating_array if polarity == METAL else grating_array_inverse
-    fe, fr = f(cx, cy, w, h, comb_um, 1.0 / phases, phase_um=(x_left % comb_um))
-    art = CellArt(front=fr, arrays=[fe])
-    if polarity == METAL:
-        art.back = back
-    else:
-        rem = _rect(x0[-1] + lane, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0) \
-            if x0[-1] + lane < cx + w / 2.0 - 1e-9 else np.empty((0, 4))
-        art.back = _cat(column_complement(back, cy - h / 2.0, cy + h / 2.0), rem)
-    art.stats = {"polarity": polarity, "comb_um": comb_um, "phases": phases,
-                 "slot_um": round(lane, 2), "n_rects": int(len(art.back)),
-                 "n_arrays": 1}
-    return art
-
-
 def build_shading_moire(
     cx: float, cy: float, w: float, h: float, *,
     back_period_um: float = BOX_CARRIER_UM, beat_um: float = 1635.0, duty: float = 0.5,
@@ -538,6 +422,30 @@ def build_shading_moire(
         "bands_across": round(w / beat_um, 2), "n_rects": 0, "n_arrays": 2,
     }
     return art
+
+
+# --- EXPERIMENTS — builders NO cell on the current plate calls ---------------
+#
+# The 2026-09-10 plate gave its area to eight production plies, so the DoE was
+# cut to the bench essentials (see ``export_witness.doe_cells``). These four
+# builders are the cells that came off it. They are kept — not deleted — because
+# each answers a question a FUTURE plate will ask, and rewriting a cell from the
+# physics plan is more expensive than carrying a function nobody calls:
+#
+#   build_moire_magnifier  B-MAG   sampling one lattice with another; needs two
+#                                  plies, so it waits for the next bonded pair
+#   build_scanimation      P-SCAN  the N-phase kinegram; its 15 µm slots are two
+#                                  orders under this 2.25 mm stock's near-field
+#                                  limit, so it waits for thin stock
+#   build_chirp            D-CHIRP a continuous CD read — the swept period
+#                                  crosses the litho floor somewhere
+#   build_colour_band      D-BAND  "does a BANDED grating still diffract, and
+#                                  what does holding tone costs?", with the
+#                                  photograph taken out of the question
+#
+# ``build_colour_band`` and ``build_halftone`` (above, likewise off-plate) stay
+# pinned by ``tests/test_witness.py`` for the metal/clear complement property,
+# which is the one thing that must not rot while they sit here.
 
 
 def build_moire_magnifier(
@@ -602,3 +510,132 @@ def build_moire_magnifier(
     return art
 
 
+def build_scanimation(
+    cx: float, cy: float, w: float, h: float, *, comb_um: float = BOX_COMB_UM,
+    phases: int = 4, polarity: str = METAL,
+) -> CellArt:
+    """P-SCAN test panel — N-phase kinegram, N frames in 1/N-pitch lanes.
+
+    The bare-line version, where the direction of travel is unambiguous. The
+    comb is anchored to the cell's left edge like the lanes (see
+    :func:`build_barrier_switch` for what origin-anchoring did).
+    """
+    lane = comb_um / phases
+    n = max(phases, int(w / lane))
+    k = np.arange(n)
+    x_left = cx - w / 2.0
+    x0 = x_left + k * lane
+    ph = k % phases
+    back = np.empty((n, 4), dtype=np.float64)
+    back[:, 0], back[:, 1] = x0, x0 + lane
+    y = cy - h / 2.0 + (ph / float(phases)) * h * 0.78
+    back[:, 2], back[:, 3] = y, y + h * 0.18
+    f = grating_array if polarity == METAL else grating_array_inverse
+    fe, fr = f(cx, cy, w, h, comb_um, 1.0 / phases, phase_um=(x_left % comb_um))
+    art = CellArt(front=fr, arrays=[fe])
+    if polarity == METAL:
+        art.back = back
+    else:
+        rem = _rect(x0[-1] + lane, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)             if x0[-1] + lane < cx + w / 2.0 - 1e-9 else np.empty((0, 4))
+        art.back = _cat(column_complement(back, cy - h / 2.0, cy + h / 2.0), rem)
+    art.stats = {"polarity": polarity, "comb_um": comb_um, "phases": phases,
+                 "slot_um": round(lane, 2), "n_rects": int(len(art.back)),
+                 "n_arrays": 1}
+    return art
+
+
+def build_chirp(
+    cx: float, cy: float, w: float, h: float, *,
+    period_start_um: float = 22.0, period_end_um: float = 3.0, duty: float = 0.5,
+    polarity: str = METAL,
+) -> CellArt:
+    """D-CHIRP — period swept along the patch, so the fan is graded, not flat.
+
+    Doubles as a continuous resolution check: the sweep crosses the litho floor
+    somewhere, and where it stops diffracting is where the process gave out.
+
+    The fine end is 3.0 um, not the 4.0 the accent zone uses. At 4.0 the sweep
+    STOPS exactly at the floor (a 50%-duty 4 um period is a 2 um line) and never
+    crosses it, so the cell could only ever confirm the assumed limit and never
+    find the real one — which is the single thing it is for.
+    """
+    x0 = cx - w / 2.0
+    x1 = cx + w / 2.0
+    xs: list[float] = []
+    ws: list[float] = []
+    x = x0
+    while x < x1:
+        t = (x - x0) / w
+        d = period_start_um + (period_end_um - period_start_um) * t
+        xs.append(x)
+        ws.append(d * duty)
+        x += d
+    a = np.asarray(xs, dtype=np.float64)
+    b = a + np.asarray(ws, dtype=np.float64)
+    keep = b <= x1
+    a, b = a[keep], b[keep]
+    if polarity == METAL:
+        r = np.empty((a.size, 4), dtype=np.float64)
+        r[:, 0], r[:, 1] = a, b
+    else:
+        # the gaps: after each line up to the next, plus the two ends
+        g0 = np.concatenate(([x0], b))
+        g1 = np.concatenate((a, [x1]))
+        keep = g1 - g0 > 1e-9
+        r = np.empty((int(keep.sum()), 4), dtype=np.float64)
+        r[:, 0], r[:, 1] = g0[keep], g1[keep]
+    r[:, 2], r[:, 3] = cy - h / 2.0, cy + h / 2.0
+    return CellArt(
+        front=r,
+        stats={
+            "polarity": polarity,
+            "period_start_um": period_start_um,
+            "period_end_um": period_end_um,
+            "crosses_floor_at_um": round(MIN_FEATURE_UM / duty, 2),
+            "n_rects": int(len(r)),
+        },
+    )
+
+
+def build_colour_band(
+    cx: float, cy: float, w: float, h: float, *,
+    tone: float = 0.5, line_period_um: float = REF_SCREEN_UM,
+    tone_steps: int = REF_TONE_STEPS, period_um: float = 5.0, duty: float = 0.5,
+    hold_tone: bool = True,
+) -> CellArt:
+    """D-BAND — a FLAT-tone halftone whose bands carry a sub-grating.
+
+    The clean version of the colour question, with the photograph taken out of
+    it: one tone, one period, so the only thing the cell can tell you is
+    whether a gratinged band still holds its tone and still diffracts. Beside
+    a portrait cell it separates "the colour works" from "the picture works".
+    """
+    steps = max(2, min(int(tone_steps), int(line_period_um / MIN_FEATURE_UM)))
+    eff = min(tone / duty, 1.0) if hold_tone else tone
+    band_h = (math.floor(eff * steps) / steps) * line_period_um
+    n = max(1, int(h / line_period_um))
+    cyc = cy + h / 2.0 - (np.arange(n) + 0.5) * line_period_um
+    bands = np.empty((n, 4), dtype=np.float64)
+    bands[:, 0], bands[:, 1] = cx - w / 2.0, cx + w / 2.0
+    bands[:, 2], bands[:, 3] = cyc - band_h / 2.0, cyc + band_h / 2.0
+    art = CellArt(front=np.empty((0, 4)))
+    art.arrays.append(
+        {
+            "rects": bands,
+            "period_um": np.full(n, period_um),
+            "line_um": np.full(n, period_um * duty),
+            "phase_um": 0.0,
+        }
+    )
+    art.stats = {
+        "tone": tone,
+        "hold_tone": hold_tone,
+        "band_um": round(band_h, 3),
+        "period_um": period_um,
+        "line_um": round(period_um * duty, 3),
+        "periods_per_band": round(band_h / period_um, 2),
+        "clears_litho_floor": bool(period_um * duty >= MIN_FEATURE_UM - 1e-9),
+        "enough_periods_for_a_spectrum": bool(band_h >= 2.0 * period_um),
+        "n_bands": n,
+    }
+    return art

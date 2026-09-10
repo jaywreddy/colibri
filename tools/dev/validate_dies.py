@@ -122,8 +122,9 @@ def box_mean(g, k):
 def check_photo(out: Path) -> dict:
     """A1, ported to the production geometry: DIE-LEFT is built by
     ``witness_dies.build_face_die``, which is ``export_fine.build_plate_fine``
-    (there is no ``build_colour_side`` in the production path any more — that
-    function is the legacy single-ply-portrait writer this gate used to call).
+    — the one authoring toolchain every face goes through. (This gate used to
+    call a ``build_colour_side`` writer of its own; that second path is gone,
+    which is the point: the gate now measures the geometry the mask gets.)
 
     ``fine.front_polys`` is the merged, DRC-healed FRONT metal in the plate
     frame (plate-centred, y up), UNMIRRORED — ``witness_dies._ply_art`` only

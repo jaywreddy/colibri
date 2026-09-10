@@ -10,15 +10,16 @@ sampler and becomes an experiment.
 
 What the area buys, in order of value
 -------------------------------------
-1. B6 becomes a real portrait. At 3.95 mm the face spanned 45 of the eye's 87 um
-   integration cells and read as a coarse thumbnail; the cell qualified the
-   screen but could never say whether the picture was any good. At 36 mm it
-   spans 414. The three colour variants sit side by side at that size, which is
-   the only honest way to choose between them.
-2. Every aesthetic knob gets a one-factor ladder around the reference point, so
-   a single plate says which way each one wants to move.
-3. The image-SCALE ladder becomes possible at all — the one question that
-   cannot be answered by looking at a big cell or a small one alone.
+1. PRODUCTION PLIES. Since 2026-09-10 the plate's first and largest claim is the
+   box itself: the lid and front as bonded F+B pairs and all six candidate
+   photographs as single-ply sides, written from the box's own PlateSpecs
+   (``witness_dies.production_cells``). A die is a face, not a model of one, so
+   the subjective questions — is the picture good, does the garland read — are
+   answered on the part that ships.
+2. Each remaining knob still gets a LADDER around the reference point rather
+   than a single point, so one plate says which way it wants to move.
+3. Room for the two-layer cells to sit beside their single-layer twins, which is
+   what makes the gap's contribution measurable rather than assumed.
 
 One plate, so Group A needs a bond
 ----------------------------------
@@ -47,22 +48,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 
 from . import witness_cells as wc
 from . import witness_moire as wm
 from .patterns.bitmap import colourplan as cp
-from .patterns.bitmap import imageprep as ip
 from .witness_geom import (
-    BOX_CARRIER_UM,
     BOX_COMB_UM,
-    BOX_MONO_UM,
     CLEAR,
     GLASS_MATERIAL,
     METAL,
@@ -70,19 +67,11 @@ from .witness_geom import (
     PLY_UM,
     P_MIN_UM,
     fresnel_number,
-    EDGE_MARGIN_UM,
     GUTTER_UM,
     LABEL_H_UM,
     LAYER_FRONT,
-    LAYER_LABEL,
     LAYER_OUTLINE,
     PLATE_SIDE_UM,
-    REF_BASE_PERIOD_UM,
-    REF_COARSEN_PX,
-    REF_DUTY,
-    REF_SCREEN_UM,
-    REF_SPREAD,
-    REF_TONE_STEPS,
     USABLE_UM as _GEOM_USABLE_UM,
     Cell,
     CellArt,
@@ -118,43 +107,35 @@ def _label_h(cell_h_um: float) -> float:
 # its area by returning a number that could change the box design, not by
 # demonstrating that something works.
 #
-# The previous revision spent 40% of the plate on photographic portraits, one
-# per parameter. A portrait is a subjective read of many coupled variables at
-# once; H-WEDGE and D-SWATCH give the same information objectively in a
-# twentieth of the area. Portraits survive only where the question genuinely is
-# subjective -- which of these three goes on the lid -- and they are now 5%.
-
-# 2026-09-10: the plate carries eight production plies (lid + front pairs, six
+# An earlier revision spent 40% of the plate on photographic portraits, one per
+# parameter. A portrait is a subjective read of many coupled variables at once,
+# and H-WEDGE gave the same information objectively in a twentieth of the area;
+# the portraits went, and the subjective call -- which picture goes on a wall --
+# is now made on the production SIDE DIES themselves (witness_dies.SIDE_PHOTOS).
+#
+# 2026-09-10: the plate carries ten production plies (lid + front pairs, six
 # photo sides), so the experiment set is cut to the cells this box's bench
 # reads: polarity, CD, duty, the two-layer registration and switch cells at the
 # box's own pitches, one near-field pair either side of the design, one halftone
 # wedge at the photo screen, and single rungs of the diffraction and moire
-# ladders. The dropped rungs live in git history (0799344) for a future plate.
+# ladders. 23 cells.
+#
+# What went is NOT kept as an empty tuple with a live loop over it: that is a
+# cell which silently does not exist, and it is how a plate ships missing an
+# experiment nobody noticed. The dropped rungs -- BEAT, BEAT-duty, ROTATION,
+# HARMONIC, SCREEN-angle, the D-SWATCH base-period x spread grid, the CROSS and
+# BAND swatches, the VEC pitch x angle grid, the MAG magnifier pair, P-SCAN, and
+# the portrait ladders (steps, duty, coarsen, unsharp, scale) -- live in git
+# history at 0799344, and their builders in witness_cells' EXPERIMENTS section.
 RESOLUTION_LADDER_UM = (0.8, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.5, 8.0)
 C3_DUTY_LADDER = (0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70)
 PERIOD_LADDER_UM = (2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0, 14.0, 20.0)
-BEAT_LADDER_UM = ()
-"""The 6000 um rung (a 30 mm cell) went when the production dies arrived: the
-3000 rung already shows the p/delta scaling, and 240 mm2 is a third of a die."""
-BEAT_DUTY_LADDER = ()
-ROTATION_LADDER_DEG = ()
-HARMONIC_DUTY_LADDER = ()
-SCREEN_ANGLE_LADDER_DEG = ()
-BASE_PERIOD_LADDER_UM = ()
-SPREAD_LADDER = ()
 NEAR_FIELD_LADDER_UM = (20.0, 64.0)   # brackets p_min 41 um: 20 washed out, 64 (the box carrier) intact
 SWITCH_COMB_LADDER_UM = (173.0, BOX_COMB_UM)
 """100 and 173 were the 500 um and 1.5 mm designs' combs; BOX_COMB_UM is this
 glass's; 350 is a visible barrier by construction."""
-SCAN_PHASE_LADDER = (2, 4, 6)
 SCREEN_LADDER_UM = (20.0, 30.0, 44.0, 60.0)
 WEDGE_SCREENS_UM = (44.0,)          # the photo screen; 20 and 60 were cut
-STEPS_LADDER = (8, 12, 16, 22)
-DUTY_LADDER = (0.35, 0.50, 0.65)
-COARSEN_LADDER_PX = (3, 7, 14)
-UNSHARP_LADDER = (0.0, 0.75, 1.5)
-SCALE_LADDER_MM = (4.0, 8.0)
-"""The 12 mm rung is PORT-Z itself, so the ladder does not repeat it."""
 
 BEAT_H_MM = 8.0
 """Height of every beat cell. Beat fringes are spaced along ONE axis — across
@@ -174,14 +155,14 @@ def _beat_w_mm(beat_um: float, min_mm: float = 6.0, fringes: float = 5.0) -> flo
     return max(min_mm, round(fringes * beat_um / 1000.0, 1))
 
 PORTRAIT_MM = 12.0
-"""Headline cell. 138 eye-cells across at 300 mm -- enough to judge which colour
-treatment you want, which is the only question a portrait answers better than an
-instrument. 30 mm read better still and cost 2700 mm2; the plan's section 0 is
-why that trade went the other way."""
+"""Cell size for a halftone PORTRAIT: 138 eye-cells across at 300 mm, enough to
+judge a colour treatment. No portrait rides this plate any more — the two colour
+SIDES are the portraits, at their 13.3 mm art box — but
+``tools/dev/render_witness_preview.py``
+renders its off-plate previews at this size, so the number stays here where the
+plate's other cell sizes are."""
 SWEEP_MM = 10.0
-LADDER_MM = 4.0
 PAIR_MM = 8.0
-SWATCH_MM = 6.0
 WEDGE_W_MM = 30.0
 WEDGE_H_MM = 4.0
 
@@ -195,27 +176,18 @@ def _cell(cid, title, block, w_mm, h_mm, build, *, label="", note="",
 
 
 def _plan(mode: str, **kw: Any) -> cp.ColourPlan:
-    """A variant of the reference colour plan with one knob moved."""
+    """A variant of the reference colour plan with one knob moved.
+
+    No cell on this plate takes a plan any more (the colour question is answered
+    by the photo SIDE dies, which carry their own); it is kept for
+    ``tools/dev/render_witness_preview.py``, which renders the three treatments
+    off-plate from the same reference plans."""
     base = {"plain": cp.PAULA_PLAIN, "hue": cp.PAULA_HUE, "zones": cp.PAULA_ZONES}[mode]
     if not kw:
         return base
     d = {k: v for k, v in base.__dict__.items()}
     d.update(kw)
     return cp.ColourPlan(**d)
-
-
-def _halftone(cid, title, side_mm, *, mode="zones", label="", axis="", level="",
-              note="", plan_kw=None, prep=None,
-              line_period_um=REF_SCREEN_UM, tone_steps=REF_TONE_STEPS) -> Cell:
-    plan = _plan(mode, **(plan_kw or {}))
-
-    def build(cx, cy, w, h, polarity=METAL):
-        return wc.build_halftone(cx, cy, w, h, plan=plan, prep=prep,
-                                 line_period_um=line_period_um,
-                                 tone_steps=tone_steps, polarity=polarity)
-
-    return _cell(cid, title, "halftone", side_mm, side_mm, build, label=label,
-                 note=note, axis=axis, level=level, takes_polarity=True)
 
 
 def doe_cells() -> list[list[Cell]]:
@@ -272,99 +244,7 @@ def doe_cells() -> list[list[Cell]]:
               note="hue and fan width against period. Read under a lamp AND "
                    "under room light -- the difference is the source-width result"),
     ]
-    for px, py in ():
-        d_cells.append(_cell(
-            f"CROSS{px:g}x{py:g}", f"crossed {px:g}/{py:g} um", "diffraction",
-            SWATCH_MM, SWATCH_MM,
-            (lambda px=px, py=py: (lambda cx, cy, w, h, polarity=METAL:
-                wm.build_crossed(cx, cy, w, h, period_x_um=px, period_y_um=py,
-                                 polarity=polarity)))(),
-            takes_polarity=True,
-            label=f"CROSS {px:g}/{py:g}", axis="D-CROSS", level=f"{px:g}/{py:g} um",
-            note="2-D orders; also the cheapest check of the union identity"))
-    for bp in BASE_PERIOD_LADDER_UM:
-        for sp in SPREAD_LADDER:
-            d_cells.append(_cell(
-                f"SW{bp:g}/{sp:.2f}", f"swatch {bp:g} um x{sp:.2f}", "diffraction",
-                SWATCH_MM, SWATCH_MM,
-                (lambda bp=bp, sp=sp: (lambda cx, cy, w, h, polarity=METAL:
-                    wm.build_swatch(cx, cy, w, h, base_period_um=bp, spread=sp,
-                                    polarity=polarity)))(),
-                label=f"SW {bp:g}/{sp:.2f}", axis="D-SWATCH ladder", takes_polarity=True,
-                level=f"base {bp:g} um, spread {sp:.2f}",
-                note="whole hue ladder side by side -- replaces 8 portraits"))
-    # D-BAND: a BANDED grating, not a continuous one. Built at tone 0.25 so the
-    # held-tone band is 22 um (4.4 periods of 5 um) and the unheld one 11 um
-    # (2.2 periods): the pair measures what holding tone costs. At tone 0.5
-    # with tone held the band is the whole 44 um period and the cell is just a
-    # grating with a phase reset — which is what the H cells were until a
-    # reviewer read the manifest's band_um.
-    for i, (t, per, ht) in enumerate([]):
-        d_cells.append(_cell(
-            f"BAND{i+1}", t, "diffraction", SWATCH_MM, SWATCH_MM,
-            (lambda per=per, ht=ht: (lambda cx, cy, w, h:
-                wc.build_colour_band(cx, cy, w, h, period_um=per, tone=0.25,
-                                     hold_tone=ht)))(),
-            label=f"BAND {per:g}{'H' if ht else ''}", axis="D-BAND",
-            level=f"{per:g} um", note="does a BANDED grating still diffract, and what does holding tone cost?"))
     B.append(d_cells)
-
-    # === MOIRE, single layer -- the largest block ===========================
-    mo: list[Cell] = []
-    for b_um in BEAT_LADDER_UM:
-        mm = _beat_w_mm(b_um)
-        mo.append(_cell(
-            f"BEAT{b_um:g}", f"beat {b_um:g} um", "moire", mm, BEAT_H_MM,
-            (lambda b_um=b_um: (lambda cx, cy, w, h:
-                wm.build_beat(cx, cy, w, h, beat_um=b_um)))(),
-            label=f"BEAT {b_um:g}", axis="B-BEAT spacing", level=f"{b_um:g} um",
-            note=f"sized for {mm*1000/b_um:.1f} fringes; p/delta amplifies pitch error"))
-    for c in BEAT_DUTY_LADDER:
-        mo.append(_cell(
-            f"BCON{c:.2f}", f"beat duty {c:.2f}", "moire",
-            _beat_w_mm(1635.0), BEAT_H_MM,
-            (lambda c=c: (lambda cx, cy, w, h:
-                wm.build_beat_contrast(cx, cy, w, h, duty=c)))(),
-            label=f"BCON {c:.2f}", axis="B-CONT duty", level=f"{c:.2f}",
-            note="transmission: low duty brighter at a fifth of the contrast; reflection ranks them the other way"))
-    for a in ROTATION_LADDER_DEG:
-        mo.append(_cell(
-            f"ROT{a:g}", f"rotation {a:g} deg", "moire",
-            _beat_w_mm(BOX_CARRIER_UM / (2 * math.sin(math.radians(a) / 2)), min_mm=8.0),
-            BEAT_H_MM,
-            (lambda a=a: (lambda cx, cy, w, h:
-                wm.build_rotation_beat(cx, cy, w, h, angle_deg=a)))(),
-            label=f"ROT {a:g}deg", axis="B-ROT angle", level=f"{a:g} deg",
-            note="fringes run ALONG the lines, not across"))
-    # 1 and 6 degrees bracket the frame's angle fan; the 3 degree column was cut
-    # for the production dies.
-    C, M = BOX_CARRIER_UM, round(BOX_MONO_UM, 2)
-    for pa, pb, ang in []:
-        mo.append(_cell(
-            f"VEC{pb:g}/{ang:g}", f"vector {pb:g} um @ {ang:g} deg", "moire",
-            LADDER_MM + 1.0, LADDER_MM + 1.0,
-            (lambda pa=pa, pb=pb, ang=ang: (lambda cx, cy, w, h:
-                wm.build_vector_beat(cx, cy, w, h, period_a_um=pa,
-                                     period_b_um=pb, angle_deg=ang)))(),
-            label=f"VEC {pb:g}/{ang:g}", axis="B-VEC pitch x angle",
-            level=f"{pb:g} um @ {ang:g} deg",
-            note="the general |k1-k2| formula the frame relies on"))
-    for c in HARMONIC_DUTY_LADDER:
-        mo.append(_cell(
-            f"HARM{c:.2f}", f"harmonic, duty {c:.2f}", "moire", 10.0, BEAT_H_MM,
-            (lambda c=c: (lambda cx, cy, w, h:
-                wm.build_harmonic(cx, cy, w, h, duty=c)))(),
-            label=f"HARM {c:.2f}", axis="B-HARM duty", level=f"{c:.2f}",
-            note=("nominal: only the 1.65' beat" if abs(c - 0.5) < 1e-9
-                  else "biased: the 6.4' (2,3) beat appears")))
-    for ang in SCREEN_ANGLE_LADDER_DEG:
-        mo.append(_cell(
-            f"SCR{ang:g}", f"screen at {ang:g} deg", "moire", SWEEP_MM, BEAT_H_MM,
-            (lambda ang=ang: (lambda cx, cy, w, h:
-                wm.build_screen_over_carrier(cx, cy, w, h, screen_angle_deg=ang)))(),
-            label=f"SCR {ang:g}deg", axis="B-SCREEN angle", level=f"{ang:g} deg",
-            note="does perpendicular really kill the screen/carrier beat?"))
-    B.append(mo)
 
     # === HALFTONE ===========================================================
     hf: list[Cell] = []
@@ -387,7 +267,8 @@ def doe_cells() -> list[list[Cell]]:
         takes_polarity=True,
         note="at what pitch do you SEE the lines? 43.5 um is the calculation"))
     # No portrait cells: the two colour SIDES (DIE-LEFT zones, DIE-RIGHT hue)
-    # are the portraits now, at 22 mm, and the plain control is the H-WEDGE.
+    # are the portraits now, at their 13.3 mm art box, and the plain control
+    # is the H-WEDGE.
     B.append(hf)
 
     # === TWO-LAYER -- everything the bond is actually for ===================
@@ -430,17 +311,10 @@ def doe_cells() -> list[list[Cell]]:
             note="straddle-registered: 50/50 blend head-on, clean A/B at +-p/4. Witness angles"))
     # P-SCAN (the N-phase kinegram ladder) left with the capybara: no face of
     # the box is a scanimation any more, and its 15 um slots were two orders of
-    # magnitude under the 1.5 mm near-field limit anyway. ``build_scanimation``
-    # stays in witness_cells for a future thin-stock plate.
-    for mag, ps in ():
-        two.append(_cell(
-            f"MAG{mag}", f"magnifier M={mag}", "moire", PAIR_MM, PAIR_MM,
-            (lambda ps=ps: (lambda cx, cy, w, h, polarity=METAL:
-                wc.build_moire_magnifier(cx, cy, w, h, sampler_um=60.0,
-                                         motif_um=ps, polarity=polarity)))(),
-            label=f"MAG {abs(float(mag)):g}x", axis="B-MAG magnification", level=f"M={mag}",
-            two_layer=True, takes_polarity=True,
-            note="M = p_s/(p_s - p_m), negative: the ghost is inverted. Sampling needs two planes"))
+    # magnitude under the 1.5 mm near-field limit anyway. The B-MAG magnifier
+    # pair went with it — nothing on the box samples one lattice with another.
+    # Both builders stay in witness_cells' EXPERIMENTS section for a future
+    # thin-stock plate.
     B.append(two)
     return B
 

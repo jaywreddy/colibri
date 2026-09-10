@@ -2432,12 +2432,15 @@ export default function BoxScene() {
             rt.shaderBack.uniforms.uBackCoverageReady.value = 0.0;
             // Sub-grating period map: the composite plane only (the backend
             // publishes period_front alone). On single-ply faces this map also
-            // carries the garland's 6 um leaf diffraction gratings, not just
-            // the photo's colour-zone periods (recipe_data.single_ply_leaf_
-            // period_um) — plate.frag's diffractionSheen() lights every leaf
-            // at the same fixed angle, so the per-family fan angle those
-            // leaves are actually cut at is not rendered. The one non-literal
-            // term here.
+            // carries the garland's leaf diffraction gratings, not just the
+            // photo's colour-zone periods. The two now speak one vocabulary:
+            // the leaves are written at one PERIOD per motif family off the
+            // photographs' own 4.15-6.02 um colour ladder, so a leaf and a
+            // colour zone beside it flash the same hue at the same tilt. The
+            // map carries the ladder's MEAN over every leaf texel
+            // (recipe_data.single_ply_leaf_period_um) rather than the family
+            // split, and plate.frag's diffractionSheen() lights every leaf at
+            // the same fixed angle — the one non-literal term here.
             rt.shader.uniforms.uPeriodMap.value = period ?? ctx.blank;
             rt.shader.uniforms.uPeriodReady.value = period ? 1.0 : 0.0;
             rt.shaderBack.uniforms.uPeriodMap.value = ctx.blank;

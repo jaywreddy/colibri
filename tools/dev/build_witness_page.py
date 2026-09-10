@@ -180,7 +180,7 @@ BUDGET = f"""
 <tr><td>experiments that need a bond</td><td class="n mono">{sum(1 for c in cells if c['two_layer'] and c['block'] != 'production')}</td><td class="n mono">{two_wr:,.0f}</td><td class="n mono">{two_wr/exp_wr*100:.0f}%</td>
   <td class="muted-cell">of the experiment area; the other {100-two_wr/exp_wr*100:.0f}% returns its numbers without one</td></tr>
 <tr><td>portrait cells</td><td class="n mono">{n_port}</td><td class="n mono">{port:,.0f}</td><td class="n mono">0%</td>
-  <td class="muted-cell">none — DIE-LEFT and DIE-RIGHT are the portraits, at 15 mm</td></tr>
+  <td class="muted-cell">none — the six photo side dies are the portraits, at a 13.3 mm art box</td></tr>
 </tbody></table></div>
 <div class="platewrap" style="background:#0d1113;border-radius:3px;padding:10px;overflow-x:auto;margin:18px 0 8px">{svg_map}</div>
 <p class="dim" style="margin:0 0 26px">The plate as packed, from the manifest. Colour is block; gold is the four production dies; dashed outlines are back dies; the shaded band is the bonded experiments. Rows are packed by height with pockets and columns beside the tall dies, so a ladder reads left to right and a family may wrap.</p>

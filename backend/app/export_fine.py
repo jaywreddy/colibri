@@ -1152,9 +1152,12 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
                     )
             n_used += 1
         stats["single_ply_leaves"] = {
-            "n_families": int(n_used), "period_um": float(leaf_period), "duty": float(duty),
+            "n_families": int(n_used), "duty": float(duty),
             "fan_start_deg": round(fan0, 2), "fan_step_deg": round(180.0 / max(1, frame_count), 2),
             **LF.describe(fill, leaf_period, hue_periods, coverage=dot_cov),
+            # the ONE period the manifest advertises (ladder mean under "hue");
+            # placed after describe() so it is not overwritten by the fill's knob
+            "period_um": float(P.single_ply_leaf_period_um(spec)),
         }
     elif zm.frame.any():
         base_front = base_angle + angle_off
@@ -1489,18 +1492,16 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
             back_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
         )
 
-    front_polys = drc_clean_region(
-        front_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
+    # ``report=True``: the AFTER report is the heal loop's own final check, not a
+    # second pass over the same 200k polygons (see drc_clean_region) — same
+    # measurement, one run of it instead of two.
+    front_polys, stats["drc"]["front_merged_after"] = drc_clean_region(
+        front_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM,
+        report=True,
     )
-    back_polys = drc_clean_region(
-        back_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
-    )
-
-    stats["drc"]["front_merged_after"] = drc_report_region(
-        front_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
-    )
-    stats["drc"]["back_merged_after"] = drc_report_region(
-        back_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM
+    back_polys, stats["drc"]["back_merged_after"] = drc_clean_region(
+        back_layer_polys, min_width_um=LITHO_FLOOR_UM, min_gap_um=LITHO_FLOOR_UM,
+        report=True,
     )
     stats["front_polys"] = len(front_polys)
     stats["back_polys"] = len(back_polys)

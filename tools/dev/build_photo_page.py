@@ -78,7 +78,7 @@ def plate_block(stem: str) -> str:
     prep_bits.append(f"edge fade over the outer {pl['fade']*100:.0f}% of the art box, so the picture dissolves into glass before the garland")
     return f"""<h3>On the plate — chosen treatment</h3>
 <p><b>{H.escape(pl['why'])}.</b> {H.escape('; '.join(prep_bits))}. Coloured fraction {pl['coloured_fraction']*100:.0f}%.</p>
-{fig(photos / pl['plate'], stem + ' on the side plate', 'Left: the prepared source at art-box scale. Middle and right: the whole side plate (24.6 × 27.5 mm) as the eye sees it at 0° and 1° — the portrait in its 15.4 mm art box with the edge fade, the colour garland with each motif family at its hue rung, bare glass between them.')}"""
+{fig(photos / pl['plate'], stem + ' on the side plate', 'Left: the prepared source at art-box scale. Middle and right: the whole side plate (27.5 × 30.5 mm) as the eye sees it at 0° and 1° — the portrait in its 13.3 mm art box with the edge fade, the colour garland with each motif family at its hue rung, bare glass between them.')}"""
 
 
 sections = []
@@ -105,7 +105,7 @@ for stem in ORDER + [c for c in (Path(e["file"]).stem for e in colour) if c not 
 <tr><td><b>Risks</b></td><td colspan="2">{as_text(n.get("risks", ""))}</td></tr>
 <tr class="hi"><td><b>Verdict</b></td><td colspan="2">{as_text(n.get("verdict", ""))}</td></tr>
 </tbody></table></div>
-{fig(prep, stem + " crop and screen", "Original with the crop, the square source, the tone the eye integrates at 87 µm (177 × 177 cells over the 15.4 mm art box), and a true 3 mm patch of the 44 µm / 22-level line screen.") if prep.exists() else ""}
+{fig(prep, stem + " crop and screen", "Original with the crop, the square source, the tone the eye integrates at 87 µm (153 × 153 cells over the 13.3 mm art box), and a true 3 mm patch of the 44 µm / 22-level line screen.") if prep.exists() else ""}
 {fig(col, stem + " colour treatments", "Top row: the period field each plan assigns — red is the long-period end of the ladder (6.0 µm), violet the short (4.15 µm), grey stays plain gold. Middle and bottom rows: the rendered plate at 0° and 1° of tilt under a lamp, specular gold plus first-order sheen, eye-cell integrated.")}
 <div class="tbl-wrap"><table><thead><tr><th>treatment</th><th class="n">rungs</th><th class="n">coloured</th><th>what it does</th></tr></thead><tbody>{rows}</tbody></table></div>
 <p>{READING.get(stem, "")}</p>
@@ -124,7 +124,7 @@ figcaption {{ font-size: 13px; color: var(--muted); margin-top: 8px; max-width: 
   <p class="eyebrow">Ring box &middot; side plates</p>
   <h1>Side Photos</h1>
   <p class="standfirst">
-    Six candidate photographs for the two colour sides, each cropped to the 15.4 mm art box of a
+    Six candidate photographs for the two colour sides, each cropped to the 13.3 mm art box of a
     {PLY_UM/1000:g} mm {GLASS_MATERIAL} side plate and put through the four colour treatments the pipeline
     can apply: plain gold, hue-mapped, hue-mapped and equalised, and an automatic zone map that colours
     only saturated regions. The period fields show what each plan would engrave; the renders show what

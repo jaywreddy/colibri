@@ -1,20 +1,26 @@
-"""Production dies on the witness plate: four box faces that come off as plies.
+"""Production dies on the witness plate: the box faces that come off as plies.
 
 The 5″ plate is the stock the bonded box is built from (``witness_geom.PLY_UM``
 of ``GLASS_MATERIAL``), so a rectangle of it written with a face's fine
-geometry IS that face's ply once it is diced. Four faces ride along with the experiments:
+geometry IS that face's ply once it is diced. Eight dies (ten plies) ride along
+with the experiments:
 
     top    F + B   monogram-jp centerpiece + foliage garland, bonded pair
     front  F + B   globe-duo-phase barrier switch + garland, bonded pair
-    left   F       the beach photograph as a line screen (faces coloured) + garland
-    right  F       the sunset photograph, plain + garland
+    sides  F ×6    every prepared photograph (``SIDE_PHOTOS``: beach with its
+                   faces coloured, sunset, garden with dress and leaves coloured,
+                   Paris, night group, porch group) as a line screen dissolving
+                   to bare glass inside a garland — one ply each, own seed
 
 Every die is the face's own ``PlateSpec`` from ``boxes.default_box_spec`` (via
-``blank_plan``) put through ``export_fine.build_plate_fine`` — the same
-geometry the box's GDS bake writes — so nothing here is a second authoring
-path. The two sides are single plies: a halftone is a single-layer effect, so
-their garland carries both gratings (leaves and a lighter carrier) on the one
-ply and the backing ply is bare glass that costs no plate area.
+``blank_plan``; the sides through ``side_photo_spec``) put through
+``export_fine.build_plate_fine`` — the same geometry the box's GDS bake writes —
+so nothing here is a second authoring path. The sides are single plies: a
+halftone is a single-layer effect, so they carry NO carrier (a same-ply carrier
+is a static union moiré that printed as bars); their leaves are fine
+diffractive gratings with one period per motif family
+(``plates.SINGLE_PLY_LEAF_FILL``), and the backing ply is bare glass that costs
+no plate area.
 
 Polarity. The plate is a darkfield write with positive resist: the file holds
 the openings, chrome stays wherever the file is empty. A face's fine geometry is
@@ -160,7 +166,18 @@ the die's ``drc_written_*`` stats — a few sub-micron pockets that resist will
 not resolve anyway, listed rather than hidden."""
 
 
-def _tiled_checks(pieces, kdb, floor_dbu: int, dbu_um: float):
+def _patch_boxes(patch, dbu_um: float, halo_um: float) -> list[tuple[float, float, float, float]]:
+    """Bounding boxes (µm, grown by ``halo_um``) of a settle patch — the only
+    places the next round's check can differ. See ``_settle_pieces``."""
+    out = []
+    for poly in patch.each():
+        bb = poly.bbox()
+        out.append((bb.left * dbu_um - halo_um, bb.bottom * dbu_um - halo_um,
+                    bb.right * dbu_um + halo_um, bb.top * dbu_um + halo_um))
+    return out
+
+
+def _tiled_checks(pieces, kdb, floor_dbu: int, dbu_um: float, only_near=None):
     """The die's width/space check, run TILED on hole-free convex pieces.
 
     Returns ``(n_width, min_w_um, n_space, min_s_um, w_markers, s_markers)`` —
@@ -191,7 +208,8 @@ def _tiled_checks(pieces, kdb, floor_dbu: int, dbu_um: float):
     from .patterns.effects.drc import _tiled_check_stats
 
     return _tiled_check_stats(pieces, kdb, width_dbu=floor_dbu, gap_dbu=floor_dbu,
-                              dbu_um=dbu_um, include_touching=True)
+                              dbu_um=dbu_um, include_touching=True,
+                              only_near=only_near)
 
 
 def _drc_checks(reg, kdb, floor_dbu: int):
@@ -218,6 +236,7 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
                 finish_art_um: float = FINISH_ART_UM,
                 finish_frame_um: float = FINISH_FRAME_UM,
                 timing: dict[str, Any] | None = None,
+                drc_out: dict[str, Any] | None = None,
                 ) -> list[np.ndarray]:
     """``die box − metal`` as hole-free polygons, origin-centred.
 
@@ -233,6 +252,15 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
     ``timing``, if given, is filled with the per-stage seconds this die spent
     (merge / opens / inversion / decomposition / settle / ring extraction) —
     the manifest carries it, so a slow die says WHERE it was slow.
+
+    ``drc_out``, if given, is filled with the settle's OWN final measurement in
+    :func:`written_clear_drc` form. The settle ends by checking the piece set it
+    returns, with the identical options and floor that ``written_clear_drc``
+    uses, so running that check again on the returned pieces measured the same
+    geometry twice — 10 s of the 163 s a coloured photo die cost. It is left
+    empty when there is no settle (``finish_frame_um=0``, or the
+    ``TRAPEZOID_DECOMP=False`` fallback, whose check is the whole-region one),
+    and the caller then measures for itself.
 
     Order of work. The decomposition runs BEFORE the settle, not after: the
     settle's width/space check is quadratic in contiguous edge length on the
@@ -300,8 +328,10 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
         holes, so the round ends by decomposing again: ``best`` is always a
         piece set.
         """
-        nw, _, ns, _, wm, sm = _tiled_checks(dec, kdb, floor_dbu, dbu_um)
+        nw, mnw, ns, mns, wm, sm = _tiled_checks(dec, kdb, floor_dbu, dbu_um)
         best, best_n = dec, nw + ns
+        best_stats = (nw, mnw, ns, mns)
+        rounds = [[nw, ns]]
         for _ in range(SETTLE_ROUNDS):
             if wm.is_empty() and sm.is_empty():
                 break
@@ -312,11 +342,36 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
             cand = best - patch
             cand.merge()
             cand = cand.decompose_convex_to_region(mode)
-            nw2, _, ns2, _, wm2, sm2 = _tiled_checks(cand, kdb, floor_dbu, dbu_um)
+            # Re-check only the TILES the patch reaches. Away from the patch the
+            # merged clear is bit-identical, so its decomposition is too (the
+            # decomposition is per polygon), and the round that just ran found no
+            # site there — every site it found is inside this patch. Restricting
+            # by tile rather than by polygon is what keeps it exact: the pieces
+            # ABUT, and a tile measures the shape they fuse into, so dropping a
+            # neighbouring PIECE would report its neighbour's own width as a
+            # violation (see drc.patched_neighbourhood). Tiles are independent,
+            # so a kept tile answers exactly what it answers in a whole-die pass.
+            near = _patch_boxes(patch, dbu_um, 2.0 * CLEAR_FLOOR_UM)
+            nw2, mnw2, ns2, mns2, wm2, sm2 = _tiled_checks(
+                cand, kdb, floor_dbu, dbu_um, only_near=near)
             n2 = nw2 + ns2
+            rounds.append([nw2, ns2])
             if n2 >= best_n:
                 break
             best, best_n, wm, sm = cand, n2, wm2, sm2
+            best_stats = (nw2, mnw2, ns2, mns2)
+        if drc_out is not None:
+            # The check that produced ``best_stats`` ran on ``best`` — the piece
+            # set this returns — with written_clear_drc's own options. Hand it
+            # over rather than repeating it. ``n_polys`` is filled by the caller,
+            # which is the one that knows how many pieces survived the zero-area
+            # drop below.
+            nwf, mnwf, nsf, mnsf = best_stats
+            drc_out.update({
+                "n_clear_width_viol": nwf, "n_clear_space_viol": nsf,
+                "min_clear_width_um": mnwf, "min_chrome_width_um": mnsf,
+                "settle_rounds": rounds,
+            })
         return best
 
     def _settle_region(r):
@@ -387,6 +442,8 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
     tm["n_pieces"] = len(out)
     if timing is not None:
         timing.update(tm)
+    if drc_out:
+        drc_out["n_polys"] = len(out)
     return out
 
 
@@ -432,6 +489,22 @@ def written_clear_drc(polys: list[np.ndarray], *, floor_um: float = CLEAR_FLOOR_
             "min_clear_width_um": mnw, "min_chrome_width_um": mns}
 
 
+def _written_drc(polys: list[np.ndarray], measured: dict[str, Any]) -> dict[str, Any]:
+    """The written-clear DRC block: the settle's own final measurement when it
+    made one, otherwise measured here. Same numbers either way — see
+    :func:`clear_field`'s ``drc_out`` and :func:`written_clear_drc`."""
+    if not measured or "n_polys" not in measured:
+        return written_clear_drc(polys)
+    out = {"n_polys": int(measured["n_polys"]),
+           "n_clear_width_viol": int(measured["n_clear_width_viol"]),
+           "n_clear_space_viol": int(measured["n_clear_space_viol"]),
+           "min_clear_width_um": measured["min_clear_width_um"],
+           "min_chrome_width_um": measured["min_chrome_width_um"]}
+    if measured.get("settle_rounds"):
+        out["settle_rounds"] = measured["settle_rounds"]
+    return out
+
+
 _MIRROR = np.array([-1.0, 1.0])
 
 
@@ -462,6 +535,7 @@ def _shift_rects(r: np.ndarray, dx: float, dy: float) -> np.ndarray:
 def _ply_art(w: float, h: float, metal: list[np.ndarray], polarity: str,
              art_box_um: float | None = None,
              timing: dict[str, Any] | None = None,
+             drc_out: dict[str, Any] | None = None,
              ) -> tuple[np.ndarray, list[np.ndarray]]:
     """One ply's written geometry, origin-centred and mirrored for the stack:
     ``(rects, polys)`` — the metal itself, or its clear-field complement."""
@@ -475,7 +549,8 @@ def _ply_art(w: float, h: float, metal: list[np.ndarray], polarity: str,
                 polys.append(a)
         return eb.mirror_rects(_cat(*rects)) if rects else np.empty((0, 4)), _mirror_polys(polys)
     return np.empty((0, 4)), _mirror_polys(
-        clear_field(w, h, metal, art_box_um=art_box_um, timing=timing))
+        clear_field(w, h, metal, art_box_um=art_box_um, timing=timing,
+                    drc_out=drc_out))
 
 
 # --- bonded faces: monogram lid, globe front ----------------------------------
@@ -512,8 +587,9 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
 
     metal_f: list[np.ndarray] = list(fine.front_polys) + [bench_marks(face, "F", w, h)]
     cf_f: dict[str, Any] = {}
+    drc_f: dict[str, Any] = {}
     _t = T()
-    fr, fp = _ply_art(w, h, metal_f, polarity, art_box, timing=cf_f)
+    fr, fp = _ply_art(w, h, metal_f, polarity, art_box, timing=cf_f, drc_out=drc_f)
     timing["clear_field_front_s"] = round(T() - _t, 2)
     timing["clear_field_front"] = cf_f
     art = CellArt()
@@ -522,15 +598,23 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
     if not single:
         metal_b: list[np.ndarray] = list(fine.back_polys) + [bench_marks(face, "B", w, h)]
         cf_b: dict[str, Any] = {}
+        drc_b: dict[str, Any] = {}
         _t = T()
-        br, bp = _ply_art(d["b_w"], d["b_h"], metal_b, polarity, art_box, timing=cf_b)
+        br, bp = _ply_art(d["b_w"], d["b_h"], metal_b, polarity, art_box, timing=cf_b,
+                          drc_out=drc_b)
         timing["clear_field_back_s"] = round(T() - _t, 2)
         timing["clear_field_back"] = cf_b
         art.back = _shift_rects(_cat(br, dice_ticks(d["b_w"], d["b_h"])), cx, cy)
         art.back_polys = _shift_polys(bp, cx, cy)
     _t = T()
-    drc_written_front = written_clear_drc(fp) if polarity == CLEAR else None
-    drc_written_back = (written_clear_drc(bp) if (polarity == CLEAR and not single) else None)
+    # The settle already measured exactly this, on exactly these pieces (see
+    # ``clear_field``'s ``drc_out``); ``written_clear_drc`` is the fallback for
+    # the no-settle paths. Mirroring does not enter it: x -> -x is an isometry,
+    # so every width/space distance, and every merged violation site, is the one
+    # the settle counted.
+    drc_written_front = _written_drc(fp, drc_f) if polarity == CLEAR else None
+    drc_written_back = (_written_drc(bp, drc_b)
+                        if (polarity == CLEAR and not single) else None)
     timing["drc_written_s"] = round(T() - _t, 2)
     drc = fine.stats.get("drc", {})
     art.stats = {

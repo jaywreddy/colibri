@@ -92,6 +92,13 @@ describe('defaultBoxSpec (contract defaults)', () => {
       segments: 5,
       coverage: 0.8,
     });
+    // The eye-sized carrier (backend witness_geom.BOX_CARRIER_UM, 0.75' at
+    // 300 mm) — not the 22 um design pitch, and not the 99 um the old 'gap'
+    // scaling produced. It is stamped onto every face by normalize_face_dims,
+    // so a drift here silently re-pitches all six gratings.
+    expect(s.carrier_pitch_um).toBe(65.5);
+    expect(api.PRODUCTION_CARRIER_UM).toBe(65.5);
+    expect(s.metal).toBe('gold');
     expect(s.label).toBe('');
   });
 
@@ -103,6 +110,18 @@ describe('defaultBoxSpec (contract defaults)', () => {
     const s = api.defaultBoxSpec();
     const expectedSeed: Record<string, number> = {
       front: 100, back: 101, top: 102, bottom: 103, left: 104, right: 105,
+    };
+    // The band-composition dials of backend boxes._FACE_FRAME_PROFILE. The seed
+    // alone does not make a face distinct — these four do, and a face that
+    // silently fell back to the FrameSpec defaults would still pass every other
+    // assertion here while composing the wrong border.
+    const expectedProfile: Record<string, [number, number, number, number]> = {
+      front: [0.75, 0.9, 1.2, 1.1],
+      back: [1.0, 0.6, 0.9, 0.8],
+      top: [0.55, 1.05, 1.35, 1.25],
+      bottom: [0.9, 0.75, 1.0, 0.9],
+      left: [0.65, 1.0, 1.25, 1.15],
+      right: [0.85, 0.8, 1.05, 0.95],
     };
     expect(s.faces.front!.pattern_slug).toBe('globe-duo-phase');
     expect(s.faces.top!.pattern_slug).toBe('monogram-jp');
@@ -117,7 +136,16 @@ describe('defaultBoxSpec (contract defaults)', () => {
       expect(f.frame.seed).toBe(expectedSeed[fid]);
       expect(f.frame.motif_scale).toBe(0.68);
       expect(f.frame.band_um).toBe(2400);
+      expect([
+        f.frame.edge_gradient, f.frame.understory,
+        f.frame.border_vine, f.frame.corner_fans,
+      ]).toEqual(expectedProfile[fid]);
       expect(f.glass).toEqual(s.glass);
+      // 'fixed' means carrier_pitch_um IS the fabricated pitch. Under 'gap'
+      // the compositor multiplies it by the glass's parallax ratio (x4.5 on
+      // 2.25 mm quartz) and the 65.5 um carrier lands at 295 um.
+      expect(f.carrier_scale_mode).toBe('fixed');
+      expect(f.carrier_pitch_um).toBe(65.5);
       // Only the two photo walls leave their inner ply bare.
       expect(f.single_ply).toBe(fid === 'left' || fid === 'right');
       // Stamped front-art rim (bondedArtKeepoutUm). The bonded 2.25 mm plies
