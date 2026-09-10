@@ -147,7 +147,10 @@ ceiling, not a schedule: the settle is monotone and any round that does not
 reduce the count is undone, so a clean die still costs one check."""
 
 FINISH_ART_UM = CLEAR_FLOOR_UM / 2.0
-FINISH_FRAME_UM = 1.2
+FINISH_FRAME_UM = 1.0   # == FINISH_ART_UM: an open of radius r deletes every line under 2r, and the
+# single-ply garland writes 4.15 um leaf gratings (2.075 um lines) in the frame band.
+# 1.2 um (chosen when the frame held only 36 um leaf lines) erased the two finest
+# families outright on the 07:37 plate; 1.0 leaves 75 nm of core on the finest line.
 """Half-widths of the morphological OPENs that finish a die (see
 ``clear_field``): the METAL is opened (eroded then dilated) so no chrome
 filament or tip thinner than the floor survives, then the CLEAR complement is

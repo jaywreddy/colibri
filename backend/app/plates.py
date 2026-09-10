@@ -2193,7 +2193,7 @@ def _write_literal_rasters(spec: PlateSpec, out_dir: Path, pid: str) -> dict[str
 #     constant in the manifest while writing the 4.15-6.02 µm ladder, so the
 #     renderer drew a sheen at twice the period of the gold in front of it. The
 #     PNG masks are unchanged; recipe_data is not, and it is cached.
-PLATE_COMPOSE_VERSION = 23
+PLATE_COMPOSE_VERSION = 24
 
 
 # Plate ids whose ``scene.json`` was written by the compose CURRENTLY running on

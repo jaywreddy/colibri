@@ -547,6 +547,9 @@ def build_plate(
     """
     bands = list(bands if bands is not None else doe_cells())
     placed, lay = layout(bands)
+    if not lay["fits"]:
+        raise ValueError(f"witness plate does not fit the usable field: {lay['overflow']} overflow; "
+                         f"{lay['height_used_mm']} of {lay['height_available_mm']} mm used")
     front: list[np.ndarray] = []
     free: list[np.ndarray] = []
     labels: list[np.ndarray] = []

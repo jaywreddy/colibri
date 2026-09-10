@@ -14,7 +14,7 @@
 ## Commands
 - `just dev` — backend :8765 + frontend :5173 together (don't start servers
   during automated sessions unless asked).
-- `just test-backend` — backend suite in the proven safe 5-chunk order.
+- `just test-backend` — backend suite in the proven safe 10-chunk order.
   Manual equivalent, from `backend/`, one at a time:
   ```
   uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
@@ -25,7 +25,7 @@
   uv run --extra dev pytest tests/test_param_validation.py tests/test_sim_bounds.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_readability.py -q
   uv run --extra dev pytest tests/test_collage.py tests/test_api_collage.py tests/test_shimmer_moire.py -q
   uv run --extra dev pytest tests/test_imageprep.py tests/test_colourzone.py -q
-  uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py tests/test_witness.py -q
+  uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py tests/test_witness.py tests/test_export_blank.py tests/test_export_svg_rects.py -q
   uv run --extra dev pytest tests/test_cache_integrity.py tests/test_export_jobs.py -q
   ```
   (The witness chunk is light — every cell in it is built at a couple of mm,

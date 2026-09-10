@@ -105,7 +105,8 @@ def test_seam_list_eight_seams_with_joint_lengths():
     assert len(seams) == 8
     by_id = {s["id"]: s for s in seams}
     assert by_id["bottom-front"]["length_um"] == W
-    assert by_id["bottom-left"]["length_um"] == D
+    # left/right walls sit between front and back (D - 2t wide)
+    assert by_id["bottom-left"]["length_um"] == D - 2 * T
     # corners run the wall height: H - 2t.
     for cid in ("corner-front-left", "corner-front-right", "corner-back-left", "corner-back-right"):
         assert by_id[cid]["length_um"] == pytest.approx(39000.0)

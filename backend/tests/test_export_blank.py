@@ -279,13 +279,17 @@ def test_blank_box_spec_is_bonded_with_derived_periods():
     face = spec.faces["front"]
     # Outer-ply cut dims stamped; margins follow the bonded formulas.
     assert face.width_um == pytest.approx(result.width_um)
-    assert face.weld_margin_um == pytest.approx(FOLD + 500.0)  # + default safety
+    # front art starts at the LARGER of the foil rim and the inner ply's window
+    # (assembly.bonded_art_keepout_um, 2026-09-10); the back window is ply + fold
+    assert face.weld_margin_um == pytest.approx(max(FOLD + 500.0, PLY + FOLD))
     assert face.back_margin_um == pytest.approx(PLY + FOLD)
-    # The moiré/switch periods rescale with the glass; the DESIGN carrier
-    # pitch stays 22 (the fabricated pitch derives from it per-face below).
+    # The switch/scanimation periods rescale with the glass; the carrier pitch
+    # is the production box's eye-sized value, carried FIXED (boxes.default_box_spec).
+    from app.boxes import PRODUCTION_CARRIER_UM
+
     assert fab_center_period_um(face) == pytest.approx(173.0, abs=1.0)
     assert water_scan_fab_pitch_um(face) == pytest.approx(173.0, abs=1.0)
-    assert face.carrier_pitch_um == 22.0
+    assert face.carrier_pitch_um == PRODUCTION_CARRIER_UM
 
 
 def test_carrier_scale_mode_per_face():
@@ -302,9 +306,11 @@ def test_carrier_scale_mode_per_face():
     assert result is not None
     spec = blank_box_spec(result)
 
-    # Default 'gap' on the thick soda-lime ply: 22 µm scales ~2.88x -> 63.5.
-    face = spec.faces["top"]  # monogram-jp carrier reveal
-    assert face.carrier_scale_mode == "gap"
+    # The production box carries its carrier FIXED (boxes.default_box_spec);
+    # exercise the 'gap' policy explicitly on a copy of the lid face, at the
+    # design pitch: 22 µm scales ~2.88x on the thick soda-lime ply -> 63.5.
+    assert spec.faces["top"].carrier_scale_mode == "fixed"
+    face = dc_replace(spec.faces["top"], carrier_scale_mode="gap", carrier_pitch_um=22.0)
     rd = _carrier_recipe_data(face)
     assert rd["fab_back_period_um"] == pytest.approx(63.5)
     assert rd["fab_front_period_um"] == pytest.approx(63.5 * 1.09)
@@ -320,8 +326,11 @@ def test_carrier_scale_mode_per_face():
     rd_base = _carrier_recipe_data(baseline)
     assert rd_base["fab_back_period_um"] == 22.0
 
-    # Body-shimmer accent never scales.
-    capy = spec.faces["back"]
+    # Body-shimmer accent never scales (the capybara was cut from the box in
+    # 2026-09 — the back is blank — so put the scanimation slug on a copy).
+    from app.plates import WATER_SCAN_SLUG
+
+    capy = dc_replace(spec.faces["back"], pattern_slug=WATER_SCAN_SLUG)
     rd_capy = _carrier_recipe_data(capy)
     assert rd_capy["water_body_carrier_period_um"] == pytest.approx(24.0)
 

@@ -79,7 +79,7 @@ Plate SVGs are also lazy: built on first fab-export request, not at compose time
 ## Tests
 
 ```sh
-just test-backend   # backend pytest, run as 5 sequential chunks (see below)
+just test-backend   # backend pytest, run as 10 sequential chunks (see below)
 just test-unit      # frontend vitest
 just test-e2e       # Playwright E2E (spins up both servers itself)
 just test-all       # all three layers, sequentially

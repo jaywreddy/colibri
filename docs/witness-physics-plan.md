@@ -262,7 +262,7 @@ about half (`tools/dev/nearfield_ladder.py`: 44 µm 7%, 55 µm 34%, 66 µm 52%, 
 99 µm 75%). The knee of that curve is 77–88 µm, but those periods subtend 0.9–1.0′ and the eye begins
 to read the lines themselves as a hatch — which is what the first build looked like. 65.5 µm
 (0.75′) is the coarsest pitch that stays a shimmer rather than a texture, and half the contrast is
-still a fringe modulation of 0.42, well above the eye's few-percent threshold.
+still a fringe modulation of 0.42 in transmission — 0.14 in reflection off gold, where the bright state is the metal union (V_R = V_T · T̄/(1−T̄) = V_T/3 for two 50% gratings) — still well above the eye's few-percent threshold.
 The 270.5 µm comb is at N = 22. A 5 µm colour grating is two orders of magnitude
 past the boundary, which is fine because colour is single-layer by
 construction. **No two-layer effect may be designed at a fine pitch.**
@@ -351,9 +351,14 @@ dissolves to bare glass (`photo.CARRIER_COV` = 0) inside leaves written as
 What one ply CAN do is diffract. The sides' leaves are written as fine 50%
 gratings with one PERIOD per motif family from the colour ladder (4.15–6.02 µm,
 vertical lines). The zero order of a flat 50% grating is plain gold, but the
-first order leaves at λ/p — 5.2° to 7.6° at green across the ladder — so under
-a lamp each family shows its own hue and comes up at its own tilt, and rocking
-the box lights the families one after another in different colours. Angled
+first order returns, with the lamp behind the viewer (Littrow), at sin θ = λ/2p
+— 2.6° to 3.8° of tilt at green across the ladder — so at one tilt every family
+lights at once, each in its own colour (at 3.0°: 434 nm at 4.15 µm to 630 nm at
+6.02 µm), and rocking the box sweeps the hues through the families. The lamp
+must be narrow enough for that colour to stay saturated (≲5° retro, twice the
+normal-incidence figure since dλ/dα = 2p cos α) and wide enough (≳2–3°) to wash
+out the front comb's own specular double pass on the two-ply faces (§2.5b) — a
+two-sided requirement on the light, not a property of the plate. Angled
 lines at a common pitch (one orientation per family) were measured first and
 rejected on cost: axis-aligned stripes leave rectangular gaps that need no
 convex decomposition and have no acute tips, so the period fill finishes 13×
@@ -364,6 +369,19 @@ light (a window smears the orders into a flat 50% sheen) and that its colour
 is spectral, not white. The finest rung, 4.15 µm, keeps its lines at 2.07 µm — on the floor by
 design, the same rung the photographs' colour zones already print — and the
 bucket seam gutter keeps neighbouring families' gratings apart.
+
+### 2.5b The specular double pass
+
+Seen in reflection with the lamp near the eye, a ray crosses the front chrome
+at x, meets the back chrome at x + s (s = 26.93 µm/°), and re-crosses the front
+plane at x + 2s on the way back: the return is t_F(x)·t_B(x+s)·t_F(x+2s), not
+the two-layer product the simulator and the gates use. For a point source this
+matters: at the 2.51° swap, 2s = p/2 and two 50% combs half a period apart have
+no overlap — the front comb would extinguish itself exactly where the globe
+should be cleanest — and the monogram would carry a front-only brightness pulse
+every 1.27° of tilt. An extended source spreads the second crossing by 2tΔ/n;
+a lamp of Δ ≈ 5° spreads it by one comb period and recovers the two-layer
+model at half brightness. Hence the two-sided lamp requirement in §2.4b.
 
 ### 2.5 The plate may never be bonded
 

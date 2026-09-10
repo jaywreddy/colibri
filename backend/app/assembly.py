@@ -519,11 +519,15 @@ def seam_list(
     """
     t = glass_thickness_um
     corner_len = height_um - 2.0 * t
+    # The left/right walls sit BETWEEN the front and back walls (face_cut_dims:
+    # D - 2t wide), so their bottom seams are D - 2t long; the front/back walls
+    # span the full width. The corners at the ends belong to the corner seams.
+    side_len = depth_um - 2.0 * t
     return [
         {"id": "bottom-front", "kind": "bottom", "length_um": width_um},
         {"id": "bottom-back", "kind": "bottom", "length_um": width_um},
-        {"id": "bottom-left", "kind": "bottom", "length_um": depth_um},
-        {"id": "bottom-right", "kind": "bottom", "length_um": depth_um},
+        {"id": "bottom-left", "kind": "bottom", "length_um": side_len},
+        {"id": "bottom-right", "kind": "bottom", "length_um": side_len},
         {"id": "corner-front-left", "kind": "corner", "length_um": corner_len},
         {"id": "corner-front-right", "kind": "corner", "length_um": corner_len},
         {"id": "corner-back-left", "kind": "corner", "length_um": corner_len},

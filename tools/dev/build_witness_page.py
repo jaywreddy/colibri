@@ -33,11 +33,15 @@ RENDERERS = {
     "validate_photo.png": "validate_dies.py", "validate_switch.png": "validate_dies.py",
     "validate_nearfield.png": "validate_dies.py",
 }
+# Figures of experiment blocks that were cut from the plate on 2026-09-10 are
+# kept as the record of the first design; their renderer can no longer draw
+# them from the plate, so they are exempt from the staleness rule.
+ARCHIVED = {"witness_moire.png", "witness_moire_b.png", "witness_variants.png"}
 for name, r in RENDERERS.items():
     fig_path, r_path = f"{SP}/{name}", f"{ROOT}/tools/dev/{r}"
     if not os.path.exists(fig_path):
         sys.exit(f"missing figure {name}: run tools/dev/{r}")
-    if os.path.getmtime(fig_path) < os.path.getmtime(r_path):
+    if name not in ARCHIVED and os.path.getmtime(fig_path) < os.path.getmtime(r_path):
         sys.exit(f"stale figure {name} is older than tools/dev/{r}: re-run it")
 
 man = json.load(io.open(MAN, encoding="utf-8"))

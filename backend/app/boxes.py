@@ -40,7 +40,7 @@ from .assembly import (
     validate_bonded_assembly,
 )
 from .plates import FrameSpec, GlassSpec, PlateSpec, materialize_plate
-from .service import DATA_ROOT
+from .service import DATA_ROOT, cache_lock, read_json_cache, write_json_atomic
 
 
 _log = logging.getLogger("optics.boxes")
@@ -452,6 +452,13 @@ def materialize_box(spec: BoxSpec, *, box_id: str | None = None, force: bool = F
 
     BOXES_ROOT.mkdir(parents=True, exist_ok=True)
     bid = box_id or SCRATCH_BOX_ID
+    # Serialize per box id (CLAUDE.md cache contract): two overlapping
+    # live-preview regens of the scratch slot must not interleave their writes.
+    with cache_lock(f"box:{bid}"):
+        return _materialize_box_locked(spec, bid, force, saved)
+
+
+def _materialize_box_locked(spec: BoxSpec, bid: str, force: bool, saved: bool) -> dict[str, Any]:
     out = BOXES_ROOT / bid
     out.mkdir(parents=True, exist_ok=True)
     box_path = out / "box.json"
@@ -490,7 +497,9 @@ def materialize_box(spec: BoxSpec, *, box_id: str | None = None, force: bool = F
         ),
         "content_hash": box_hash(spec),
     }
-    box_path.write_text(json.dumps(box_manifest, indent=2))
+    # payload files (the faces) are already published; the manifest lands last,
+    # atomically, so a reader never sees a half-written box.json
+    write_json_atomic(box_path, box_manifest)
     dt_ms = int((time.perf_counter() - t0) * 1000)
     _log.info("materialize_box id=%s faces=%d %dms", bid, len(face_manifests), dt_ms)
     return box_manifest
@@ -532,7 +541,8 @@ def get_box(box_id: str) -> dict[str, Any] | None:
     m = d / "box.json"
     if not m.exists():
         return None
-    return json.loads(m.read_text())
+    # a truncated or corrupt manifest is a MISS (None), not a 500
+    return read_json_cache(m)
 
 
 def delete_box(box_id: str) -> bool:

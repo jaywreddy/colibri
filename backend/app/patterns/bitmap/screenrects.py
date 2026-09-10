@@ -140,7 +140,10 @@ def screen_bands(
     n_cols = max(8, min(want_cols, cols_per_line or want_cols, dark.shape[1] * 4))
 
     tone = _sample_rows(dark, n_lines, n_cols)
-    level = np.floor(np.clip(tone, 0.0, 1.0) * steps).astype(np.int32)
+    # round-to-nearest: floor lost half a level on average (2.3 points of
+    # coverage at 22 levels); the printable window already keeps the band and
+    # gap above the floor, so rounding cannot reach level 0 or `steps`.
+    level = np.floor(np.clip(tone, 0.0, 1.0) * steps + 0.5).astype(np.int32)
 
     if period_id is None:
         pid_grid = np.zeros(level.shape, dtype=np.int32)

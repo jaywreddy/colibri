@@ -1120,8 +1120,19 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
         hue_periods = tuple(getattr(P, "SINGLE_PLY_LEAF_HUE_PERIODS_UM", ()))
         dot_cov = float(getattr(P, "SINGLE_PLY_LEAF_DOT_COVERAGE", 0.5))
         floor_p = LF.min_period_um(fill, leaf_period, coverage=dot_cov)
-        probe = min([p for p, _ in LF.bucket_layers(fill, 0, frame_count, 0.0,
-                                                    leaf_period, hue_periods)] or [leaf_period])
+        # every family's finest LINE must survive the die finish: an open of
+        # radius r (witness_dies.FINISH_FRAME_UM) deletes lines under 2r, and the
+        # written line is p * duty. Probe ALL buckets, not the first.
+        from .witness_dies import FINISH_ART_UM, FINISH_FRAME_UM
+        probe = min([p for b in range(frame_count)
+                     for p, _ in LF.bucket_layers(fill, b, frame_count, 0.0, leaf_period, hue_periods)]
+                    or [leaf_period])
+        finish_min_line = 2.0 * max(FINISH_ART_UM, FINISH_FRAME_UM)
+        if probe * duty <= finish_min_line + 1e-9:
+            raise ValueError(
+                f"single-ply leaf fill {fill!r}: a {probe} um period at duty {duty} writes "
+                f"{probe * duty:.3f} um lines, which the {max(FINISH_ART_UM, FINISH_FRAME_UM)} um "
+                f"die finish (open) erases (needs > {finish_min_line:.3f} um)")
         if probe < floor_p - 1e-9:
             raise ValueError(
                 f"single-ply leaf fill {fill!r} at {probe} um breaks the 2 um litho "

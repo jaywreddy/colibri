@@ -333,8 +333,11 @@ export function seamSegments(spec: BoxSpec): SeamSegment[] {
     // 4 bottom seams at y = -hh + t
     { id: 'bottom-front', axis: 'x', start_um: [-hw, yBottom, hd], end_um: [hw, yBottom, hd] },
     { id: 'bottom-back', axis: 'x', start_um: [-hw, yBottom, -hd], end_um: [hw, yBottom, -hd] },
-    { id: 'bottom-left', axis: 'z', start_um: [-hw, yBottom, -hd], end_um: [-hw, yBottom, hd] },
-    { id: 'bottom-right', axis: 'z', start_um: [hw, yBottom, -hd], end_um: [hw, yBottom, hd] },
+    // left/right walls sit BETWEEN front and back (D - 2t wide), so their bottom
+    // seams stop t short of each end; the corners belong to the corner seams
+    // (mirrors assembly.py::seam_list).
+    { id: 'bottom-left', axis: 'z', start_um: [-hw, yBottom, -hd + t], end_um: [-hw, yBottom, hd - t] },
+    { id: 'bottom-right', axis: 'z', start_um: [hw, yBottom, -hd + t], end_um: [hw, yBottom, hd - t] },
     // 4 vertical corner seams, y in [-hh + t, hh - t]
     { id: 'corner-front-left', axis: 'y', start_um: [-hw, yBottom, hd], end_um: [-hw, yTop, hd] },
     { id: 'corner-front-right', axis: 'y', start_um: [hw, yBottom, hd], end_um: [hw, yTop, hd] },
