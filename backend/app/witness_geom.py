@@ -41,6 +41,68 @@ LAYER_LABEL = (3, 0)                 # annotation text, not gold
 # The reference point every ladder brackets. These are the numbers the box
 # currently ships or the analysis settled on, so a sweep reads as "the
 # reference, plus or minus" rather than as an unanchored grid.
+# --- the glass -------------------------------------------------------------
+# This plate IS the box stock: the production dies are box plies, so the plate's
+# thickness and index set every gap-scaled family of the design. Change these
+# two numbers and the carrier, comb, monogram pitch, parallax rate, near-field
+# limit and swap angles all follow; ``test_witness`` pins them against what
+# ``plates._carrier_recipe_data`` computes for the same glass.
+PLY_UM = 2250.0
+GLASS_N = 1.4585
+GLASS_MATERIAL = "fused quartz"
+_BASELINE_GAP_UM = 500.0 / 1.46     # plates.BASE_PARALLAX_GAP_UM: the 500 um quartz design point
+LAMBDA_UM = 0.55
+
+
+def gap_scale() -> float:
+    """How much slower this glass walks parallax than the 500 um baseline."""
+    return (PLY_UM / GLASS_N) / _BASELINE_GAP_UM
+
+
+def _snap_half(v: float) -> float:
+    return round(v * 2.0) / 2.0
+
+
+def beat_delta(p: float, beat_um: float) -> float:
+    """Pitch increment that beats against ``p`` at ``beat_um``: p(p+d)/d = beat."""
+    return p * p / (beat_um - p)
+
+
+BOX_CARRIER_UM = max(4.0, _snap_half(22.0 * gap_scale()))
+"""The back-layer carrier every lid moire beats against (plates: 22 um x gap scale)."""
+BOX_FRONT_LEAF_UM = BOX_CARRIER_UM * 1.09
+"""The garland's front grating (plates.FRONT_GRATING_RATIO)."""
+BOX_COMB_UM = _snap_half(60.0 * gap_scale())
+"""The parallax-barrier comb (plates.fab_center_period_um)."""
+BOX_BEAT_UM = 1635.0
+BOX_MONO_UM = BOX_CARRIER_UM + beat_delta(BOX_CARRIER_UM, BOX_BEAT_UM)
+"""The monogram's front carrier: beats the back carrier at BOX_BEAT_UM."""
+
+
+def parallax_um_per_deg(t_um: float = PLY_UM, n: float = GLASS_N) -> float:
+    import math
+    return t_um * math.tan(math.asin(math.sin(math.radians(1.0)) / n))
+
+
+PARALLAX_UM_PER_DEG = parallax_um_per_deg()
+
+
+def fresnel_number(p_um: float) -> float:
+    """N = p^2 n / (4 lambda z) across one ply. >= 1 intact, < 1/4 gone."""
+    return p_um * p_um * GLASS_N / (4.0 * LAMBDA_UM * PLY_UM)
+
+
+P_MIN_UM = (2.0 * LAMBDA_UM * PLY_UM / GLASS_N) ** 0.5
+"""The pitch at the N = 1/2 null: sqrt(2 lambda z / n)."""
+
+
+def swap_deg(comb_um: float) -> float:
+    """Exterior tilt at which a straddle-registered barrier of pitch ``comb_um``
+    has walked p/4 across the ply."""
+    import math
+    return math.degrees(math.asin(GLASS_N * math.sin(math.atan((comb_um / 4.0) / PLY_UM))))
+
+
 REF_SCREEN_UM = 44.0
 REF_TONE_STEPS = 22
 REF_BASE_PERIOD_UM = 5.0

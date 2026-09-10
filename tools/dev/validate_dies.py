@@ -6,11 +6,11 @@ periods, never from a formula alone:
   photo    A1  raster the LEFT die's clear data, integrate to the 87 um eye
                cell, compare with the prepped source darkness.
   switch   A2  sim2d.switch_metrics on the FRONT die's real front/back metal
-               at t = 1.5 mm, n = 1.52, comb 173 um; then a registration
+               at the plate's glass and comb; then a registration
                sweep (back ply offset 0 / 8 / 20 / 40 um) -> the bench tolerance.
   nearfield A3 angular-spectrum propagation across the 1.5 mm ply for the
-               garland as it would have been at 22/24 um, the garland as
-               built at 63.5/69.2 um, and the monogram pair, under an
+               garland at the 22/24 um baseline pitch, the garland as
+               built at this glass's pitch, and the monogram pair, under an
                incoherent source (11 angles x 3 wavelengths), box-averaged to
                the eye cell: the fringe contrast that survives the gap.
 
@@ -34,7 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 from app import sim2d  # noqa: E402
 from app import witness_dies as wd  # noqa: E402
 from app.sim.angular_spectrum import _propagate  # noqa: E402
-from app.witness_geom import METAL  # noqa: E402
+from app.witness_geom import (BOX_CARRIER_UM, BOX_FRONT_LEAF_UM, BOX_MONO_UM,  # noqa: E402
+                              GLASS_MATERIAL, METAL)
 
 BG = (13, 17, 19)
 FG = (214, 224, 227)
@@ -249,7 +250,10 @@ def check_switch(out: Path) -> dict:
     open_front = 1.0 - ff
     s_px = int(round((p / 4) / px))
     sweep = []
-    for err_um in (0.0, 8.0, 20.0, 30.0, 43.0, 60.0, 86.0):
+    # absolute bench numbers (8, 20 um) plus points on the comb's own scale:
+    # p/8, 3p/16, p/4 (the blend) and 5p/16 (inverted)
+    errs = sorted({0.0, 8.0, 20.0, round(p / 8), round(3 * p / 16), round(p / 4), round(5 * p / 16)})
+    for err_um in errs:
         k = int(round(err_um / px))
         a_e = np.roll(lane_a, k, axis=1) if k else lane_a
         b_e = np.roll(lane_b, k, axis=1) if k else lane_b
@@ -270,9 +274,10 @@ def check_switch(out: Path) -> dict:
     im = Image.new("RGB", (W, H), BG)
     dr = ImageDraw.Draw(im)
     xs = [s["reg_err_um"] for s in sweep]
-    def X(v): return 50 + (W - 80) * v / 90.0
+    x_max = max(90.0, 5 * p / 16 + 5)
+    def X(v): return 50 + (W - 80) * v / x_max
     def Y(v): return H - 50 - (H - 90) * v
-    dr.line([(X(0), Y(0)), (X(90), Y(0))], fill=(60, 70, 76))
+    dr.line([(X(0), Y(0)), (X(x_max), Y(0))], fill=(60, 70, 76))
     dr.line([(X(0), Y(0)), (X(0), Y(1))], fill=(60, 70, 76))
     for key, col, lab in (("vis_a_plus", OK, "shown lane at +p/4 (want 1)"), ("vis_b_plus", WARN, "hidden lane at +p/4 (want 0)")):
         pts = [(X(s["reg_err_um"]), Y(min(1.0, s.get(key, 0.0)))) for s in sweep]
@@ -281,10 +286,10 @@ def check_switch(out: Path) -> dict:
             dr.ellipse([q[0] - 3, q[1] - 3, q[0] + 3, q[1] + 3], fill=col)
     dr.line([(X(p / 4), Y(0)), (X(p / 4), Y(1))], fill=(90, 100, 110))
     dr.text((X(p / 4) + 4, Y(1)), f"p/4 = {p/4:.0f} um", fill=DIM, font=font(10))
-    for v in (0, 20, 40, 60, 80):
+    for v in range(0, int(x_max) + 1, 20):
         dr.text((X(v) - 8, Y(0) + 6), f"{v}", fill=DIM, font=font(10))
-    dr.text((X(90) - 60, Y(0) + 20), "back-ply registration error, um", fill=DIM, font=font(10))
-    dr.text((10, 8), f"DIE-FRONT globe switch, comb {p:.0f} um, swap at +-{res['swap_deg']:.2f} deg (1.5 mm soda lime)", fill=FG, font=font(12))
+    dr.text((X(x_max) - 160, Y(0) + 20), "back-ply registration error, um", fill=DIM, font=font(10))
+    dr.text((10, 8), f"DIE-FRONT globe switch, comb {p:.1f} um, swap at +-{res['swap_deg']:.2f} deg ({wd.PLY_UM/1000:g} mm {GLASS_MATERIAL})", fill=FG, font=font(12))
     dr.text((10, 26), "design lanes fixed, back ply slid by the error: green = the lane shown at +p/4, orange = the lane that should vanish", fill=DIM, font=font(10))
     im.save(out / "validate_switch.png")
     return res
@@ -327,10 +332,11 @@ def check_nearfield(out: Path) -> dict:
     n_glass = wd.GLASS_N
     px = 2.0
     N = 2048
+    C = BOX_CARRIER_UM
     cases = [
-        ("garland as drawn, 22 / 24 um", 22.0, 22.0 * 1.09, 2.5),
-        ("garland as built, 63.5 / 69.2 um", 63.5, 63.5 * 1.09, 2.5),
-        ("monogram, 63.5 / 66.07 um beat 1635", 63.5, 66.0659, 0.0),
+        ("garland at the 500 um baseline pitch, 22 / 24 um", 22.0, 22.0 * 1.09, 2.5),
+        (f"garland as built, {C:g} / {BOX_FRONT_LEAF_UM:.1f} um", C, BOX_FRONT_LEAF_UM, 2.5),
+        (f"monogram, {C:g} / {BOX_MONO_UM:.2f} um beat 1635", C, BOX_MONO_UM, 0.0),
     ]
     angles = np.linspace(-0.5, 0.5, 11)
     results = []
@@ -376,7 +382,7 @@ def check_nearfield(out: Path) -> dict:
         col = OK if c_gap / max(1e-9, c_geo) > 0.5 else WARN
         dr.text((x, T + 34), name, fill=col, font=font(12))
         dr.text((x, T + 52), f"Fresnel N = {fres:.2f}  ->  {c_gap/max(1e-9,c_geo):.0%} of the zero-gap fringe survives", fill=DIM, font=font(10))
-    dr.text((10, T + 72), "angular spectrum through 1.5 mm of n = 1.52 glass; 11 source angles over +-0.5 deg x 3 wavelengths, eye-cell (87 um) integrated, 4 mm patches", fill=DIM, font=font(10))
+    dr.text((10, T + 72), f"angular spectrum through {z/1000:g} mm of n = {n_glass} glass; 11 source angles over +-0.5 deg x 3 wavelengths, eye-cell (87 um) integrated, 4 mm patches", fill=DIM, font=font(10))
     im.save(out / "validate_nearfield.png")
     return {"z_um": z, "n": n_glass, "cases": results}
 

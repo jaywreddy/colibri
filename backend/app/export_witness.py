@@ -60,8 +60,16 @@ from . import witness_moire as wm
 from .patterns.bitmap import colourplan as cp
 from .patterns.bitmap import imageprep as ip
 from .witness_geom import (
+    BOX_CARRIER_UM,
+    BOX_COMB_UM,
+    BOX_MONO_UM,
     CLEAR,
+    GLASS_MATERIAL,
     METAL,
+    PARALLAX_UM_PER_DEG,
+    PLY_UM,
+    P_MIN_UM,
+    fresnel_number,
     EDGE_MARGIN_UM,
     GUTTER_UM,
     LABEL_H_UM,
@@ -122,7 +130,9 @@ SCREEN_ANGLE_LADDER_DEG = (0.0, 45.0, 90.0)
 BASE_PERIOD_LADDER_UM = (4.0, 5.0, 6.5, 8.0)
 SPREAD_LADDER = (1.20, 1.45, 1.90)
 NEAR_FIELD_LADDER_UM = (20.0, 30.0, 44.0, 64.0, 100.0)
-SWITCH_COMB_LADDER_UM = (100.0, 173.0, 250.0, 350.0)
+SWITCH_COMB_LADDER_UM = (100.0, 173.0, BOX_COMB_UM, 350.0)
+"""100 and 173 were the 500 um and 1.5 mm designs' combs; BOX_COMB_UM is this
+glass's; 350 is a visible barrier by construction."""
 SCAN_PHASE_LADDER = (2, 4, 6)
 SCREEN_LADDER_UM = (20.0, 30.0, 44.0, 60.0)
 STEPS_LADDER = (8, 12, 16, 22)
@@ -317,7 +327,7 @@ def doe_cells() -> list[list[Cell]]:
     for a in ROTATION_LADDER_DEG:
         mo.append(_cell(
             f"ROT{a:g}", f"rotation {a:g} deg", "moire",
-            _beat_w_mm(63.5 / (2 * math.sin(math.radians(a) / 2)), min_mm=8.0),
+            _beat_w_mm(BOX_CARRIER_UM / (2 * math.sin(math.radians(a) / 2)), min_mm=8.0),
             BEAT_H_MM,
             (lambda a=a: (lambda cx, cy, w, h:
                 wm.build_rotation_beat(cx, cy, w, h, angle_deg=a)))(),
@@ -325,8 +335,9 @@ def doe_cells() -> list[list[Cell]]:
             note="fringes run ALONG the lines, not across"))
     # 1 and 6 degrees bracket the frame's angle fan; the 3 degree column was cut
     # for the production dies.
-    for pa, pb, ang in [(63.5, 63.5, 1.0), (63.5, 66.07, 1.0), (63.5, 70.0, 1.0),
-                        (63.5, 63.5, 6.0), (63.5, 66.07, 6.0), (63.5, 70.0, 6.0)]:
+    C, M = BOX_CARRIER_UM, round(BOX_MONO_UM, 2)
+    for pa, pb, ang in [(C, C, 1.0), (C, M, 1.0), (C, round(C * 1.1, 1), 1.0),
+                        (C, C, 6.0), (C, M, 6.0), (C, round(C * 1.1, 1), 6.0)]:
         mo.append(_cell(
             f"VEC{pb:g}/{ang:g}", f"vector {pb:g} um @ {ang:g} deg", "moire",
             LADDER_MM + 1.0, LADDER_MM + 1.0,
@@ -388,7 +399,7 @@ def doe_cells() -> list[list[Cell]]:
               lambda cx, cy, w, h, polarity=METAL: wm.build_parallax_ruler(
                   cx, cy, w, h, polarity=polarity),
               label="P-RULE", two_layer=True, takes_polarity=True,
-              note="reads t/n directly: 3.5 deg per tooth on the 1.5 mm soda-lime pair"),
+              note=f"reads t/n directly: {60.0/PARALLAX_UM_PER_DEG:.2f} deg per tooth on the {PLY_UM/1000:g} mm {GLASS_MATERIAL} pair"),
         _cell("B-MOVE", "beat, across the gap", "moire", _beat_w_mm(1635.0),
               BEAT_H_MM,
               lambda cx, cy, w, h, polarity=METAL: wc.build_shading_moire(
@@ -404,7 +415,7 @@ def doe_cells() -> list[list[Cell]]:
                                     polarity=polarity)))(),
             label=f"NF {p_um:g}um", axis="E-NF pitch", level=f"{p_um:g} um",
             two_layer=True, takes_polarity=True,
-            note="Fresnel N = 1/2 null at 33 um: 30 degraded, 44 marginal, >= 64 intact"))
+            note=f"Fresnel N = 1/2 null at {P_MIN_UM:.0f} um; N(44) = {fresnel_number(44.0):.2f}, N(64) = {fresnel_number(64.0):.2f}"))
     for comb in SWITCH_COMB_LADDER_UM:
         two.append(_cell(
             f"SWAP{comb:g}", f"switch, comb {comb:g} um", "parallax",

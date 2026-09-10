@@ -1,8 +1,8 @@
 """Production dies on the witness plate: four box faces that come off as plies.
 
-The 5″ plate is 1.5 mm soda lime — the same stock the bonded box is built
-from — so a rectangle of it written with a face's fine geometry IS that face's
-ply once it is diced. Four faces ride along with the experiments:
+The 5″ plate is the stock the bonded box is built from (``witness_geom.PLY_UM``
+of ``GLASS_MATERIAL``), so a rectangle of it written with a face's fine
+geometry IS that face's ply once it is diced. Four faces ride along with the experiments:
 
     top    F + B   monogram-jp centerpiece + foliage garland, bonded pair
     front  F + B   globe-duo-phase barrier switch + garland, bonded pair
@@ -43,13 +43,12 @@ import numpy as np
 from . import export_blank as eb
 from . import witness_cells as wc
 from .patterns.bitmap import colourplan as cp
-from .witness_geom import CLEAR, METAL, CellArt, Cell, _cat
+from .witness_geom import (CLEAR, GLASS_MATERIAL, GLASS_N, METAL, PLY_UM, CellArt,
+                           Cell, _cat)
 
-# The plate IS the box stock. Every derived number on the witness (parallax
-# rate, near-field boundary, comb pitch) is therefore the box's own.
-PLY_UM = 1500.0
-GLASS_N = 1.52
-GLASS_MATERIAL = "soda lime"
+# The plate IS the box stock (witness_geom.PLY_UM / GLASS_N). Every derived
+# number on the witness -- parallax rate, near-field boundary, comb pitch -- is
+# therefore the box's own.
 
 SIDE_MODES: dict[str, str] = {"left": "zones", "right": "hue"}
 """Which colour treatment each side carries. Both are the Paula portrait; the

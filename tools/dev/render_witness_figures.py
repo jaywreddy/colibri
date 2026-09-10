@@ -19,6 +19,9 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 from app import witness_moire as wm  # noqa: E402
+from app.export_witness import SWITCH_COMB_LADDER_UM  # noqa: E402
+from app.witness_geom import (BOX_CARRIER_UM, BOX_COMB_UM, GLASS_MATERIAL, GLASS_N,  # noqa: E402
+                              PARALLAX_UM_PER_DEG, PLY_UM, swap_deg)
 from app.diffraction import bake_lut, lamellar_order_efficiency  # noqa: E402
 from app.patterns.bitmap.colourzone import hue_ladder  # noqa: E402
 from app.patterns.bitmap.imageprep import linear_to_srgb, srgb_to_linear  # noqa: E402
@@ -106,12 +109,30 @@ def _amp(k, c):
     return abs(c * math.sin(x) / x) if x else 0.0
 
 
+def visible_beats(screen_um: float = 44.0, carrier_um: float = BOX_CARRIER_UM):
+    """The screen-over-carrier beats the eye resolves (> 87 um), split into the
+    ones with an EVEN carrier harmonic (they vanish at exactly 50% duty) and
+    the rest (present at every duty)."""
+    rows = [t for t in wm.harmonic_beats(screen_um, carrier_um, 0.42, max_order=4) if t["beat_um"] > 87.0]
+    even = sorted([t for t in rows if t["n"] % 2 == 0], key=lambda t: -t["amplitude"])
+    odd = sorted([t for t in rows if t["n"] % 2 == 1], key=lambda t: -t["amplitude"])
+    return even, odd
+
+
 def harmonic_chart_png(out: Path):
+    """Modulation of the visible screen-over-carrier beats against the screen's
+    local duty (= the picture's local tone), for THIS glass's carrier.
+
+    Two families. An even-n beat (carrier harmonic n even) has amplitude
+    a_m(c_s) a_n(c_c): with the carrier held at 0.50 it is exactly zero at every
+    tone, so it appears only through process bias (both gratings at c, dashed).
+    An odd-n beat is present at every duty and scales with the screen's own
+    harmonic a_m(c_s) -- that is the texture a photograph carries regardless.
+    """
+    even, odd = visible_beats()
+    e = even[0] if even else None
+    o = odd[0] if odd else None
     cs = np.linspace(0.05, 0.95, 181)
-    tone_T = np.array([2 * _amp(2, c) * _amp(3, 0.5) / ((1 - c) * 0.5) for c in cs])
-    tone_R = tone_T * (1 - cs) / (1 + cs)
-    bias_c = cs[(cs >= 0.30) & (cs <= 0.70)]
-    bias_T = np.array([2 * _amp(2, c) * _amp(3, c) / (1 - c) ** 2 for c in bias_c])
     W, H, L, B, top = 760, 320, 60, 44, 45.0
     im, d = _canvas(W, H + 96)
 
@@ -125,34 +146,47 @@ def harmonic_chart_png(out: Path):
     for y_pct in range(0, 46, 5):
         d.line([L, Y(y_pct / 100), W - 20, Y(y_pct / 100)], fill=(40, 48, 52))
         d.text((8, Y(y_pct / 100) - 7), f"{y_pct:2d}%", fill=DIM, font=font(11))
-    d.line([(X(c), Y(v)) for c, v in zip(cs, tone_T)], fill=WARN, width=3)
-    d.line([(X(c), Y(v)) for c, v in zip(cs, tone_R)], fill=TAN, width=1)
-    pts = [(X(c), Y(v)) for c, v in zip(bias_c, bias_T)]
-    for k in range(0, len(pts) - 1, 4):
-        d.line(pts[k:k + 3], fill=ACC, width=2)
+    lines = []
+    if o is not None:
+        # tone case in transmission: screen at c, carrier at 0.50; mean (1-c)(0.5)
+        tone_T = np.array([2 * _amp(o["m"], c) * _amp(o["n"], 0.5) / ((1 - c) * 0.5) for c in cs])
+        tone_R = tone_T * (1 - cs) / (1 + cs)
+        d.line([(X(c), Y(v)) for c, v in zip(cs, tone_T)], fill=WARN, width=3)
+        d.line([(X(c), Y(v)) for c, v in zip(cs, tone_R)], fill=TAN, width=1)
+        for c in (0.20, 0.42, 0.50, 0.65):
+            v = 2 * _amp(o["m"], c) * _amp(o["n"], 0.5) / ((1 - c) * 0.5)
+            d.ellipse([X(c) - 4, Y(v) - 4, X(c) + 4, Y(v) + 4], fill=WARN)
+            d.text((X(c) + 6, Y(v) - 16), f"{v*100:.1f}%", fill=WARN, font=font(10))
+        lines.append((WARN, f"solid: the ({o['m']},{o['n']}) beat at {o['beat_um']:.0f} um ({o['arcmin']:.1f}'), TONE case in transmission "
+                            f"(screen at c, carrier at 0.50): present at every duty, {tone_T[cs.searchsorted(0.5)]*100:.0f}% at c = 0.50"))
+        lines.append((TAN, "thin: the same beat in REFLECTION off gold, x (1-c)/(1+c)"))
+    if e is not None:
+        bias_c = cs[(cs >= 0.30) & (cs <= 0.70)]
+        bias_T = np.array([2 * _amp(e["m"], c) * _amp(e["n"], c) / (1 - c) ** 2 for c in bias_c])
+        pts = [(X(c), Y(v)) for c, v in zip(bias_c, bias_T)]
+        for k in range(0, len(pts) - 1, 4):
+            d.line(pts[k:k + 3], fill=ACC, width=2)
+        for c in (0.42, 0.58):
+            v = 2 * _amp(e["m"], c) * _amp(e["n"], c) / (1 - c) ** 2
+            d.ellipse([X(c) - 4, Y(v) - 4, X(c) + 4, Y(v) + 4], fill=ACC)
+            d.text((X(c) + 6, Y(v) + 4), f"{v*100:.1f}%", fill=ACC, font=font(10))
+        v42 = 2 * _amp(e["m"], 0.42) * _amp(e["n"], 0.42) / 0.58 ** 2
+        v58 = 2 * _amp(e["m"], 0.58) * _amp(e["n"], 0.58) / 0.42 ** 2
+        lines.append((ACC, f"dashed: the ({e['m']},{e['n']}) beat at {e['beat_um']:.0f} um ({e['arcmin']:.1f}'), BIAS case (both gratings at c, "
+                           f"as HARM is built): {v42*100:.1f}% / 0 / {v58*100:.1f}% at 0.42 / 0.50 / 0.58 -- zero at 0.50 at EVERY tone"))
     d.line([X(0.5), 10, X(0.5), H - B], fill=(58, 68, 73), width=1)
     d.line([L, Y(0.005), W - 20, Y(0.005)], fill=OK, width=1)
-    d.text((W - 260, Y(0.005) - 14), "~0.5-1% visible at 9 cycles/deg", fill=OK, font=font(10))
-    for c in (0.20, 0.42, 0.50, 0.58, 0.65):
-        v = 2 * _amp(2, c) * _amp(3, 0.5) / ((1 - c) * 0.5)
-        d.ellipse([X(c) - 4, Y(v) - 4, X(c) + 4, Y(v) + 4], fill=WARN)
-        d.text((X(c) + 6, Y(v) - 16), f"{v*100:.1f}%", fill=WARN, font=font(10))
-    for c in (0.42, 0.58):
-        v = 2 * _amp(2, c) * _amp(3, c) / (1 - c) ** 2
-        d.ellipse([X(c) - 4, Y(v) - 4, X(c) + 4, Y(v) + 4], fill=ACC)
-        d.text((X(c) + 6, Y(v) + 4), f"{v*100:.1f}%", fill=ACC, font=font(10))
+    d.text((W - 200, Y(0.005) - 14), "~0.5-1% visible", fill=OK, font=font(10))
     for c in (0.1, 0.3, 0.5, 0.7, 0.9):
         d.text((X(c) - 10, H - B + 6), f"{c:.1f}", fill=DIM, font=font(11))
     d.text((L, H - B + 22), "local duty c of the 44 um screen  (= local tone of the picture)", fill=DIM, font=font(11))
-    d.text((8, H + 4), "2A/I of the 559 um (2,3) beat, screen over the 63.5 um carrier", fill=FG, font=font(12))
-    d.text((8, H + 22), "solid: TONE case in transmission (screen at c, carrier at 0.50) -- 0 at 0.50, 5.6% at 0.42, "
-           "15.6% at 0.65, 40% at 0.90", fill=WARN, font=font(10))
-    d.text((8, H + 38), "dashed: BIAS case, both gratings at c, as the HARM cells are built -- 3.5% / 0 / 6.7% at "
-           "0.42 / 0.50 / 0.58 (drawn only where (1-c)^2 keeps it under 100%)", fill=ACC, font=font(10))
-    d.text((8, H + 54), "thin: tone case in REFLECTION off gold, x (1-c)/(1+c) -- the lid never exceeds 5.5%, "
-           "peaking near c = 0.23", fill=TAN, font=font(10))
-    d.text((8, H + 72), "Zero only at exactly 0.50 in every case. A halftone spans this whole axis by design: "
-           "process bias moves the null, it does not create the beat.", fill=DIM, font=font(10))
+    d.text((8, H + 4), f"2A/I of the visible beats, 44 um screen over the {BOX_CARRIER_UM:g} um carrier ({PLY_UM/1000:g} mm {GLASS_MATERIAL})", fill=FG, font=font(12))
+    y = H + 22
+    for col, txt in lines:
+        d.text((8, y), txt, fill=col, font=font(10))
+        y += 16
+    d.text((8, y), f"Even carrier harmonics vanish only at exactly 0.50: process bias creates that beat, it does not move it. Caveat: {BOX_CARRIER_UM:g}/44 = {BOX_CARRIER_UM/44:.2f} is commensurate,", fill=DIM, font=font(10))
+    d.text((8, y + 16), "so the odd (3,7) term shares the (1,2) period and leaves a few-percent floor at 0.50 -- a minimum, not a null.", fill=DIM, font=font(10))
     im.save(out)
     print("  saved", out, im.size)
 
@@ -164,7 +198,8 @@ def swap_plot_png(out: Path):
     def swap(p, t, n):
         return np.degrees(np.arcsin(np.clip(n * np.sin(np.arctan((p / 4) / t)), -1, 1)))
 
-    box, wit = swap(ps, 1500.0, 1.52), swap(ps, 2290.0, 1.4585)
+    this = swap(ps, PLY_UM, GLASS_N)
+    ref = swap(ps, 1500.0, 1.52)
     lane300 = ps / 2 / 300000.0 * (180 / math.pi) * 60
     lane200 = ps / 2 / 200000.0 * (180 / math.pi) * 60
     W, H, L, R, B = 760, 320, 60, 60, 44
@@ -185,28 +220,26 @@ def swap_plot_png(out: Path):
         d.text((8, YL(dg) - 7), f"{dg} deg", fill=DIM, font=font(10))
     for am in (0.5, 1.0, 1.5, 2.0):
         d.text((W - R + 6, YR(am) - 7), f"{am:.1f}'", fill=DIM, font=font(11))
-    d.line([(X(p), YL(v)) for p, v in zip(ps, box)], fill=WARN, width=3)
-    d.line([(X(p), YL(v)) for p, v in zip(ps, wit)], fill=ACC, width=3)
+    d.line([(X(p), YL(v)) for p, v in zip(ps, this)], fill=ACC, width=3)
+    d.line([(X(p), YL(v)) for p, v in zip(ps, ref)], fill=WARN, width=1)
     d.line([(X(p), YR(v)) for p, v in zip(ps, lane300)], fill=TAN, width=2)
     pts = [(X(p), YR(v)) for p, v in zip(ps, lane200)]
     for k in range(0, len(pts) - 1, 4):
         d.line(pts[k:k + 3], fill=TAN, width=1)
     d.line([L, YR(1.0), W - R, YR(1.0)], fill=OK, width=1)
     d.text((L + 6, YR(1.0) - 14), "1 arcmin: the lane becomes visible at 300 mm (p = 174 um)", fill=OK, font=font(10))
-    for p in (100.0, 173.0, 250.0, 350.0):
+    for p in SWITCH_COMB_LADDER_UM:
         d.line([X(p), 10, X(p), H - B], fill=(58, 68, 73))
-        sw_w = swap(np.array([p]), 2290.0, 1.4585)[0]
-        sw_b = swap(np.array([p]), 1500.0, 1.52)[0]
         d.text((X(p) - 22, 14), f"SWAP {p:g}", fill=FG, font=font(10))
-        d.text((X(p) - 30, 28), f"{sw_w:.2f} / {sw_b:.2f} deg", fill=DIM, font=font(10))
+        d.text((X(p) - 20, 28), f"{swap_deg(p):.2f} deg", fill=DIM, font=font(10))
     for p in (100, 200, 300, 400):
         d.text((X(p) - 12, H - B + 6), f"{p}", fill=DIM, font=font(11))
     d.text((L, H - B + 22), "comb pitch p (um)", fill=DIM, font=font(11))
     d.text((8, H + 4), "P-SWAP: swap angle (left axis) and lane subtense (right axis) against comb pitch", fill=FG, font=font(12))
-    d.text((8, H + 22), "swap = asin(n sin(atan(p/4t)))  --  witness pair (blue, 2.29 mm quartz) / box (orange, 1.5 mm soda "
-           "lime).  Lane p/2D at 300 mm (solid) and 200 mm (dashed).", fill=DIM, font=font(10))
-    d.text((8, H + 38), "The 173 um comb sits on the 1' threshold at 300 mm and is 1.5' at the 200 mm a box is held; "
-           "SWAP 250 and 350 are visible barriers by construction.", fill=DIM, font=font(10))
+    d.text((8, H + 22), f"swap = asin(n sin(atan(p/4t)))  --  this plate and box (blue, {PLY_UM/1000:g} mm {GLASS_MATERIAL}, "
+           f"{PARALLAX_UM_PER_DEG:.1f} um/deg); thin orange: the 1.5 mm soda-lime design for reference.  Lane p/2D at 300 mm (solid) and 200 mm (dashed).", fill=DIM, font=font(10))
+    d.text((8, H + 38), f"The box comb is {BOX_COMB_UM:g} um: lane {BOX_COMB_UM/2:.0f} um = {BOX_COMB_UM/2/300000*180/math.pi*60:.2f}' at 300 mm, "
+           f"a barrier the eye can see. Swap at {swap_deg(BOX_COMB_UM):.2f} deg by construction; SWAP 350 is coarser still.", fill=DIM, font=font(10))
     im.save(out)
     print("  saved", out, im.size)
 
@@ -305,7 +338,7 @@ SVG_STACK = """<svg viewBox="0 0 760 310" xmlns="http://www.w3.org/2000/svg" fon
     <text x="240" y="40">tilt θ (in air)</text>
     <text x="330" y="150">θ′ = asin(sin θ / n)</text>
     <text x="330" y="246">shift = t · tan θ′ = p/4 → clean A;  −p/4 → clean B</text>
-    <text x="80" y="275" opacity=".75">Head-on the slit straddles the A/B boundary: a 50/50 blend. 17.22 µm/° on the box, 27.40 µm/° on this plate.</text>
+    <text x="80" y="275" opacity=".75">Head-on the slit straddles the A/B boundary: a 50/50 blend. __PARALLAX__ µm/° through the __PLY__ mm ply, box and plate alike.</text>
     <text x="80" y="295" opacity=".75">The plies do not move; the line of sight does.</text>
   </g>
 </svg>"""
@@ -361,7 +394,8 @@ def main():
     harmonic_chart_png(out / "witness_harmonic.png")
     swap_plot_png(out / "witness_swap.png")
     wedge_png(out / "witness_wedge.png")
-    for name, s in (("fig_stack.svg", SVG_STACK), ("fig_union.svg", SVG_UNION), ("fig_cell.svg", SVG_CELL)):
+    stack = SVG_STACK.replace("__PARALLAX__", f"{PARALLAX_UM_PER_DEG:.2f}").replace("__PLY__", f"{PLY_UM/1000:g}")
+    for name, s in (("fig_stack.svg", stack), ("fig_union.svg", SVG_UNION), ("fig_cell.svg", SVG_CELL)):
         (out / name).write_text(s, encoding="utf-8")
     print("  saved 3 SVG diagrams")
     return 0

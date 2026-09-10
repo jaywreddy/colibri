@@ -40,7 +40,11 @@ from app.witness_geom import (
     CLEAR,
     GUTTER_UM,
     METAL,
+    PARALLAX_UM_PER_DEG,
     PLATE_SIDE_UM,
+    PLY_UM,
+    P_MIN_UM,
+    fresnel_number,
     USABLE_UM,
     Cell,
     _grating_rects,
@@ -139,7 +143,7 @@ def test_the_production_dies_are_the_panelized_box_plies():
     from app.witness_dies import blank_plan, die_dims, production_cells
 
     result, spec = blank_plan()
-    assert result.plate_thickness_um == 1500.0
+    assert result.plate_thickness_um == PLY_UM
     cells = {c.cid: c for c in production_cells()}
     assert set(cells) == {"DIE-TOP", "DIE-FRONT", "DIE-LEFT", "DIE-RIGHT"}
     for face in ("top", "front"):
@@ -147,7 +151,7 @@ def test_the_production_dies_are_the_panelized_box_plies():
         assert c.two_layer and c.takes_polarity
         assert (c.w_um, c.h_um) == (d["f_w"], d["f_h"])
         assert c.back_dims == (d["b_w"], d["b_h"])
-        assert d["b_w"] == pytest.approx(d["f_w"] - 2 * 1500.0), "inner ply inset one ply per edge"
+        assert d["b_w"] == pytest.approx(d["f_w"] - 2 * PLY_UM), "inner ply inset one ply per edge"
     for face in ("left", "right"):
         c = cells[f"DIE-{face.upper()}"]
         assert not c.two_layer and c.takes_polarity
@@ -379,7 +383,9 @@ def test_the_beat_amplifies_a_pitch_error():
     """What makes B-BEAT a metrology cell and not just a pretty one: the beat is
     p/delta times the pitch difference, so it magnifies a pitch error by 25."""
     a = wm.build_beat(0, 0, 8000, 8000, beat_um=1635.0)
-    assert a.stats["amplification"] == pytest.approx(24.7, abs=0.2)
+    from app.witness_geom import BOX_BEAT_UM, BOX_CARRIER_UM, beat_delta
+    assert a.stats["amplification"] == pytest.approx(
+        BOX_CARRIER_UM / beat_delta(BOX_CARRIER_UM, BOX_BEAT_UM), abs=0.2)
     assert a.stats["single_layer"] is True
 
 
@@ -421,8 +427,10 @@ def test_the_near_field_ladder_brackets_the_fresnel_boundary():
                 for p in NEAR_FIELD_LADDER_UM]
     assert "washed out" in verdicts and "intact" in verdicts, verdicts
     ref = wm.build_near_field(0, 0, 8000, 8000, period_um=44.0).stats
-    assert ref["p_min_um"] == pytest.approx(32.9, abs=0.5), "1.5 mm soda-lime pair, the box stock"
-    assert ref["fresnel_number"] == pytest.approx(0.89, abs=0.02)
+    assert ref["p_min_um"] == pytest.approx(P_MIN_UM, abs=0.1), "the plate's own glass"
+    assert ref["fresnel_number"] == pytest.approx(fresnel_number(44.0), abs=0.005)
+    assert P_MIN_UM == pytest.approx(41.2, abs=0.2), "2.25 mm quartz"
+    assert NEAR_FIELD_LADDER_UM[0] < P_MIN_UM < NEAR_FIELD_LADDER_UM[-1]
     fine = wm.build_near_field(0, 0, 8000, 8000, period_um=5.0).stats
     assert fine["fresnel_number"] < 0.05, "a colour grating is far past it"
 
@@ -484,13 +492,30 @@ def test_beat_cells_are_wide_not_square():
 
 
 def test_the_parallax_ruler_is_readable_by_hand():
-    """At 17.2 µm/deg (1.5 mm soda lime) a 200 µm tooth needs 11.6 deg of tilt,
-    so a hand-held read would cover one tooth. 60 µm gives 3.5 deg per tooth,
-    five inside ±10 deg."""
+    """At ~27 µm/deg (2.25 mm quartz) a 200 µm tooth needs 7.4 deg of tilt, so a
+    hand-held read would cover two teeth. 60 µm gives 2.2 deg per tooth, nine
+    inside ±10 deg."""
     a = wm.build_parallax_ruler(0, 0, 10000, 6000)
-    assert 2.0 < a.stats["deg_per_tooth"] < 4.0
-    assert a.stats["parallax_um_per_deg"] == pytest.approx(17.22, abs=0.05)
+    assert 1.5 < a.stats["deg_per_tooth"] < 4.0
+    assert a.stats["parallax_um_per_deg"] == pytest.approx(PARALLAX_UM_PER_DEG, abs=0.01)
+    assert PARALLAX_UM_PER_DEG == pytest.approx(26.93, abs=0.05)
     assert a.stats["single_layer"] is False
+
+
+def test_the_glass_constants_are_the_plate_compositors():
+    """The witness cells beat against THE box's carrier and comb, which the plate
+    compositor derives from the glass. One source of truth, pinned."""
+    from app import plates as P
+    from app.witness_dies import blank_plan
+    from app.witness_geom import BOX_CARRIER_UM, BOX_COMB_UM, BOX_FRONT_LEAF_UM, BOX_MONO_UM
+
+    _, spec = blank_plan()
+    rd = P._carrier_recipe_data(spec.faces["top"])
+    assert rd["carrier_period_um"] == pytest.approx(BOX_CARRIER_UM)
+    assert rd["slit_period_um"] == pytest.approx(BOX_FRONT_LEAF_UM)
+    assert P.fab_center_period_um(spec.faces["front"]) == pytest.approx(BOX_COMB_UM)
+    assert P._carrier_recipe_data(spec.faces["top"])["fab_center_period_um"] == pytest.approx(BOX_MONO_UM, rel=1e-6)
+    assert spec.glass.thickness_um == PLY_UM and spec.glass.n == pytest.approx(1.4585)
 
 
 def test_the_polarity_witness_is_asymmetric():

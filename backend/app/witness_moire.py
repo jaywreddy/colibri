@@ -28,7 +28,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from .witness_geom import (CellArt, _cat, _grating_rects, _rect,
+from .witness_geom import (BOX_CARRIER_UM, BOX_MONO_UM, GLASS_N, PLY_UM,
+                           CellArt, _cat, _grating_rects, _rect,
                            column_complement, grating_array,
                            grating_array_inverse, invert_grating,
                            outside_boxes)
@@ -156,7 +157,7 @@ def beat_delta_for(period_um: float, beat_um: float) -> float:
 
 
 def build_beat(cx: float, cy: float, w: float, h: float, *,
-               period_um: float = 63.5, beat_um: float = 1635.0,
+               period_um: float = BOX_CARRIER_UM, beat_um: float = 1635.0,
                duty: float = 0.5) -> CellArt:
     """B-BEAT — two pitches superposed on ONE plane. Static fringes.
 
@@ -189,7 +190,7 @@ def build_beat(cx: float, cy: float, w: float, h: float, *,
 
 
 def build_rotation_beat(cx: float, cy: float, w: float, h: float, *,
-                        period_um: float = 63.5, angle_deg: float = 2.0,
+                        period_um: float = BOX_CARRIER_UM, angle_deg: float = 2.0,
                         duty: float = 0.5) -> CellArt:
     """B-ROT — equal pitches at a small relative angle.
 
@@ -227,7 +228,7 @@ def combined_beat_um(p1: float, p2: float, angle_deg: float) -> float:
 
 
 def build_vector_beat(cx: float, cy: float, w: float, h: float, *,
-                      period_a_um: float = 63.5, period_b_um: float = 66.07,
+                      period_a_um: float = BOX_CARRIER_UM, period_b_um: float = BOX_MONO_UM,
                       angle_deg: float = 2.0, duty: float = 0.5) -> CellArt:
     """B-VEC — pitch AND angle together, to check the general formula.
 
@@ -281,7 +282,7 @@ def harmonic_beats(p1: float, p2: float, duty: float,
 
 
 def build_harmonic(cx: float, cy: float, w: float, h: float, *,
-                   period_a_um: float = 44.0, period_b_um: float = 63.5,
+                   period_a_um: float = 44.0, period_b_um: float = BOX_CARRIER_UM,
                    duty: float = 0.5) -> CellArt:
     """B-HARM — the moiré that only exists when the process is off.
 
@@ -310,7 +311,7 @@ def build_harmonic(cx: float, cy: float, w: float, h: float, *,
 
 
 def build_screen_over_carrier(cx: float, cy: float, w: float, h: float, *,
-                              screen_um: float = 44.0, carrier_um: float = 63.5,
+                              screen_um: float = 44.0, carrier_um: float = BOX_CARRIER_UM,
                               screen_angle_deg: float = 0.0,
                               duty: float = 0.5) -> CellArt:
     """B-SCREEN — the halftone screen's own beat with the back carrier, by angle.
@@ -339,7 +340,7 @@ def build_screen_over_carrier(cx: float, cy: float, w: float, h: float, *,
 
 
 def build_beat_contrast(cx: float, cy: float, w: float, h: float, *,
-                        period_um: float = 63.5, beat_um: float = 1635.0,
+                        period_um: float = BOX_CARRIER_UM, beat_um: float = 1635.0,
                         duty: float = 0.5) -> CellArt:
     """B-CONT — the same beat at three duties.
 
@@ -521,7 +522,8 @@ def build_swatch(cx: float, cy: float, w: float, h: float, *,
 
 def build_near_field(cx: float, cy: float, w: float, h: float, *,
                      period_um: float = 44.0, beat_um: float = 2000.0,
-                     duty: float = 0.5, gap_um: float = 1500.0,
+                     duty: float = 0.5, gap_um: float = PLY_UM,
+                     n_index: float = GLASS_N,
                      polarity: str = "metal") -> CellArt:
     """E-NF — where does the two-layer shadow die?
 
@@ -530,8 +532,8 @@ def build_near_field(cx: float, cy: float, w: float, h: float, *,
     shadow across millimetres: a slit of width p/2 spreads by roughly
     ``lambda z / (n p)`` over a gap z inside glass of index n, and once that
     spread reaches p/2 the shadow is gone. ``p_min = sqrt(2 lambda z / n)`` is
-    33 um at 1.5 mm soda lime, which is both the box and this plate (the plate
-    is cut from the same stock; on a 2.29 mm quartz blank it would be 42 um).
+    41 um at the 2.25 mm quartz ply, which is both the box and this plate (the
+    plate is cut from the same stock; it was 33 um on 1.5 mm soda lime).
     This cell measures the boundary instead of assuming it.
     """
     # Incoherent white light: the eye, not the source, is the collimator, so the
@@ -541,7 +543,7 @@ def build_near_field(cx: float, cy: float, w: float, h: float, *,
     # NOT the mechanism, and z_T/4 is where a 50% grating's shadow VANISHES,
     # which an earlier version of this cell had backwards.)
     lam = 0.55
-    n_idx = 1.52
+    n_idx = n_index
     fresnel = period_um * period_um * n_idx / (4.0 * lam * gap_um)
     p_min = math.sqrt(2.0 * lam * gap_um / n_idx)
     delta = beat_delta_for(period_um, beat_um)
@@ -562,7 +564,7 @@ def build_near_field(cx: float, cy: float, w: float, h: float, *,
 
 def build_parallax_ruler(cx: float, cy: float, w: float, h: float, *,
                          comb_um: float = 60.0, n: int = 60,
-                         gap_um: float = 1500.0, n_index: float = 1.52,
+                         gap_um: float = PLY_UM, n_index: float = GLASS_N,
                          polarity: str = "metal") -> CellArt:
     """P-RULE — read the bond gap directly, by tilting.
 
@@ -572,9 +574,9 @@ def build_parallax_ruler(cx: float, cy: float, w: float, h: float, *,
     ``t`` and ``n`` together — the one number every parallax cell on the plate
     depends on and which nothing else measures.
 
-    The comb is 60 um, not the 200 that first suggested itself: at 17.2 um/deg a
-    200 um tooth needs 11.6 deg of tilt, so a hand-held read would cover barely
-    one tooth. 60 um gives 3.5 deg per tooth and five teeth inside +-10 deg,
+    The comb is 60 um, not the 200 that first suggested itself: at ~27 um/deg
+    (2.25 mm quartz) a 200 um tooth needs 7.4 deg of tilt, so a hand-held read
+    would cover two teeth. 60 um gives 2.2 deg per tooth and nine inside +-10 deg,
     and still sits clear of the near-field boundary (z_T = 13 mm, gap/z_T = 0.17).
     """
     cw = min(w, comb_um * n)

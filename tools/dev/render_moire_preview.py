@@ -24,6 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 from app import witness_moire as wm  # noqa: E402
+from app.witness_geom import BOX_CARRIER_UM  # noqa: E402
 from app.export_witness import doe_cells  # noqa: E402
 
 BG = (13, 17, 19)
@@ -161,7 +162,13 @@ def main():
         # that period's harmonics exactly. 143 um (the (1,1) beat), 64 and 44 um
         # (the two gratings). A single 286 um box left +-3.9% of grating residue,
         # which buries a +-1.75% beat.
-        for k in (143, 64, 44):
+        # nulls: the carrier, the screen, and every beat with an ODD carrier
+        # harmonic (those exist at every duty and would leak into the profile),
+        # each an integer box in um at the 1 um raster. What survives is the
+        # even-harmonic family -- the component that must vanish at 0.50.
+        odd = {int(round(t["beat_um"])) for t in wm.harmonic_beats(44.0, BOX_CARRIER_UM, 0.5, max_order=4)
+               if t["n"] % 2 == 1 and 50.0 < t["beat_um"] < 2000.0}
+        for k in sorted(odd | {int(round(BOX_CARRIER_UM)), 44}):
             prof = np.convolve(prof, np.ones(k) / k, mode="valid")
         prof = prof - prof.mean()
         # decimate to ~2 samples per plotted pixel so the line is a curve, not hash
@@ -176,7 +183,7 @@ def main():
         d.line([(0, 15), (pw, 15)], fill=(40, 48, 52))
         pts = [(x, 15 - v / scale * 13) for x, v in zip(xs, prof)]
         d.line(pts, fill=WARN, width=2)
-        d.text((2, 32), f"559 um component: +-{amp*100:.2f}% of mean", fill=DIM, font=font(9))
+        d.text((2, 32), f"even-harmonic component: +-{amp*100:.2f}% of mean", fill=DIM, font=font(9))
         both = Image.new("RGB", (pw, t.height + 48), BG)
         both.paste(t, (0, 0)); both.paste(pimg, (0, t.height + 2))
         tiles.append(both)
@@ -184,10 +191,14 @@ def main():
         def A(k, cc):
             x = math.pi * k * cc
             return abs(cc * math.sin(x) / x) if x else 0.0
-        bias = 2 * A(2, duty) * A(3, duty) / (1 - duty) ** 2
-        labs.append(f"{c.label}  true contrast\n(2,3) bias case {bias*100:.1f}%")
-    rows.append(row(tiles, labs, "B-HARM: 44 um screen over the 63.5 um carrier, both at the swept duty -- TRUE contrast, no stretch",
-                    "the 559 um component is in the profile at 0.42 and 0.58 and absent at 0.50 -- even harmonics vanish at exactly 50% duty. The panels themselves are dominated by the 143 um (1,1) beat."))
+        # the lowest-order visible beat with an EVEN carrier harmonic: that is
+        # the one that vanishes at exactly 50% duty
+        even = [t for t in wm.harmonic_beats(44.0, BOX_CARRIER_UM, duty) if t["n"] % 2 == 0 and t["beat_um"] > 87.0]
+        t0 = max(even, key=lambda t: t["amplitude"]) if even else {"m": 1, "n": 2, "beat_um": 0}
+        bias = 2 * A(t0["m"], duty) * A(t0["n"], duty) / (1 - duty) ** 2
+        labs.append(f"{c.label}  true contrast\n({t0['m']},{t0['n']}) {t0['beat_um']:.0f} um, bias case {bias*100:.1f}%")
+    rows.append(row(tiles, labs, f"B-HARM: 44 um screen over the {BOX_CARRIER_UM:g} um carrier, both at the swept duty -- TRUE contrast, no stretch",
+                    "the even-harmonic component is in the profile at 0.42 and 0.58 and at a MINIMUM at 0.50: the (1,2) term vanishes at exactly 50% duty, but 99/44 = 9/4 is commensurate and the odd (3,7) term shares its 396 um period, leaving a floor of about 1% after the cascade (~2% true). The panels themselves carry the (1,3) 132 um texture."))
     tiles, labs = [], []
     for cid in ("BCON0.25", "BCON0.50", "BCON0.75"):
         c, a = build(cid)

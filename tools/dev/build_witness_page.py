@@ -13,6 +13,8 @@ import sys
 from collections import Counter, defaultdict
 
 SP = sys.argv[1]
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backend'))
+from app.witness_geom import GLASS_MATERIAL, GLASS_N, PLY_UM  # noqa: E402
 ROOT = r"C:/Users/jaywr/OneDrive/Desktop/optics"
 PLAN = f"{ROOT}/docs/witness-physics-plan.md"
 MAN = f"{ROOT}/backend/data/witness/witness-5in.json"
@@ -156,7 +158,7 @@ lay, gds = man["layout"], man["gds"]
 BLOCK_NAME = {"production": "Production dies", "moire": "Moiré", "diffraction": "Diffraction",
               "parallax": "Parallax", "halftone": "Halftone", "metrology": "Metrology"}
 BLOCK_WHY = {
-    "production": "four box faces as plies: lid F+B, front F+B, two colour sides F only — the box's own 1.5 mm stock",
+    "production": f"four box faces as plies: lid F+B, front F+B, two colour sides F only — the box's own {PLY_UM/1000:g} mm {GLASS_MATERIAL}",
     "moire": "fringes are millimetres, so cells must be large to hold five of them; and it had the least evidence behind it",
     "parallax": "each cell is written twice, front die and back die",
     "diffraction": "a grating needs only enough area to fill the pupil",
@@ -239,17 +241,17 @@ AFTER = {
         fig("witness_plate.png", "the written GDS, whole plate",
             "The plate as written, rendered from the GDS by klayout: light is data, i.e. where the chrome comes off. Top row: TOP F, TOP B, FRONT F, FRONT B; second row: LEFT F and RIGHT F, with the metrology ladders stacked in the column beside them. The dies read as light because a box face is mostly bare glass; the chrome that stays is the gold.")
         + fig("witness_die_top.png", "the lid pair, F and B",
-              "DIE-TOP: outer ply F (left) with the foliage garland and the J+P monogram as chrome gratings in a clear field, inner ply B (right) with the uniform 63.5 µm carrier. Both mirrored for the chrome-down stack; the 80 / 88 µm vernier combs and the tick-code ID sit in the fold band at identical stack coordinates.")
+              "DIE-TOP: outer ply F (left) with the foliage garland and the J+P monogram as chrome gratings in a clear field, inner ply B (right) with the uniform carrier. Both mirrored for the chrome-down stack; the 80 / 88 µm vernier combs and the tick-code ID sit in the fold band at identical stack coordinates.")
         + fig("witness_die_leaf.png", "4 mm of the lid's garland",
-              "Four millimetres of the lid's garland: each leaf is a 69.2 µm chrome grating at its own angle, which beats against the B ply's 63.5 µm carrier across 1.5 mm of glass. The gaps between leaves are clear — on the box, bare glass.")
+              f"Four millimetres of the lid's garland: each leaf is a chrome grating at its own angle (the carrier × 1.09), which beats against the B ply's carrier across {PLY_UM/1000:g} mm of glass. The gaps between leaves are clear — on the box, bare glass.")
         + fig("witness_die_portrait.png", "3 mm of the left side's portrait",
               "Three millimetres of DIE-LEFT: the 44 µm line screen with the 4.15–6.0 µm colour sub-gratings inside the coloured bands. The die is mirrored, so the picture reads correctly through the glass once it is the box's outer ply.")
         + fig("witness_die_garland.png", "3 mm of the left side's colour garland",
               "The colour garland at the same scale: each motif family is filled with a vertical 4.15–6.0 µm grating on the hue ladder, the same diffraction colour as the portrait's zones, so the whole side is single-layer and needs no bond.")
         + fig("validate_nearfield.png", "near-field simulation across 1.5 mm",
-              "A3, the gate: angular-spectrum propagation through 1.5 mm of glass under an incoherent source, eye-cell integrated. The 22 / 24 µm garland as first drawn keeps 12% of its zero-gap fringe contrast; the 63.5 / 69.2 µm garland as built keeps 74%; the monogram pair 69%. Predicted by §2.2's Fresnel number, and the number that decided the garland pitch and cut the capybara.")
+              f"A3, the gate: angular-spectrum propagation through {PLY_UM/1000:g} mm of glass under an incoherent source, eye-cell integrated. Left: a garland at the 500 µm design pitch of 22 / 24 µm; middle: the garland as built at this glass's carrier; right: the monogram pair. The surviving fraction of the zero-gap fringe contrast is printed under each. Predicted by §2.2's Fresnel number, and the number that decided the garland pitch and cut the capybara.")
         + fig("validate_switch.png", "registration tolerance of the globe switch",
-              "A2: DIE-FRONT's own front and back metal through sim2d at t = 1.5 mm, comb 173 µm, swap at ±2.51°. The design lanes are fixed and the back ply slid: ±8 µm keeps a 12:1 swap, ±20 µm a 3.5:1 one, and at 43 µm (p/4) the two globes are a 50/50 blend at every tilt. The verniers read to about 1 µm.")
+              f"A2: DIE-FRONT's own front and back metal through sim2d at t = {PLY_UM/1000:g} mm at this glass's comb. The design lanes are fixed and the back ply slid; at p/4 the two globes are a 50/50 blend at every tilt and beyond it they trade places. The verniers read to about 1 µm; the table in §4.7 has the separation at each error.")
         + fig("validate_photo.png", "tone check of the left side",
               "A1: the emitted metal of DIE-LEFT accumulated exactly per 87 µm eye cell against the coverage the builder intends. Mean error 0.8 of 22 levels; the coloured bands, holding tone with a 50% sub-grating, print about 2.7 levels lighter than the photograph inside the zones — the cost of holding tone, measured on the real geometry.")
     ),
@@ -306,7 +308,7 @@ ol {{ max-width: 72ch; color: var(--ink-2); }}
   <p class="eyebrow">Ring box &middot; physics validation plan</p>
   <h1>Witness Plate</h1>
   <p class="standfirst">
-    One 127 mm chrome plate on 1.5 mm soda lime — the box's own stock — written darkfield with
+    One 127 mm chrome plate on {PLY_UM/1000:g} mm {GLASS_MATERIAL} — the box's own stock — written darkfield with
     positive resist, carrying {len(cells)} cells: four of them are box faces that come off the plate
     as finished plies, the rest are the experiments. Every cell returns a number that could change
     the box design; the ones that could not were cut. What follows is the argument, from the four
@@ -314,7 +316,7 @@ ol {{ max-width: 72ch; color: var(--ink-2); }}
   </p>
 
   <dl class="givens">
-    <div class="given"><dt>Plate</dt><dd>127 mm<small>5&Prime; soda lime, 1.5 mm, one chrome layer</small></dd></div>
+    <div class="given"><dt>Plate</dt><dd>127 mm<small>5&Prime; {GLASS_MATERIAL}, {PLY_UM/1000:g} mm, n = {GLASS_N}</small></dd></div>
     <div class="given"><dt>Polarity</dt><dd>darkfield<small>clear data, positive resist</small></dd></div>
     <div class="given"><dt>Cells</dt><dd>{len(cells)}<small>{lay['height_used_mm']:.0f} of {lay['height_available_mm']:.0f} mm packed</small></dd></div>
     <div class="given"><dt>Production dies</dt><dd>{prod_wr/usable*100:.0f}%<small>of the field: lid + front pairs, two colour sides</small></dd></div>

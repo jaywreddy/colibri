@@ -23,6 +23,8 @@ from .patterns.bitmap import imageprep as ip
 from .patterns.bitmap import screenrects as sr
 from .patterns.bitmap.colourzone import MIN_FEATURE_UM
 from .witness_geom import (
+    BOX_CARRIER_UM,
+    BOX_COMB_UM,
     CLEAR,
     METAL,
     PORTRAIT_CROP,
@@ -44,8 +46,13 @@ _SRC_CACHE: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
 
 def photo_path() -> Path:
-    """The source photograph, at the repo root."""
-    return Path(__file__).resolve().parents[2] / SOURCE_PHOTO
+    """The source photograph: ``photos/<SOURCE_PHOTO>`` at the repo root, or the
+    root itself where it lived before the photos folder existed."""
+    root = Path(__file__).resolve().parents[2]
+    for cand in (root / "photos" / SOURCE_PHOTO, root / SOURCE_PHOTO):
+        if cand.is_file():
+            return cand
+    return root / "photos" / SOURCE_PHOTO
 
 
 def portrait_source(size: int = 1400) -> tuple[np.ndarray, np.ndarray]:
@@ -350,7 +357,7 @@ def build_vernier(
 
 
 def build_barrier_switch(
-    cx: float, cy: float, w: float, h: float, *, comb_um: float = 173.0,
+    cx: float, cy: float, w: float, h: float, *, comb_um: float = BOX_COMB_UM,
     polarity: str = METAL,
 ) -> CellArt:
     """P-SWAP test panel — two interlaced lane classes under a slit comb.
@@ -409,7 +416,7 @@ def build_barrier_switch(
 
 
 def build_scanimation(
-    cx: float, cy: float, w: float, h: float, *, comb_um: float = 173.0,
+    cx: float, cy: float, w: float, h: float, *, comb_um: float = BOX_COMB_UM,
     phases: int = 4, polarity: str = METAL,
 ) -> CellArt:
     """P-SCAN test panel — N-phase kinegram, N frames in 1/N-pitch lanes.
@@ -445,7 +452,7 @@ def build_scanimation(
 
 def build_shading_moire(
     cx: float, cy: float, w: float, h: float, *,
-    back_period_um: float = 63.5, beat_um: float = 1635.0, duty: float = 0.5,
+    back_period_um: float = BOX_CARRIER_UM, beat_um: float = 1635.0, duty: float = 0.5,
     polarity: str = METAL,
 ) -> CellArt:
     """A4 / B-MOVE — two near-equal pitches on TWO plies whose drift paints bands.
