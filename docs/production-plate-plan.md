@@ -69,3 +69,35 @@ picnic (IMG_6584) want a segmented or lightened background; the two group
 shots (IMG_1290, signal-2026-01-05) share one box between four or five faces
 and read as scenes, not portraits. The night group was mirror-padded to
 square by the prep and should not be — extend with a darkened blur instead.
+
+## 5. The box in the simulator (2026-09-09)
+
+The default box in Ring Box Studio is now the production box, and the renderer
+draws it **literally**: every composed face publishes `literal_front.png` /
+`literal_back.png` (2048 px coverage rasters of the DRC-healed fine polygons,
+the same geometry the GDS bake writes) and the WebGL scene samples those on the
+two real pattern planes at the paraxial t/n gap. No procedural gratings: the
+globe swap, the monogram shimmer and the garland fringes all emerge from
+perspective. Faces: top monogram-jp, front globe-duo-phase, left and right
+`photo-halftone` (beach / sunset, `single_ply` — leaf gratings and carrier on
+the outer ply, inner ply bare), back and bottom `blank`. Glass 2.25 mm fused
+quartz, n 1.4585, bonded; frame `motif_scale` 0.75. The one non-literal term
+is the diffraction sheen for the 4–6 µm colour sub-gratings (`period_front.png`),
+which no texture can resolve; it is flagged in the shader.
+
+Costs and caveats found on the way:
+
+* A photo face's fine bake takes about two minutes cold (66k healed polygons,
+  because the colour stripes are expanded before the DRC heal); the cache hides
+  it after the first compose. Keeping the stripes as array plans for the raster
+  would remove most of it.
+* With 2.25 mm plies the stepped bonded edge wraps 3 × 2.25 = 6.75 mm of tape,
+  wider than the 1/4″ (6.35 mm) copper foil, so the foil overlap floors at zero
+  and the keep-out is the 0.5 mm safety margin alone. The build needs 3/8″
+  tape; adding the preset is an assembly-contract change (backend + frontend
+  + golden fixture) not yet made.
+* Pattern-picker thumbnails for `blank` and `photo-halftone` 404 until their
+  default variants are seeded (`just seed`); that is the existing
+  never-generate-on-GET design, not a fault.
+* The `@effects` Playwright suite has not been run against the literal path
+  yet; it must run alone (heavy) before the shader change is called done.
