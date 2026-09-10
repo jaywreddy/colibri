@@ -25,9 +25,9 @@ afterEach(() => {
 describe('store (Ring Box Studio v2)', () => {
   it('boots with the production default box spec', () => {
     const s = useStore.getState().boxSpec;
-    expect(s.width_um).toBe(29100);
-    expect(s.depth_um).toBe(29100);
-    expect(s.height_um).toBe(32010);
+    expect(s.width_um).toBe(32000);
+    expect(s.depth_um).toBe(32000);
+    expect(s.height_um).toBe(35000);
     expect(s.bonded).toBe(true);
     expect(s.foil.tape_width_um).toBe(9525);
     expect(s.hinge.segments).toBe(5);
@@ -53,8 +53,8 @@ describe('store (Ring Box Studio v2)', () => {
   it('patchGlass re-stamps cut dims into the faces', () => {
     useStore.getState().patchGlass({ thickness_um: 1000 });
     const s = useStore.getState().boxSpec;
-    expect(s.faces.front!.height_um).toBe(30010); // H - 2t
-    expect(s.faces.left!.width_um).toBe(27100); // D - 2t
+    expect(s.faces.front!.height_um).toBe(33000); // H - 2t
+    expect(s.faces.left!.width_um).toBe(30000); // D - 2t
     expect(s.faces.front!.glass.thickness_um).toBe(1000);
   });
 

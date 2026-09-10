@@ -159,8 +159,11 @@ def build_halftone_bands(
                 }
             )
         else:
-            art.front = _cat(art.front, sr.stripe_rects(
-                coloured, per, sub_duty, phase_um=sub_phase))
+            # Real rectangles: band ends held to the 2 um floor, and the CLEAR
+            # side built as the exact complement of the METAL one (so the two
+            # tile every band; see stripe_rects_floored).
+            art.front = _cat(art.front, sr.stripe_rects_floored(
+                coloured, per, duty, metal=(polarity == METAL)))
 
     report = {
         "tone_steps": steps,

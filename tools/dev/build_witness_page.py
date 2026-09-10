@@ -246,8 +246,8 @@ AFTER = {
               f"Four millimetres of the lid's garland: each leaf is a chrome grating at its own angle (the carrier × 1.09), which beats against the B ply's carrier across {PLY_UM/1000:g} mm of glass. The gaps between leaves are clear — on the box, bare glass.")
         + fig("witness_die_portrait.png", "3 mm of the beach side's line screen",
               "Three millimetres of DIE-LEFT: the 44 µm line screen with the 4.15–6.0 µm colour sub-gratings inside the coloured bands. The die is mirrored, so the picture reads correctly through the glass once it is the box's outer ply.")
-        + fig("witness_die_garland.png", "3 mm of the beach side's one-ply garland: leaf gratings over the 35% carrier",
-              "The colour garland at the same scale: each motif family is filled with a vertical 4.15–6.0 µm grating on the hue ladder, the same diffraction colour as the portrait's zones, so the whole side is single-layer and needs no bond.")
+        + fig("witness_die_garland.png", "3 mm of the beach side's garland: 6 µm per-family diffractive leaf gratings on bare glass",
+              "The garland at the same scale: each motif family is filled with a 6 µm, 50% grating at its own angle, fanned over the half-turn — flat gold at normal incidence, spectral colour at the family's diffraction angle under a lamp. There is no carrier on this ply; the picture itself has dissolved to bare glass, so the whole side is single-layer and needs no bond.")
         + fig("validate_nearfield.png", "near-field simulation across 2.25 mm",
               f"A3, the gate: angular-spectrum propagation through {PLY_UM/1000:g} mm of glass under an incoherent source, eye-cell integrated. Left: a garland at the 500 µm design pitch of 22 / 24 µm; middle: the garland as built at this glass's carrier; right: the monogram pair. The surviving fraction of the zero-gap fringe contrast is printed under each. Predicted by §2.2's Fresnel number, and the number that decided the garland pitch and cut the capybara.")
         + fig("validate_switch.png", "registration tolerance of the globe switch",

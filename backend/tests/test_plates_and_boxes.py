@@ -298,7 +298,7 @@ def test_default_box_spec_matches_contract():
     # THE PRODUCTION BOX: bonded 2.25 mm fused-quartz plies. These six numbers
     # are mirrored term for term by the frontend's defaultBoxSpec(); the two
     # must move together or the live preview stops describing the real part.
-    assert (spec.width_um, spec.depth_um, spec.height_um) == (29100.0, 29100.0, 32010.0)
+    assert (spec.width_um, spec.depth_um, spec.height_um) == (32000.0, 32000.0, 35000.0)
     assert spec.bonded is True
     assert spec.glass.thickness_um == 2250.0
     assert spec.glass.material == "fused quartz"
@@ -358,10 +358,10 @@ def test_photo_coverage_fades_to_the_carrier_field_but_keeps_the_centre(isolated
     cov, ids, _periods = photo_coverage("beach", 0.50, gate, 22, 160, colour_mode="faces")
     d = box_edge(cov.shape[0])
 
-    # Past the gate the picture is GONE — hard carrier field, so the art box
-    # dissolves into the surrounding garland carrier instead of ending at a
-    # border. (Corners are the only place d exceeds the gate on the rounded
-    # square metric, which is exactly the point of that metric.)
+    # Past the gate the picture is GONE — the field the art box dissolves into
+    # (bare glass since 2026-09-10: CARRIER_COV = 0, a single ply carries no
+    # carrier) instead of ending at a border. (Corners are the only place d
+    # exceeds the gate on the rounded square metric, which is the point of it.)
     outside = d > gate
     assert outside.any(), "the rounded-square metric must exceed the gate somewhere"
     assert np.allclose(cov[outside], CARRIER_COV, atol=1e-6)
@@ -371,7 +371,8 @@ def test_photo_coverage_fades_to_the_carrier_field_but_keeps_the_centre(isolated
     q = n // 4
     centre = cov[q : n - q, q : n - q]
     assert centre.std() > 0.05, f"centre went flat (std {centre.std():.4f})"
-    assert centre.min() < CARRIER_COV - 0.05 < CARRIER_COV + 0.05 < centre.max()
+    assert centre.max() > CARRIER_COV + 0.3, "the picture's darks must stand well off the field"
+    assert centre.min() < centre.max() - 0.3, "the picture keeps its tonal range"
 
     # Colour dies with the picture — no coloured band may survive out into the
     # field, where a sub-grating would advertise the dissolve.
@@ -403,8 +404,10 @@ def test_blank_face_composes_to_empty_layers(isolated_data):
         assert "<path" not in body, "a blank face must bake no geometry"
 
 
-def test_single_ply_face_puts_the_carrier_on_the_front(isolated_data):
-    """One ply: leaves AND carrier on the front, nothing on the back."""
+def test_single_ply_face_has_no_carrier_on_either_layer(isolated_data):
+    """One ply: the leaves (and the centerpiece) on the front, NO carrier
+    anywhere — the ring between the art box and the frame band is bare glass —
+    and nothing on the back. (2026-09-10: photo + frame only on the sides.)"""
     import numpy as np
     from PIL import Image
     from app.plates import (
@@ -450,12 +453,47 @@ def test_single_ply_face_puts_the_carrier_on_the_front(isolated_data):
     two_back = Image.open(PLATES_ROOT / two["id"] / "back.png").convert("L")
 
     assert one_back.getextrema() == (0, 0), "a single ply has no back layer to write"
-    assert one_front.getpixel(px) == FRAME_LEVEL, "carrier missing from the front ply"
+    assert one_front.getpixel(px) == 0, "a single ply carries no carrier: bare glass between art and frame"
     # The two-ply face is the control: same point, carrier on the BACK only.
     assert two_back.getpixel(px) == FRAME_LEVEL
     assert two_front.getpixel(px) == 0
-    # The art box itself is left for the centerpiece — the carrier stops there.
-    assert one_front.getpixel((w // 2, h // 2)) != FRAME_LEVEL
+
+
+def test_single_ply_leaves_are_fine_gratings_one_angle_per_family(isolated_data):
+    """One ply diffracts instead of beating: the garland is written as
+    SINGLE_PLY_LEAF_PERIOD_UM (6 um, 50%) gratings, one orientation per motif
+    family fanned over the half-turn, and the recipe advertises the period so
+    the preview's sheen knows it. A two-ply face keeps its moire louvres."""
+    from app.export_fine import build_plate_fine
+    from app.plates import (
+        SINGLE_PLY_LEAF_PERIOD_UM,
+        FrameSpec,
+        PlateSpec,
+        _carrier_recipe_data,
+    )
+
+    def _spec(single_ply: bool) -> PlateSpec:
+        return PlateSpec(
+            pattern_slug="monogram-jp",
+            frame=FrameSpec(seed=31),
+            width_um=12000.0,
+            height_um=12000.0,
+            weld_margin_um=500.0,
+            back_margin_um=1200.0,
+            single_ply=single_ply,
+        )
+
+    one = build_plate_fine(_spec(True), "one")
+    leaves = one.stats.get("single_ply_leaves")
+    assert leaves, "a single-ply face must report its diffractive leaf gratings"
+    assert leaves["period_um"] == SINGLE_PLY_LEAF_PERIOD_UM == 6.0
+    assert leaves["n_families"] >= 2, "more than one family, or nothing flashes separately"
+    assert leaves["fan_step_deg"] * leaves["n_families"] <= 180.0 + 1e-9
+    assert one.stats["front_angled"] > 0 and not one.back_polys
+    assert _carrier_recipe_data(_spec(True))["single_ply_leaf_period_um"] == 6.0
+    two = build_plate_fine(_spec(False), "two")
+    assert "single_ply_leaves" not in two.stats
+    assert _carrier_recipe_data(_spec(False))["single_ply_leaf_period_um"] == 0.0
 
 
 def test_photo_face_composes_bands_on_the_front_only(isolated_data):

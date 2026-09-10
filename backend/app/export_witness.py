@@ -124,24 +124,31 @@ def _label_h(cell_h_um: float) -> float:
 # twentieth of the area. Portraits survive only where the question genuinely is
 # subjective -- which of these three goes on the lid -- and they are now 5%.
 
+# 2026-09-10: the plate carries eight production plies (lid + front pairs, six
+# photo sides), so the experiment set is cut to the cells this box's bench
+# reads: polarity, CD, duty, the two-layer registration and switch cells at the
+# box's own pitches, one near-field pair either side of the design, one halftone
+# wedge at the photo screen, and single rungs of the diffraction and moire
+# ladders. The dropped rungs live in git history (0799344) for a future plate.
 RESOLUTION_LADDER_UM = (0.8, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.5, 8.0)
 C3_DUTY_LADDER = (0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70)
 PERIOD_LADDER_UM = (2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0, 14.0, 20.0)
-BEAT_LADDER_UM = (500.0, 1000.0, 1635.0, 3000.0)
+BEAT_LADDER_UM = ()
 """The 6000 um rung (a 30 mm cell) went when the production dies arrived: the
 3000 rung already shows the p/delta scaling, and 240 mm2 is a third of a die."""
-BEAT_DUTY_LADDER = (0.25, 0.50, 0.75)
-ROTATION_LADDER_DEG = (1.0, 2.0, 4.0, 8.0)
-HARMONIC_DUTY_LADDER = (0.42, 0.50, 0.58)
-SCREEN_ANGLE_LADDER_DEG = (0.0, 45.0, 90.0)
-BASE_PERIOD_LADDER_UM = (4.0, 5.0, 6.5, 8.0)
-SPREAD_LADDER = (1.20, 1.45, 1.90)
-NEAR_FIELD_LADDER_UM = (20.0, 30.0, 44.0, 64.0, 100.0)
-SWITCH_COMB_LADDER_UM = (100.0, 173.0, BOX_COMB_UM, 350.0)
+BEAT_DUTY_LADDER = ()
+ROTATION_LADDER_DEG = ()
+HARMONIC_DUTY_LADDER = ()
+SCREEN_ANGLE_LADDER_DEG = ()
+BASE_PERIOD_LADDER_UM = ()
+SPREAD_LADDER = ()
+NEAR_FIELD_LADDER_UM = (20.0, 64.0)   # brackets p_min 41 um: 20 washed out, 64 (the box carrier) intact
+SWITCH_COMB_LADDER_UM = (173.0, BOX_COMB_UM)
 """100 and 173 were the 500 um and 1.5 mm designs' combs; BOX_COMB_UM is this
 glass's; 350 is a visible barrier by construction."""
 SCAN_PHASE_LADDER = (2, 4, 6)
 SCREEN_LADDER_UM = (20.0, 30.0, 44.0, 60.0)
+WEDGE_SCREENS_UM = (44.0,)          # the photo screen; 20 and 60 were cut
 STEPS_LADDER = (8, 12, 16, 22)
 DUTY_LADDER = (0.35, 0.50, 0.65)
 COARSEN_LADDER_PX = (3, 7, 14)
@@ -265,7 +272,7 @@ def doe_cells() -> list[list[Cell]]:
               note="hue and fan width against period. Read under a lamp AND "
                    "under room light -- the difference is the source-width result"),
     ]
-    for px, py in ((5.0, 5.0), (5.0, 8.0)):
+    for px, py in ():
         d_cells.append(_cell(
             f"CROSS{px:g}x{py:g}", f"crossed {px:g}/{py:g} um", "diffraction",
             SWATCH_MM, SWATCH_MM,
@@ -275,12 +282,6 @@ def doe_cells() -> list[list[Cell]]:
             takes_polarity=True,
             label=f"CROSS {px:g}/{py:g}", axis="D-CROSS", level=f"{px:g}/{py:g} um",
             note="2-D orders; also the cheapest check of the union identity"))
-    d_cells.append(_cell(
-        "D-CHIRP", "chirp 22 -> 3 um", "diffraction", 24.0, 6.0,
-        lambda cx, cy, w, h, polarity=METAL: wc.build_chirp(cx, cy, w, h,
-                                                             polarity=polarity),
-        label="D-CHIRP", note="graded fan; crosses the floor at 4.0 um",
-        takes_polarity=True))
     for bp in BASE_PERIOD_LADDER_UM:
         for sp in SPREAD_LADDER:
             d_cells.append(_cell(
@@ -298,12 +299,7 @@ def doe_cells() -> list[list[Cell]]:
     # with tone held the band is the whole 44 um period and the cell is just a
     # grating with a phase reset — which is what the H cells were until a
     # reviewer read the manifest's band_um.
-    for i, (t, per, ht) in enumerate([
-        ("band 22 um + 5.0 um, held", 5.0, True),
-        ("band 22 um + 4.15 um, held", 4.15, True),
-        ("band 22 um + 6.02 um, held", 6.02, True),
-        ("band 11 um + 5.0 um, not held", 5.0, False),
-    ]):
+    for i, (t, per, ht) in enumerate([]):
         d_cells.append(_cell(
             f"BAND{i+1}", t, "diffraction", SWATCH_MM, SWATCH_MM,
             (lambda per=per, ht=ht: (lambda cx, cy, w, h:
@@ -343,8 +339,7 @@ def doe_cells() -> list[list[Cell]]:
     # 1 and 6 degrees bracket the frame's angle fan; the 3 degree column was cut
     # for the production dies.
     C, M = BOX_CARRIER_UM, round(BOX_MONO_UM, 2)
-    for pa, pb, ang in [(C, C, 1.0), (C, M, 1.0), (C, round(C * 1.1, 1), 1.0),
-                        (C, C, 6.0), (C, M, 6.0), (C, round(C * 1.1, 1), 6.0)]:
+    for pa, pb, ang in []:
         mo.append(_cell(
             f"VEC{pb:g}/{ang:g}", f"vector {pb:g} um @ {ang:g} deg", "moire",
             LADDER_MM + 1.0, LADDER_MM + 1.0,
@@ -373,7 +368,7 @@ def doe_cells() -> list[list[Cell]]:
 
     # === HALFTONE ===========================================================
     hf: list[Cell] = []
-    for sp in (20.0, 44.0, 60.0):
+    for sp in WEDGE_SCREENS_UM:
         hf.append(_cell(
             f"WEDGE{sp:g}", f"step wedge, {sp:g} um screen", "halftone",
             WEDGE_W_MM, WEDGE_H_MM,
@@ -437,7 +432,7 @@ def doe_cells() -> list[list[Cell]]:
     # the box is a scanimation any more, and its 15 um slots were two orders of
     # magnitude under the 1.5 mm near-field limit anyway. ``build_scanimation``
     # stays in witness_cells for a future thin-stock plate.
-    for mag, ps in (("-10", 66.0), ("-31.6", 61.9)):
+    for mag, ps in ():
         two.append(_cell(
             f"MAG{mag}", f"magnifier M={mag}", "moire", PAIR_MM, PAIR_MM,
             (lambda ps=ps: (lambda cx, cy, w, h, polarity=METAL:
@@ -801,10 +796,69 @@ def flat_rect_count(plate: dict[str, Any]) -> int:
 # --- writers ----------------------------------------------------------------
 
 
+DBU_UM = 0.001
+"""The writer's database unit. Everything below goes in as INTEGER DBU."""
+
+
+def _to_dbu(a: np.ndarray, dbu_um: float = DBU_UM) -> np.ndarray:
+    """µm floats -> the exact integer DBU klayout itself would have produced.
+
+    Handing klayout a ``DBox``/``DPolygon`` makes it do this conversion per
+    coordinate, in C++, one call at a time. Doing it here in one numpy pass and
+    inserting integer ``Box``/``Polygon`` is measurably cheaper (below) — but
+    only if the rounding is IDENTICAL, or the file moves by a nanometre.
+    klayout rounds half AWAY FROM ZERO (``0.0005 -> 1``, ``-0.0005 -> -1``,
+    ``1.2345 -> 1235``); Python's ``round`` and ``np.rint`` round half to EVEN
+    and would give 1234. Hence trunc(x + copysign(0.5, x)).
+
+    It also MULTIPLIES by 1/dbu rather than dividing by dbu, and the two are
+    not the same double: 34.1585/0.001 is 34158.499999999996 and rounds down
+    where 34.1585*1000.0 is 34158.5 and rounds up. Dividing here mismatched
+    klayout on 77 of 1000 random coordinates. Multiplying matches it on all of
+    them (and on 300k random + exact-half values, and byte-for-byte on a
+    written GDS).
+    """
+    v = np.asarray(a, dtype=np.float64) * (1.0 / dbu_um)
+    return np.trunc(v + np.copysign(0.5, v)).astype(np.int64)
+
+
 def _insert_rects(cell: Any, layer: int, rects: np.ndarray, kdb: Any) -> None:
+    """Insert ``(N,4)`` [x0,x1,y0,y1] µm rects as integer boxes.
+
+    ``insert_box`` (the typed entry point) over ``insert`` (which resolves the
+    overload set per call) and ``Box`` over ``DBox``: measured on 100k rects,
+    0.85 s -> 0.17 s.
+    """
+    if not len(rects):
+        return
     shapes = cell.shapes(layer)
-    for x0, x1, y0, y1 in rects:
-        shapes.insert(kdb.DBox(x0, y0, x1, y1))
+    ins = shapes.insert_box
+    Box = kdb.Box
+    for x0, x1, y0, y1 in _to_dbu(np.asarray(rects, dtype=np.float64)).tolist():
+        ins(Box(x0, y0, x1, y1))
+
+
+def _insert_polys(cell: Any, layer: int, polys, kdb: Any) -> int:
+    """Insert µm vertex rings as integer polygons.
+
+    Three costs came off the plate's 780k written clear pieces here: the
+    per-coordinate double->int conversion (done in numpy above), the
+    ``DPoint``/``Point`` object per vertex (klayout's list-of-pairs Polygon
+    constructor takes the tuples directly), and the overload resolution on
+    ``Shapes.insert`` (``insert_polygon`` is typed). Measured on 100k 6-vertex
+    polygons: 2.29 s -> 0.63 s.
+    """
+    shapes = cell.shapes(layer)
+    ins = shapes.insert_polygon
+    Poly = kdb.Polygon
+    n = 0
+    for pv in polys:
+        pts = _to_dbu(pv).tolist()
+        if len(pts) < 3:
+            continue
+        ins(Poly(pts))
+        n += 1
+    return n
 
 
 def _save_options(suffix: str, kdb: Any) -> Any:
@@ -862,16 +916,14 @@ def write_mask(
     import klayout.db as kdb
 
     ly = kdb.Layout()
-    ly.dbu = 0.001
+    ly.dbu = DBU_UM
     top = ly.create_cell("WITNESS_5IN")
     l_front = ly.layer(*LAYER_FRONT)
     l_out = ly.layer(*LAYER_OUTLINE)
     l_pair = ly.layer(*LAYER_PAIR)
 
     _insert_rects(top, l_front, plate["front"], kdb)
-    for pv in plate.get("free_polys", ()):
-        top.shapes(l_front).insert(
-            kdb.DPolygon([kdb.DPoint(float(x), float(y)) for x, y in pv]))
+    _insert_polys(top, l_front, plate.get("free_polys", ()), kdb)
     _insert_rects(top, l_front, plate["labels"], kdb)
     _insert_rects(top, l_out, plate["outline"], kdb)
     _insert_rects(top, l_pair, plate["pair_marks"], kdb)
@@ -1040,6 +1092,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"building the {PLATE_SIDE_UM/MM:.0f} mm witness plate ...")
     t0 = time.perf_counter()
     plate = build_plate()
+    t_built = time.perf_counter()
+    print(f"built in {t_built - t0:.1f}s")
     lg = plate["layout"]
     print(f"\n{len(plate['manifest'])} cells, "
           f"{lg['height_used_mm']:.1f} / {lg['height_available_mm']:.1f} mm of height, "
@@ -1059,8 +1113,11 @@ def main(argv: list[str] | None = None) -> int:
                             "size_mb": plate["gds_gf"]["size_mb_by_format"][
                                 paths[0].suffix.lstrip(".")]}
         else:
+            t_w = time.perf_counter()
             paths = write_mask(plate, Path(a.out), flat=a.flat, formats=fmts)
             plate["gds"]["writer"] = "klayout"
+            plate["gds"]["write_s"] = round(time.perf_counter() - t_w, 1)
+            print(f"written in {plate['gds']['write_s']}s")
         for p_ in paths:
             mb_ = plate["gds"]["size_mb_by_format"][p_.suffix.lstrip(".")]
             print(f"mask {p_}  {mb_} MB")

@@ -126,13 +126,19 @@ def test_the_area_budget_matches_the_plan():
     for p in placed:
         area[p.cell.block] = area.get(p.cell.block, 0.0) + _written_mm2(p.cell)
     usable = (USABLE_UM / MM) ** 2
-    assert 0.25 < area["production"] / usable < 0.40, area
+    # 2026-09-10: eight production plies (lid + front pairs, six photo sides)
+    # are the plate; the experiments are the bench essentials for this box.
+    assert 0.55 < area["production"] / usable < 0.72, area
     exp = {k: v for k, v in area.items() if k != "production"}
-    assert max(exp, key=exp.get) == "moire", exp
+    assert sum(exp.values()) / usable < 0.30, exp
     assert not [p.cell.cid for p in placed if p.cell.cid.startswith(("PORT", "SZ"))]
-    two = sum(_written_mm2(p.cell) for p in placed
-              if p.cell.two_layer and p.cell.block != "production")
-    assert two / sum(exp.values()) < 0.40, "most experiments must survive a missing bond"
+    cids = {p.cell.cid for p in placed}
+    from app.witness_dies import SIDE_PHOTOS
+    assert {cid for _, _, cid, _ in SIDE_PHOTOS} <= cids
+    bench = {"M-POL", "M-CD-dense", "M-CD-iso", "M-DUTY10", "M-DUTY5", "D-PER", "WEDGE44",
+             "H-ACU", "M-VERN", "P-RULE", "B-MOVE", "NF20", "NF64", "SWAP173", "SWAP270.5"}
+    assert bench <= cids, bench - cids
+    assert len(placed) <= 24, "the experiment set stays cut down"
 
 
 def test_the_production_dies_are_the_panelized_box_plies():
@@ -142,10 +148,13 @@ def test_the_production_dies_are_the_panelized_box_plies():
     from app import export_blank as eb
     from app.witness_dies import blank_plan, die_dims, production_cells
 
-    result, spec = blank_plan()
-    assert result.plate_thickness_um == PLY_UM
+    (w_um, d_um, h_um), spec = blank_plan()
+    assert spec.glass.thickness_um == PLY_UM
+    assert (w_um, d_um, h_um) == (spec.width_um, spec.depth_um, spec.height_um)
     cells = {c.cid: c for c in production_cells()}
-    assert set(cells) == {"DIE-TOP", "DIE-FRONT", "DIE-LEFT", "DIE-RIGHT"}
+    from app.witness_dies import SIDE_PHOTOS
+    assert set(cells) == {"DIE-TOP", "DIE-FRONT"} | {cid for _, _, cid, _ in SIDE_PHOTOS}
+    assert len(SIDE_PHOTOS) == 6, "every prepared photograph rides the plate"
     for face in ("top", "front"):
         c, d = cells[f"DIE-{face.upper()}"], die_dims(face)
         assert c.two_layer and c.takes_polarity
@@ -157,8 +166,7 @@ def test_the_production_dies_are_the_panelized_box_plies():
         assert not c.two_layer and c.takes_polarity
         assert c.back_dims == (c.w_um, c.h_um)
     panel = {r.face: (r.width_um, r.height_um)
-             for r in eb.pair_rects(result.width_um, result.depth_um,
-                                    result.height_um, result.plate_thickness_um)}
+             for r in eb.pair_rects(w_um, d_um, h_um, PLY_UM)}
     assert panel["top:F"] == (cells["DIE-TOP"].w_um, cells["DIE-TOP"].h_um)
     assert panel["left:F"] == (cells["DIE-LEFT"].w_um, cells["DIE-LEFT"].h_um)
 
@@ -481,7 +489,8 @@ def test_beat_cells_are_wide_not_square():
     full and cost the plate 10 mm of height for one cell."""
     placed, _ = layout(doe_cells())
     beats = [p.cell for p in placed if p.cell.cid.startswith("BEAT")]
-    assert beats
+    if not beats:
+        pytest.skip("the BEAT ladder was cut from the plate on 2026-09-10 (eight production plies)")
     heights = {c.h_um for c in beats}
     assert len(heights) == 1, "every beat cell shares one height, so they pack"
     for c in beats:

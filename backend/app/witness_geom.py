@@ -68,8 +68,26 @@ def beat_delta(p: float, beat_um: float) -> float:
     return p * p / (beat_um - p)
 
 
-BOX_CARRIER_UM = max(4.0, _snap_half(22.0 * gap_scale()))
-"""The back-layer carrier every lid moire beats against (plates: 22 um x gap scale)."""
+# The carrier is sized by the EYE, not by the gap. Scaling the 22 um design
+# pitch with the gap (x4.5 on this glass) gave 99 um: 49.5 um lines that
+# subtend 1.13 arcmin at 300 mm, which the eye resolves as a hatch — the
+# garland read as chunks, not as shimmer. The rule is that the carrier PERIOD
+# subtends CARRIER_ARCMIN at the viewing distance, so the lines themselves are
+# invisible in hand at any distance and only the beat is seen. The near field
+# then sets the cost: at 65.5 um (Fresnel N 1.26) the fringes keep 51% of
+# their zero-gap contrast across the ply (tools/dev/nearfield_ladder.py: 44 um
+# 7%, 55 um 34%, 66 um 52%, 77 um 65%, 99 um 75%).
+VIEW_DISTANCE_UM = 300_000.0
+CARRIER_ARCMIN = 0.75
+
+
+def _eye_pitch(arcmin: float, view_um: float = VIEW_DISTANCE_UM) -> float:
+    import math
+    return view_um * math.tan(math.radians(arcmin / 60.0))
+
+
+BOX_CARRIER_UM = max(4.0, _snap_half(_eye_pitch(CARRIER_ARCMIN)))
+"""The back-layer carrier every lid moire beats against: 0.75 arcmin at 300 mm."""
 BOX_FRONT_LEAF_UM = BOX_CARRIER_UM * 1.09
 """The garland's front grating (plates.FRONT_GRATING_RATIO)."""
 BOX_COMB_UM = _snap_half(60.0 * gap_scale())

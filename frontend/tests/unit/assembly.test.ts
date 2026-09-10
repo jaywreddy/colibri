@@ -24,8 +24,8 @@ import {
  *
  * Written out here rather than taken from `defaultBoxSpec()`: this suite tests
  * the ASSEMBLY FORMULAS against the design contract, and it used to ride on the
- * default box, so the day the default became the PRODUCTION box (29.1 x 29.1 x
- * 32.01 mm, bonded 2.25 mm quartz plies) every pinned number here went red
+ * default box, so the day the default became the PRODUCTION box (32 x 32 x
+ * 35 mm, bonded 2.25 mm quartz plies) every pinned number here went red
  * without a single formula changing. The default box's own values are pinned in
  * api.test.ts, where they belong; the golden-fixture suite
  * (assemblyGolden.test.ts) is what cross-checks the formulas against the

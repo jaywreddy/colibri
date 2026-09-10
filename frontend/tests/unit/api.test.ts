@@ -63,7 +63,7 @@ describe('api', () => {
     const body = JSON.parse(opts.body as string);
     expect(body.box_id).toBe('my-box');
     expect(body.force).toBe(true);
-    expect(body.width_um).toBe(29100);
+    expect(body.width_um).toBe(32000);
     expect(body.glass.n).toBe(1.4585);
     expect(body.foil.tape_width_um).toBe(9525);
     expect(body.hinge.style).toBe('tube');
@@ -74,9 +74,9 @@ describe('api', () => {
 describe('defaultBoxSpec (contract defaults)', () => {
   it('matches the PRODUCTION box exactly (= backend default_box_spec)', () => {
     const s = api.defaultBoxSpec();
-    expect(s.width_um).toBe(29100);
-    expect(s.depth_um).toBe(29100);
-    expect(s.height_um).toBe(32010);
+    expect(s.width_um).toBe(32000);
+    expect(s.depth_um).toBe(32000);
+    expect(s.height_um).toBe(35000);
     expect(s.bonded).toBe(true);
     expect(s.glass).toEqual({ thickness_um: 2250, material: 'fused quartz', n: 1.4585 });
     expect(s.foil).toEqual({

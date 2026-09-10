@@ -40,6 +40,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -574,6 +575,33 @@ _CHECK_TILE_UM = 1000.0
 _CHECK_BORDER_UM = 16.0
 
 
+def _region_entries(region, kdb, *, dbu_um: float, tile_um: float):
+    """Bin a klayout ``Region`` for the tiled check WITHOUT a µm round trip.
+
+    The list path below has to rebuild every polygon from floats; when the
+    caller already holds the Region (the heal loop, the witness die's
+    decomposed clear pieces) that costs a full Python pass per iteration for
+    nothing. Polygons are handed to the tiler as they are — HULL ONLY, matching
+    what the list callers pass (``each_point_hull`` rings): a fill-only mask is
+    written from exterior rings, and the heal drops holes anyway.
+    """
+    entries: list[tuple[float, float, float, float, object]] = []
+    big = kdb.Region()
+    for poly in region.each():
+        if poly.holes():
+            poly = kdb.Polygon(list(poly.each_point_hull()))
+        bb = poly.bbox()
+        lo_x, lo_y = bb.left * dbu_um, bb.bottom * dbu_um
+        hi_x, hi_y = bb.right * dbu_um, bb.top * dbu_um
+        if poly.is_box():
+            entries.append((lo_x, lo_y, hi_x, hi_y, (lo_x, lo_y, hi_x, hi_y)))
+        elif hi_x - lo_x > 2 * tile_um or hi_y - lo_y > 2 * tile_um:
+            big.insert(poly)
+        else:
+            entries.append((lo_x, lo_y, hi_x, hi_y, poly))
+    return entries, big
+
+
 def _tiled_check_stats(
     polys,
     kdb,
@@ -583,26 +611,45 @@ def _tiled_check_stats(
     dbu_um: float,
     tile_um: float = _CHECK_TILE_UM,
     border_um: float = _CHECK_BORDER_UM,
-) -> tuple[int, float, int, float]:
-    """Run width/space checks tile-by-tile; return (n_width, min_w_um, n_space, min_s_um).
+    include_touching: bool = False,
+) -> tuple[int, float, int, float, Any, Any]:
+    """Tile-by-tile width/space checks; returns
+    ``(n_width, min_w_um, n_space, min_s_um, w_markers, s_markers)``.
+
+    ``polys`` is an iterable of ``(N,4)`` rect arrays / ``(K,2)`` vertex rings,
+    OR a ``kdb.Region`` (taken hull-only, no µm round trip — see
+    :func:`_region_entries`).
 
     Check options match the single-region path exactly (Euclidian,
     ignore_angle=80, shielded=False, NeverIncludeZeroDistance) — see the module
     note above for why each is the honest printed-geometry measure.
+
+    ``include_touching`` adds the ZERO-distance pairs' markers to the marker
+    Regions (and so to the counts), without letting them into the min-distance
+    headline. Those pairs are the acute CORNER of a clipped angled line — the
+    two edges meet at the vertex, so the pair distance is 0 while the corner
+    itself does taper below the floor. The QA report wants them out (they are
+    not a gap or a sliver, and a 0 µm headline is meaningless); a caller that
+    HEALS by chroming markers over wants them in, because the taper is real.
     """
     import time as _time
 
     _t0 = _time.time()
     scale = 1.0 / dbu_um
-    entries: list[tuple[float, float, float, float, object]] = []  # bbox µm + payload
-    big = kdb.Region()  # rings spanning many tiles — decomposed once in C++
+    if isinstance(polys, kdb.Region):
+        entries, big = _region_entries(polys, kdb, dbu_um=dbu_um, tile_um=tile_um)
+        polys = ()
+    else:
+        entries, big = [], kdb.Region()
     for item in polys:
         a = np.asarray(item, dtype=float)
         if a.ndim == 2 and a.shape[1] == 4:  # rect array (N,4) [x0,x1,y0,y1]
-            for x0, x1, y0, y1 in a:
-                lo_x, hi_x = min(x0, x1), max(x0, x1)
-                lo_y, hi_y = min(y0, y1), max(y0, y1)
-                entries.append((lo_x, lo_y, hi_x, hi_y, (lo_x, lo_y, hi_x, hi_y)))
+            lo_x = np.minimum(a[:, 0], a[:, 1])
+            hi_x = np.maximum(a[:, 0], a[:, 1])
+            lo_y = np.minimum(a[:, 2], a[:, 3])
+            hi_y = np.maximum(a[:, 2], a[:, 3])
+            for box in np.stack([lo_x, lo_y, hi_x, hi_y], axis=1).tolist():
+                entries.append((box[0], box[1], box[2], box[3], tuple(box)))
         elif a.ndim == 2 and a.shape[1] == 2 and a.shape[0] >= 3:  # vertex ring
             lo_x, lo_y = a[:, 0].min(), a[:, 1].min()
             hi_x, hi_y = a[:, 0].max(), a[:, 1].max()
@@ -633,7 +680,15 @@ def _tiled_check_stats(
                     )
                 )
             else:
-                entries.append((lo_x, lo_y, hi_x, hi_y, a))
+                # Build the klayout polygon ONCE, here, rather than per tile:
+                # a ring that touches k tiles was rebuilt k times, point by
+                # Python point. Insertion is by far the hot loop below.
+                entries.append((
+                    lo_x, lo_y, hi_x, hi_y,
+                    # np.rint IS Python's round() (half to even), so the DBU
+                    # coordinates are the ones the point-by-point loop made.
+                    kdb.Polygon(np.rint(a * scale).astype(np.int64).tolist()),
+                ))
     have_big = not big.is_empty()
     if have_big:
         big.merge()
@@ -727,13 +782,7 @@ def _tiled_check_stats(
                         int(round(hi_x * scale)), int(round(hi_y * scale)),
                     )
                 )
-            elif isinstance(payload, np.ndarray):
-                pts = [
-                    kdb.Point(int(round(x * scale)), int(round(y * scale)))
-                    for x, y in payload
-                ]
-                reg.insert(kdb.Polygon(pts))
-            else:  # pre-clipped kdb.Polygon strip pieces (already DBU)
+            else:  # kdb.Polygon: a small ring, a Region input, a clipped strip
                 reg.insert(payload)
         if reg.is_empty():
             continue
@@ -748,13 +797,14 @@ def _tiled_check_stats(
             mn = float("inf")
             for ep in edge_pairs.each():
                 d = abs(ep.distance())
-                if d <= 0:
+                if d <= 0 and not include_touching:
                     continue
                 c = ep.bbox().center()
                 if not (cx0 <= c.x < cx1 and cy0 <= c.y < cy1):
                     continue
                 markers.insert(ep.polygon(0))
-                mn = min(mn, d * dbu_um)
+                if d > 0:
+                    mn = min(mn, d * dbu_um)
             return mn
 
         w_mn = _tally(
@@ -926,21 +976,18 @@ def drc_clean_region(
     width_dbu = max(1, int(round(min_width_um / dbu_um)))
     pad_dbu = max(1, int(round((min_gap_um / 2.0) / dbu_um)))
 
-    def _rings(r) -> list[np.ndarray]:
-        rr = []
-        for poly in r.each():
-            ring = [(pt.x * dbu_um, pt.y * dbu_um) for pt in poly.each_point_hull()]
-            if len(ring) >= 3:
-                rr.append(np.asarray(ring, dtype=float))
-        return rr
-
     for it in range(12):  # a weld can expose a thin ledge; usually converges in 1-2
         # NEVER a raw whole-region width/space check here — that is the
         # measured ~27-minute superlinear pathology the tiled checker exists
         # for (see _tiled_check_stats). The tiled pass hands back the merged
         # violation-marker Regions directly.
+        #
+        # The Region goes in AS a Region (hull-only, same as the µm rings this
+        # used to build): every round rebuilt the whole layer as Python floats
+        # and klayout rebuilt it from them again — on a 190k-polygon face that
+        # was the bulk of the round, for geometry klayout already held.
         _, _, _, _, w_markers, s_markers = _tiled_check_stats(
-            _rings(reg), kdb, width_dbu=width_dbu, gap_dbu=gap_dbu, dbu_um=dbu_um
+            reg, kdb, width_dbu=width_dbu, gap_dbu=gap_dbu, dbu_um=dbu_um
         )
         if w_markers.is_empty() and s_markers.is_empty():
             break

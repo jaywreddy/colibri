@@ -22,10 +22,10 @@ authored as METAL (gold where the rectangles are), so each die is inverted —
 ``die box − metal`` — and that inversion runs as a klayout Region boolean on the
 one die, never a GEOS union (the same C++ edge set the merged-DRC heal already
 builds for every face). Before and after the inversion the geometry is opened
-to the 2 µm floor and checked whole (``clear_field``), so the WRITTEN clear
-data — not just the authored metal — passes a shop's incoming width/space
-rule; the result is decomposed to convex pieces so no polygon carries holes or
-more vertices than a mask shop will take.
+to the 2 µm floor (``clear_field``), decomposed to convex pieces so no polygon
+carries holes or more vertices than a mask shop will take, and then CHECKED —
+tiled, on those pieces — so the WRITTEN clear data, not just the authored
+metal, passes a shop's incoming width/space rule.
 
 Mirroring. Both plies of a face are written MIRRORED (x → −x about the die
 centre), exactly as ``export_blank`` does: the chrome faces the bond, the
@@ -41,6 +41,7 @@ of ``export_witness``.
 from __future__ import annotations
 
 import math
+import time
 from functools import lru_cache
 from typing import Any
 
@@ -67,24 +68,26 @@ from .boxes import PRODUCTION_MOTIF_SCALE as MOTIF_SCALE  # noqa: E402
 
 @lru_cache(maxsize=1)
 def blank_plan() -> tuple[Any, Any]:
-    """``(BlankPlanResult, BoxSpec)`` of the largest bonded box whose twelve
-    sub-plates fit one 5″ blank at this ply — the SAME solve ``export_blank``
-    makes, so a die here is interchangeable with one from the full panel."""
-    result = eb.solve_blank_max_scale(plate_thickness_um=PLY_UM)
-    if result is None:
-        raise RuntimeError("no bonded box fits the blank at this ply")
-    spec = eb.blank_box_spec(result, glass_n=GLASS_N, glass_material=GLASS_MATERIAL)
-    # motif_scale / band_um / foil already come from boxes.default_box_spec — the
-    # production dials — so the die IS the box face, with nothing re-applied here.
-    return result, spec
+    """``(dims, BoxSpec)`` of the PRODUCTION box (``boxes.default_box_spec``):
+    the dies on this plate are that box's plies, cut at its dimensions. ``dims``
+    is the ``(width, depth, height)`` triple the pair rects are derived from.
+    The plate no longer sizes the box (the old solve packed all twelve plies of
+    the largest box onto one blank); the ring sizes the box, and the plate
+    carries what fits."""
+    from .boxes import default_box_spec
+
+    spec = default_box_spec()
+    if abs(spec.glass.thickness_um - PLY_UM) > 1e-6 or abs(spec.glass.n - GLASS_N) > 1e-9:
+        raise RuntimeError("production box glass differs from witness_geom PLY_UM / GLASS_N")
+    dims = (spec.width_um, spec.depth_um, spec.height_um)
+    return dims, spec
 
 
 def die_dims(face: str) -> dict[str, float]:
     """Cut dimensions (µm) of a face's outer (F) and inner (B) plies."""
-    result, _ = blank_plan()
+    (w_um, d_um, h_um), _ = blank_plan()
     dims = {r.face: (r.width_um, r.height_um)
-            for r in eb.pair_rects(result.width_um, result.depth_um,
-                                   result.height_um, result.plate_thickness_um)}
+            for r in eb.pair_rects(w_um, d_um, h_um, PLY_UM)}
     fw, fh = dims[eb.subplate_id(face, "F")]
     bw, bh = dims[eb.subplate_id(face, "B")]
     return {"f_w": fw, "f_h": fh, "b_w": bw, "b_h": bh}
@@ -124,6 +127,19 @@ CLEAR_FLOOR_UM = 2.0
 """The shop's rule, both senses: no written CLEAR feature and no CHROME left
 between clear features narrower than this."""
 
+SETTLE_ROUNDS = 4
+"""Patch rounds the written-data settle may take. Four, because that is the
+budget the old two-settle structure had: it settled the merged clear (2 rounds),
+decomposed, and settled the decomposed pieces again (2 more). The settle now
+runs ONCE, after the decomposition — the tiled check needs hole-free pieces and
+the pieces are what the file holds — so the rounds are spent in one place
+instead of two. Measured on a synthetic 4 mm line-screen die (8010 metal
+shapes), against the old structure's 428 flagged sites: 2 rounds left 622,
+3 left 424, 4 leaves 235 — and does it while chroming over LESS clear than the
+old structure did (+4847 µm² of clear kept, 0.04% of the field). This is a
+ceiling, not a schedule: the settle is monotone and any round that does not
+reduce the count is undone, so a clean die still costs one check."""
+
 FINISH_ART_UM = CLEAR_FLOOR_UM / 2.0
 FINISH_FRAME_UM = 1.2
 """Half-widths of the morphological OPENs that finish a die (see
@@ -139,15 +155,54 @@ rebuilds the cap as a flat cut whose width is 2r less the wedge taper, so at
 r = 1.0 the caps came out 1.91 µm and were flagged; at 1.2 they are 2.3 µm.
 What the opens leave (a jagged weld pocket around a colour-stripe end from
 the metal-side heal, a decomposition sliver) is chromed over where the width
-check flags it, in at most two monotone rounds, and the remainder is counted in
+check flags it, in at most ``SETTLE_ROUNDS`` monotone rounds, and the remainder is counted in
 the die's ``drc_written_*`` stats — a few sub-micron pockets that resist will
 not resolve anyway, listed rather than hidden."""
+
+
+def _tiled_checks(pieces, kdb, floor_dbu: int, dbu_um: float):
+    """The die's width/space check, run TILED on hole-free convex pieces.
+
+    Returns ``(n_width, min_w_um, n_space, min_s_um, w_markers, s_markers)`` —
+    counts are merged violation SITES and the marker Regions are the settle's
+    patch. The check options are the tiled checker's
+    (``patterns.effects.drc._tiled_check_stats``): Euclidian, ignore_angle 80,
+    NeverIncludeZeroDistance, and shielded=FALSE where the whole-region call
+    below asks for shielded=True — a shielded violation always co-occurs with
+    an unshielded one (drc.py's module note), shielding costs ~7x on dense
+    geometry, and on every die-like case measured here the two agreed to the
+    pair. ``include_touching`` keeps the ZERO-distance pairs — the acute corner
+    where an angled line is clipped by the die edge, whose taper the settle has
+    always chromed over — so the patch set stays what it was.
+
+    Why tiled at all: klayout's width/space check is QUADRATIC in contiguous
+    edge length, and the clear field of a garland-covered die is exactly the
+    pathological shape — clear runs the length of the die between long angled
+    lines. Measured on that geometry (angled 22 µm lines on a 44 µm pitch,
+    clipped to a square die), one whole-region check pair:
+
+        die   2 mm    4 mm    8 mm     16 mm     24 mm
+        whole 0.05 s  0.40 s  3.51 s   34.05 s   121.50 s
+        tiled 0.02 s  0.03 s  0.12 s    0.37 s     0.78 s
+
+    A production die is 22-30 mm and the old code ran the whole-region check
+    four to six times per die.
+    """
+    from .patterns.effects.drc import _tiled_check_stats
+
+    return _tiled_check_stats(pieces, kdb, width_dbu=floor_dbu, gap_dbu=floor_dbu,
+                              dbu_um=dbu_um, include_touching=True)
 
 
 def _drc_checks(reg, kdb, floor_dbu: int):
     """(width, space) EdgePairs at the floor: Euclidian, edges at 80° or more
     ignored, zero-distance touches excluded — the incoming check a mask shop
-    runs."""
+    runs.
+
+    Only the ``TRAPEZOID_DECOMP = False`` fallback uses this now: on a merged
+    region with holes there is nothing to tile (a hole-free piece list is what
+    the tiled checker needs), and that path never ships. Everything that does
+    ship goes through :func:`_tiled_checks`."""
     wv = reg.width_check(floor_dbu, False, kdb.Region.Euclidian, 80, None, None,
                          True, False, kdb.Region.IgnoreProperties,
                          kdb.Region.NeverIncludeZeroDistance)
@@ -162,6 +217,7 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
                 dbu_um: float = 0.001, art_box_um: float | None = None,
                 finish_art_um: float = FINISH_ART_UM,
                 finish_frame_um: float = FINISH_FRAME_UM,
+                timing: dict[str, Any] | None = None,
                 ) -> list[np.ndarray]:
     """``die box − metal`` as hole-free polygons, origin-centred.
 
@@ -173,12 +229,30 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
     decomposition so the writer never sees a polygon with holes or a
     100k-vertex ring (pieces have at most six vertices). Zero-area pieces of
     the decomposition are dropped. ``finish_frame_um=0`` disables the finish.
+
+    ``timing``, if given, is filled with the per-stage seconds this die spent
+    (merge / opens / inversion / decomposition / settle / ring extraction) —
+    the manifest carries it, so a slow die says WHERE it was slow.
+
+    Order of work. The decomposition runs BEFORE the settle, not after: the
+    settle's width/space check is quadratic in contiguous edge length on the
+    merged clear polygon (see :func:`_tiled_checks`), and hole-free convex
+    pieces are exactly what the tiled checker needs. Same geometry either way —
+    the pieces merge back to the region they came from — but the check that
+    used to run four to six times per die at whole-die edge length now runs at
+    most three times, tiled. The decomposition's own cut-point rounding is
+    therefore inside the settle rather than after it, which is where a shop's
+    check sees it anyway.
     """
     from .patterns.effects.drc import _region_from_polys
 
+    _T = time.perf_counter
+    tm: dict[str, float] = {}
+    _t = _T()
     reg, kdb = _region_from_polys(metal, dbu_um)
     s = 1.0 / dbu_um
     reg.merge()
+    tm["merge_metal_s"] = round(_T() - _t, 2)
     floor_dbu = int(round(CLEAR_FLOOR_UM * s))
     box = kdb.Region(kdb.Box(int(round(-w / 2 * s)), int(round(-h / 2 * s)),
                              int(round(w / 2 * s)), int(round(h / 2 * s))))
@@ -208,16 +282,46 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
         out.merge()
         return out
 
-    def _settle(r):
-        """Chrome over what the width check still flags — bounded and monotone.
+    def _settle_pieces(dec, mode):
+        """Chrome over what the check still flags — bounded and monotone.
 
         Only ever REMOVES clear (a sub-floor clear slit is chromed over, a thin
         chrome filament is thickened); never adds it: opening up a thin chrome
-        filament puts new clear edges next to existing ones and the flags multiply (one photo die ran to 212,000 flags
-        and 39 minutes that way). Two rounds at most, and a round that does not
-        reduce the total count is undone. What remains is reported in the die's
+        filament puts new clear edges next to existing ones and the flags
+        multiply (one photo die ran to 212,000 flags and 39 minutes that way).
+        ``SETTLE_ROUNDS`` rounds at most, and a round that does not reduce the
+        total count is undone. What remains is reported in the die's
         ``drc_written_*`` stats, not hidden.
+
+        Runs on the DECOMPOSED pieces, so the check is tiled (see
+        :func:`_tiled_checks`) and what it measures is what the file holds —
+        the cut-point rounding of the decomposition included. Each round
+        subtracts the patch, which re-fuses the pieces into a region with
+        holes, so the round ends by decomposing again: ``best`` is always a
+        piece set.
         """
+        nw, _, ns, _, wm, sm = _tiled_checks(dec, kdb, floor_dbu, dbu_um)
+        best, best_n = dec, nw + ns
+        for _ in range(SETTLE_ROUNDS):
+            if wm.is_empty() and sm.is_empty():
+                break
+            # a clear slit: chrome it over; a chrome filament: thicken it to
+            # the floor by chroming a half-floor halo around it — both remove
+            # clear only.
+            patch = wm + sm.sized(floor_dbu // 2)
+            cand = best - patch
+            cand.merge()
+            cand = cand.decompose_convex_to_region(mode)
+            nw2, _, ns2, _, wm2, sm2 = _tiled_checks(cand, kdb, floor_dbu, dbu_um)
+            n2 = nw2 + ns2
+            if n2 >= best_n:
+                break
+            best, best_n, wm, sm = cand, n2, wm2, sm2
+        return best
+
+    def _settle_region(r):
+        """The ``TRAPEZOID_DECOMP = False`` fallback: same settle on a merged
+        region with holes, which only the whole-region check can measure."""
         r &= box
         r.merge()
         wv, sv = _drc_checks(r, kdb, floor_dbu)
@@ -225,9 +329,6 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
         for _ in range(2):
             if wv.is_empty() and sv.is_empty():
                 break
-            # a clear slit: chrome it over; a chrome filament: thicken it to
-            # the floor by chroming a half-floor halo around it — both remove
-            # clear only.
             patch = wv.polygons(0) + sv.polygons(0).sized(floor_dbu // 2)
             cand = best - patch
             cand.merge()
@@ -239,34 +340,42 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
         return best
 
     finishing = finish_frame_um > 0
+    _t = _T()
     if finishing:
         reg = _zone_open(reg)
+    tm["open_metal_s"] = round(_T() - _t, 2)
+    _t = _T()
     clear = box - reg
     clear.merge()
+    tm["invert_s"] = round(_T() - _t, 2)
+    _t = _T()
     if finishing:
-        clear = _settle(_zone_open(clear))
+        clear = _zone_open(clear)
+        clear &= box
+        clear.merge()
+    tm["open_clear_s"] = round(_T() - _t, 2)
     if TRAPEZOID_DECOMP:
         # Convex pieces, horizontal-trapezoid preference. Every decomposition
         # of a polygon with slanted edges rounds its cut points to the DBU and
         # so is exact only to nanometre slivers along the cuts; measured on the
         # globe's back ply, the plain trapezoid decomposition left 29 sub-floor
-        # clear notches at those cuts and this one none. ``written_clear_drc``
-        # then measures the pieces merged — what the shop sees.
+        # clear notches at those cuts and this one none. The settle below and
+        # ``written_clear_drc`` then measure the pieces locally merged, tile by
+        # tile — what the shop sees, at a cost that does not explode with the
+        # die's size.
         mode = kdb.PreferredOrientation.PO_htrapezoids.to_i()
-        dec = clear.decompose_convex_to_region(mode)
+        _t = _T()
+        clear = clear.decompose_convex_to_region(mode)
+        tm["decompose_s"] = round(_T() - _t, 2)
+        _t = _T()
         if finishing:
-            # The cut-point rounding of the decomposition is what a shop's check
-            # sees; settle the merged pieces once more and keep the better of
-            # the two (the settle is monotone and count-guarded, so this cannot
-            # run away).
-            wv, sv = _drc_checks(dec.merged(), kdb, floor_dbu)
-            n1 = wv.count() + sv.count()
-            if n1:
-                dec2 = _settle(dec.merged()).decompose_convex_to_region(mode)
-                wv2, sv2 = _drc_checks(dec2.merged(), kdb, floor_dbu)
-                if wv2.count() + sv2.count() < n1:
-                    dec = dec2
-        clear = dec
+            clear = _settle_pieces(clear, mode)
+        tm["settle_s"] = round(_T() - _t, 2)
+    elif finishing:
+        _t = _T()
+        clear = _settle_region(clear)
+        tm["settle_s"] = round(_T() - _t, 2)
+    _t = _T()
     out: list[np.ndarray] = []
     for poly in clear.each():
         if poly.area() <= 0:
@@ -274,36 +383,68 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
         pts = [(pt.x * dbu_um, pt.y * dbu_um) for pt in poly.each_point_hull()]
         if len(pts) >= 3:
             out.append(np.asarray(pts, dtype=np.float64))
+    tm["rings_s"] = round(_T() - _t, 2)
+    tm["n_pieces"] = len(out)
+    if timing is not None:
+        timing.update(tm)
     return out
 
 
 def written_clear_drc(polys: list[np.ndarray], *, floor_um: float = CLEAR_FLOOR_UM,
                       dbu_um: float = 0.001) -> dict[str, Any]:
     """Width / space check of WRITTEN clear polygons (what the shop's incoming
-    DRC sees), merged, Euclidian, zero-distance touches excluded. Counts only —
-    a die is small enough that a whole-die check is seconds, not the
-    superlinear pathology the fine export tiles around."""
-    from .patterns.effects.drc import _region_from_polys
+    DRC sees), Euclidian, locally merged, run TILED.
 
-    reg, kdb = _region_from_polys(polys, dbu_um)
-    if reg.is_empty():
+    A die is NOT small enough for a whole-die check: it is exactly the shape
+    that check is quadratic on (see :func:`_tiled_checks` for the measured
+    ladder — 121 s for one check pair on a 24 mm die of angled lines, 0.78 s
+    tiled). The written pieces are hole-free convex polygons, which is what the
+    tiled checker wants, so this is the cheap direction AND the honest one.
+
+    Two things about the numbers changed with the tiled checker, and neither is
+    a change of what is being measured:
+
+    * ``n_clear_width_viol`` / ``n_clear_space_viol`` count merged violation
+      SITES — connected sub-floor regions — not raw klayout edge PAIRS. One
+      physical notch used to be reported as however many pairs klayout chose to
+      split its edges into; sites are stable under tiling and under geometry
+      representation.
+    * ``min_clear_width_um`` is the narrowest genuine (non-zero) distance. The
+      old whole-region tally included the zero-distance pairs at the acute
+      corner where an angled line meets the die edge, so it reported a
+      meaningless ``0.0`` on almost every die. Those corners are still COUNTED
+      (``include_touching``, same as the settle patches them); they just no
+      longer set the headline minimum.
+
+    ``n_polys`` is the number of written pieces handed in, not the merged
+    island count: merging the whole die to count islands is the one expensive
+    thing this function used to do for a number nobody reads.
+    """
+    import klayout.db as kdb
+
+    n = sum(1 for p in polys if np.asarray(p).size)
+    if not n:
         return {"n_polys": 0, "n_clear_width_viol": 0, "n_clear_space_viol": 0,
                 "min_clear_width_um": float("inf"), "min_chrome_width_um": float("inf")}
-    reg.merge()
-    wv, sv = _drc_checks(reg, kdb, int(round(floor_um / dbu_um)))
-    return {"n_polys": reg.count(), "n_clear_width_viol": wv.count(),
-            "n_clear_space_viol": sv.count(),
-            "min_clear_width_um": min((e.distance() * dbu_um for e in wv.each()), default=float("inf")),
-            "min_chrome_width_um": min((e.distance() * dbu_um for e in sv.each()), default=float("inf"))}
+    nw, mnw, ns, mns, _, _ = _tiled_checks(
+        list(polys), kdb, int(round(floor_um / dbu_um)), dbu_um)
+    return {"n_polys": n, "n_clear_width_viol": nw, "n_clear_space_viol": ns,
+            "min_clear_width_um": mnw, "min_chrome_width_um": mns}
+
+
+_MIRROR = np.array([-1.0, 1.0])
 
 
 def _mirror_polys(polys: list[np.ndarray]) -> list[np.ndarray]:
-    return [eb._transform_verts(np.asarray(p, dtype=np.float64), mirror=True, rotated=False)
-            for p in polys]
+    # ``eb._transform_verts(..., mirror=True, rotated=False)`` is x -> -x; one
+    # multiply per polygon beats its stack() of two column slices, and a die
+    # hands this 200k polygons.
+    return [np.asarray(p, dtype=np.float64) * _MIRROR for p in polys]
 
 
 def _shift_polys(polys: list[np.ndarray], dx: float, dy: float) -> list[np.ndarray]:
-    return [np.asarray(p, dtype=np.float64) + np.array([dx, dy]) for p in polys]
+    d = np.array([dx, dy])          # hoisted: it was rebuilt per polygon
+    return [np.asarray(p, dtype=np.float64) + d for p in polys]
 
 
 def _shift_rects(r: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -320,21 +461,28 @@ def _shift_rects(r: np.ndarray, dx: float, dy: float) -> np.ndarray:
 
 def _ply_art(w: float, h: float, metal: list[np.ndarray], polarity: str,
              art_box_um: float | None = None,
+             timing: dict[str, Any] | None = None,
              ) -> tuple[np.ndarray, list[np.ndarray]]:
     """One ply's written geometry, origin-centred and mirrored for the stack:
     ``(rects, polys)`` — the metal itself, or its clear-field complement."""
     if polarity == METAL:
-        rects = [np.asarray(m) for m in metal if np.asarray(m).ndim == 2 and np.asarray(m).shape[1] == 4]
-        polys = [np.asarray(m) for m in metal if np.asarray(m).ndim == 2 and np.asarray(m).shape[1] == 2]
+        rects, polys = [], []
+        for m in metal:                       # one asarray per item, not three
+            a = np.asarray(m)
+            if a.ndim == 2 and a.shape[1] == 4:
+                rects.append(a)
+            elif a.ndim == 2 and a.shape[1] == 2:
+                polys.append(a)
         return eb.mirror_rects(_cat(*rects)) if rects else np.empty((0, 4)), _mirror_polys(polys)
-    return np.empty((0, 4)), _mirror_polys(clear_field(w, h, metal, art_box_um=art_box_um))
+    return np.empty((0, 4)), _mirror_polys(
+        clear_field(w, h, metal, art_box_um=art_box_um, timing=timing))
 
 
 # --- bonded faces: monogram lid, globe front ----------------------------------
 
 
 def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
-                   polarity: str = METAL) -> CellArt:
+                   polarity: str = METAL, pspec: Any | None = None) -> CellArt:
     """A bonded face as two dies: F (outer ply, ``w × h``) at ``(cx, cy)`` and
     B (inner ply) at the SAME centre — ``export_witness.build_plate`` moves the
     back die to its pair position. Fine geometry from
@@ -343,26 +491,47 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
     from .export_fine import build_plate_fine
 
     _, spec = blank_plan()
-    pspec = spec.faces[face]
+    if pspec is None:
+        pspec = spec.faces[face]
     d = die_dims(face)
     if abs(d["f_w"] - w) > 1.0 or abs(d["f_h"] - h) > 1.0:
         raise ValueError(f"{face}: cell is {w:.0f}x{h:.0f} but the F ply cuts "
                          f"{d['f_w']:.0f}x{d['f_h']:.0f}")
+    # Stage timings: a die that costs three minutes should say which stage
+    # spent them. ``fine`` is the pattern generation + the metal-side merged
+    # DRC heal (export_fine), the clear_field entries are the inversion and its
+    # written-data finish, ``drc_written`` the report on what is in the file.
+    T = time.perf_counter
+    timing: dict[str, Any] = {}
+    _t = T()
     fine = build_plate_fine(pspec, face)
+    timing["fine_s"] = round(T() - _t, 2)
     single = bool(getattr(pspec, "single_ply", False))
     from . import plates as P
     art_box = P.CENTERPIECE_FILL * P._aperture(pspec)   # the centred centrepiece square
 
     metal_f: list[np.ndarray] = list(fine.front_polys) + [bench_marks(face, "F", w, h)]
-    fr, fp = _ply_art(w, h, metal_f, polarity, art_box)
+    cf_f: dict[str, Any] = {}
+    _t = T()
+    fr, fp = _ply_art(w, h, metal_f, polarity, art_box, timing=cf_f)
+    timing["clear_field_front_s"] = round(T() - _t, 2)
+    timing["clear_field_front"] = cf_f
     art = CellArt()
     art.front = _shift_rects(_cat(fr, dice_ticks(w, h)), cx, cy)
     art.polys = _shift_polys(fp, cx, cy)
     if not single:
         metal_b: list[np.ndarray] = list(fine.back_polys) + [bench_marks(face, "B", w, h)]
-        br, bp = _ply_art(d["b_w"], d["b_h"], metal_b, polarity, art_box)
+        cf_b: dict[str, Any] = {}
+        _t = T()
+        br, bp = _ply_art(d["b_w"], d["b_h"], metal_b, polarity, art_box, timing=cf_b)
+        timing["clear_field_back_s"] = round(T() - _t, 2)
+        timing["clear_field_back"] = cf_b
         art.back = _shift_rects(_cat(br, dice_ticks(d["b_w"], d["b_h"])), cx, cy)
         art.back_polys = _shift_polys(bp, cx, cy)
+    _t = T()
+    drc_written_front = written_clear_drc(fp) if polarity == CLEAR else None
+    drc_written_back = (written_clear_drc(bp) if (polarity == CLEAR and not single) else None)
+    timing["drc_written_s"] = round(T() - _t, 2)
     drc = fine.stats.get("drc", {})
     art.stats = {
         "polarity": polarity, "face": face, "slug": pspec.pattern_slug,
@@ -379,8 +548,9 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
         "drc_metal_front": drc.get("front_merged_after"),
         "drc_metal_back": drc.get("back_merged_after"),
         # the WRITTEN clear data, post-inversion
-        "drc_written_front": written_clear_drc(fp) if polarity == CLEAR else None,
-        "drc_written_back": (written_clear_drc(bp) if (polarity == CLEAR and not single) else None),
+        "drc_written_front": drc_written_front,
+        "drc_written_back": drc_written_back,
+        "timing_s": timing,
         "finish_um": [FINISH_ART_UM, FINISH_FRAME_UM],
         "single_layer": single,
         "pattern_params": dict(getattr(pspec, "pattern_params", {}) or {}),
@@ -391,33 +561,74 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
 # --- the cells ------------------------------------------------------------------
 
 
+# Every prepared photograph, as a side ply. The box has two photo walls; the
+# plate carries all six candidates so the choice is made on glass, not on a
+# screen. (image, colour_mode, cell id) — the modes are the Side Photos
+# review's picks: the beach group colours its faces, the garden its dress and
+# leaves (zones), the rest stay plain gold.
+# (image, colour_mode, cell id, garland seed). Every ply grows its OWN garland:
+# beach and sunset carry the box's left/right seeds (104 / 105, so the die IS
+# that face), the rest continue the sequence.
+SIDE_PHOTOS: tuple[tuple[str, str, str, int], ...] = (
+    ("beach", "faces", "DIE-LEFT", 104),
+    ("sunset", "plain", "DIE-RIGHT", 105),
+    ("garden", "zones", "DIE-GARDEN", 106),
+    ("paris", "plain", "DIE-PARIS", 107),
+    ("night-group", "plain", "DIE-NIGHT", 108),
+    ("porch-group", "plain", "DIE-PORCH", 109),
+)
+
+
+def side_photo_spec(image: str, colour_mode: str, seed: int | None = None) -> Any:
+    """The LEFT wall's PlateSpec with another photograph in it — same glass,
+    frame dials, single ply and cut dims, so every photo die is a drop-in side —
+    and its own garland seed."""
+    import dataclasses
+
+    _, spec = blank_plan()
+    base = spec.faces["left"]
+    params = dict(base.pattern_params or {})
+    params.update({"image": image, "colour_mode": colour_mode})
+    if seed is None:
+        seed = next(sd for im, _, _, sd in SIDE_PHOTOS if im == image)
+    frame = dataclasses.replace(base.frame, seed=int(seed))
+    return dataclasses.replace(base, pattern_params=params, frame=frame)
+
+
 def production_cells() -> list[Cell]:
-    """The four written faces of the production box as plate cells, in layout
-    order, each built from the SAME PlateSpec the box compositor and the GDS
-    bake use (``blank_plan().faces``), so a die here is that face. Bonded faces
-    are F + B pairs; single-ply faces (the photo sides) are one die whose inner
-    ply is bare glass and takes no plate area."""
+    """The written faces of the production box as plate cells, in layout order,
+    each built from the SAME PlateSpec the box compositor and the GDS bake use
+    (``blank_plan().faces``), so a die here is that face: the lid and front as
+    bonded F + B pairs, then every candidate photograph (``SIDE_PHOTOS``) as a
+    single-ply side die whose inner ply is bare glass and takes no plate area."""
     MM = 1000.0
     _, spec = blank_plan()
     cells: list[Cell] = []
-    for face, title in (("top", "lid"), ("front", "front"), ("left", "left"), ("right", "right")):
+    for face, title in (("top", "lid"), ("front", "front")):
         ps = spec.faces[face]
         d = die_dims(face)
-        slug = ps.pattern_slug
-        params = dict(ps.pattern_params or {})
-        single = bool(getattr(ps, "single_ply", False))
-        what = slug + (f" {params.get('image')}" if params.get("image") else "")
         cells.append(Cell(
-            cid=f"DIE-{face.upper()}", title=f"{title}: {what} + garland", group="X",
-            w_um=d["f_w"], h_um=d["f_h"],
-            back_w_um=None if single else d["b_w"], back_h_um=None if single else d["b_h"],
+            cid=f"DIE-{face.upper()}", title=f"{title}: {ps.pattern_slug} + garland", group="X",
+            w_um=d["f_w"], h_um=d["f_h"], back_w_um=d["b_w"], back_h_um=d["b_h"],
             build=(lambda face=face: (lambda cx, cy, w, h, polarity=METAL:
                    build_face_die(face, cx, cy, w, h, polarity)))(),
-            label=f"{face.upper()} F {what}", block="production",
-            two_layer=not single, takes_polarity=True,
-            axis="production die", level=f"{face} " + ("F" if single else "F+B"),
-            note=(("single ply: leaf gratings + carrier on the one ply, inner ply is bare glass; "
-                   if single else
-                   f"bonded pair, {d['f_w']/MM:.1f} mm outer / {d['b_w']/MM:.1f} mm inner ply; ")
-                  + "mirrored for the chrome-down stack; 80/88 um verniers in the fold band")))
+            label=f"{face.upper()} F {ps.pattern_slug}", block="production",
+            two_layer=True, takes_polarity=True,
+            axis="production die", level=f"{face} F+B",
+            note=(f"bonded pair, {d['f_w']/MM:.1f} mm outer / {d['b_w']/MM:.1f} mm inner ply; "
+                  "mirrored for the chrome-down stack; 80/88 um verniers in the fold band")))
+    d = die_dims("left")
+    for image, mode, cid, seed in SIDE_PHOTOS:
+        ps = side_photo_spec(image, mode, seed)
+        what = f"{ps.pattern_slug} {image}"
+        cells.append(Cell(
+            cid=cid, title=f"side: {what} ({mode}) + garland", group="X",
+            w_um=d["f_w"], h_um=d["f_h"], back_w_um=None, back_h_um=None,
+            build=(lambda ps=ps: (lambda cx, cy, w, h, polarity=METAL:
+                   build_face_die("left", cx, cy, w, h, polarity, pspec=ps)))(),
+            label=f"SIDE F photo {image}", block="production",
+            two_layer=False, takes_polarity=True,
+            axis="production die", level=f"side F, {mode}",
+            note=("single ply: leaf gratings + carrier on the one ply, inner ply is bare glass; "
+                  "mirrored for the chrome-down stack; 80/88 um verniers in the fold band")))
     return cells

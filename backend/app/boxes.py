@@ -108,15 +108,58 @@ PRODUCTION_BAND_UM = 2400.0
 # 0.4 mm short of the edge and validate_bonded_assembly rejects it.
 PRODUCTION_TAPE_UM = 9525.0
 
+# The moire carrier every face's garland and the lid's monogram beat against,
+# in micrometres AS FABRICATED: witness_geom sizes it so the period subtends
+# 0.75 arcmin at 300 mm (65.5 um) — the lines are invisible in hand, only the
+# beat shows. Faces run carrier_scale_mode "fixed" so this is the literal pitch
+# (the "gap" mode multiplied the 22 um design pitch by the glass's parallax
+# ratio and landed at 99 um, a hatch the eye resolves).
+from .witness_geom import BOX_CARRIER_UM as PRODUCTION_CARRIER_UM  # noqa: E402
+
 # The production stock: 2.25 mm fused quartz plies, bonded face-to-face, so the
 # wall is 4.5 mm and the optical parallax gap is t/n = 1543 um.
 PRODUCTION_PLY_UM = 2250.0
 PRODUCTION_GLASS_MATERIAL = "fused quartz"
 PRODUCTION_GLASS_N = 1.4585
-# Outer box dimensions (um). Square in plan; the height carries the lid.
-PRODUCTION_WIDTH_UM = 29100.0
-PRODUCTION_DEPTH_UM = 29100.0
-PRODUCTION_HEIGHT_UM = 32010.0
+# The RING sizes the box. Assumed envelope (Jay to confirm against the ring):
+# a US 6-7 band, outer diameter up to 21 mm, standing 24 mm tall with its head
+# up, in a slot in a 1 mm liner. The clear interior between the 4.5 mm bonded
+# walls must hold OD + two liners across and the standing height + a 2 mm
+# base pad; the plate solve used to size the box instead (the largest box
+# whose twelve plies fit one blank came out 29.1 mm, a 20.1 mm interior that
+# no adult ring stands in).
+RING_OD_UM = 21000.0
+RING_STANDING_UM = 24000.0
+RING_LINER_UM = 1000.0
+RING_BASE_PAD_UM = 2000.0
+
+
+def ring_interior_um() -> tuple[float, float, float]:
+    """(width, depth, height) of clear interior the ring envelope needs."""
+    span = RING_OD_UM + 2.0 * RING_LINER_UM
+    return span, span, RING_STANDING_UM + RING_BASE_PAD_UM
+
+
+def ring_fit(width_um: float, depth_um: float, height_um: float, ply_um: float) -> dict[str, float | bool]:
+    """Clearances (um) of the ring envelope inside the bonded box: positive is
+    room to spare, negative is a ring that does not go in."""
+    wall = 2.0 * ply_um
+    iw, id_, ih = width_um - 2 * wall, depth_um - 2 * wall, height_um - 2 * wall
+    nw, nd, nh = ring_interior_um()
+    return {
+        "interior_um": [iw, id_, ih],
+        "needed_um": [nw, nd, nh],
+        "clearance_um": [iw - nw, id_ - nd, ih - nh],
+        "fits": bool(iw >= nw and id_ >= nd and ih >= nh),
+    }
+
+
+# Outer box dimensions (um), rounded up to 0.5 mm from the ring envelope:
+# 23 x 23 x 26 mm inside 4.5 mm walls -> 32 x 32 x 35 mm. Square in plan; the
+# height carries the lid. The frontend's defaultBoxSpec mirrors these numbers.
+PRODUCTION_WIDTH_UM = 32000.0
+PRODUCTION_DEPTH_UM = 32000.0
+PRODUCTION_HEIGHT_UM = 35000.0
 
 # Per-face frame recipe. Each face gets a distinct seed (which the plate
 # compositor turns into a distinct moiré CARRIER ANGLE via (seed*17)%180) plus
@@ -294,7 +337,7 @@ class BoxSpec:
 def default_box_spec() -> BoxSpec:
     """The PRODUCTION ring box — MUST match the frontend's ``defaultBoxSpec()``.
 
-    29.1 x 29.1 x 32.01 mm, BONDED from 2.25 mm fused-quartz plies, 3/8" foil,
+    32 x 32 x 35 mm (sized by the ring, see RING_*), BONDED from 2.25 mm fused-quartz plies, 3/8" foil,
     5-segment tube hinge. Every written face gets a perimeter foliage FRAME with
     its own seed + band-composition profile (so each side is a visibly distinct
     engraved border) at ``motif_scale`` 0.68 in a 2.4 mm band, around a centerpiece:
@@ -335,8 +378,13 @@ def default_box_spec() -> BoxSpec:
             frame=FrameSpec(**profile, motif_scale=PRODUCTION_MOTIF_SCALE,
                             band_um=PRODUCTION_BAND_UM),
             single_ply=fid in _SINGLE_PLY_FACES,
+            carrier_scale_mode="fixed",
         )
+    spec.carrier_pitch_um = PRODUCTION_CARRIER_UM
     spec.normalize_face_dims()
+    fit = ring_fit(spec.width_um, spec.depth_um, spec.height_um, PRODUCTION_PLY_UM)
+    if not fit["fits"]:
+        raise ValueError(f"production box does not hold the ring envelope: {fit}")
     return spec
 
 

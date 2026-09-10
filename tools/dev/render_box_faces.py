@@ -23,7 +23,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "backend"))
 
 from app.boxes import default_box_spec, materialize_box  # noqa: E402
-from app.plates import PLATES_ROOT  # noqa: E402
+from app.plates import PLATES_ROOT, materialize_plate  # noqa: E402
+from app.witness_dies import SIDE_PHOTOS, side_photo_spec  # noqa: E402
 
 GOLD = np.array([227, 181, 59], dtype=np.float32)
 GLASS = np.array([26, 28, 34], dtype=np.float32)   # bare glass over a dark interior
@@ -51,8 +52,17 @@ def main() -> int:
     print(f"box composed in {time.perf_counter() - t0:.0f}s")
     faces = ["top", "front", "left", "right", "back", "bottom"]
     tiles: list[tuple[str, Image.Image, Image.Image, str]] = []
-    for fid in faces:
-        fm = man["faces"][fid]
+    # The box's six faces, then every other candidate photograph as a side.
+    jobs: list[tuple[str, dict, object]] = [(fid, man["faces"][fid], spec.faces[fid]) for fid in faces]
+    for image, mode, cid, seed in SIDE_PHOTOS:
+        if image in ("beach", "sunset"):
+            continue
+        ps = side_photo_spec(image, mode, seed)
+        t1 = time.perf_counter()
+        fm = materialize_plate(ps)
+        print(f"{cid} ({image}, {mode}) composed in {time.perf_counter() - t1:.0f}s")
+        jobs.append((f"side {image} ({mode})", fm, ps))
+    for fid, fm, ps in jobs:
         pid = fm["id"]
         rd = fm.get("recipe_data", {})
         A = load(pid, "literal_front")
@@ -66,7 +76,6 @@ def main() -> int:
         if B.shape != A.shape:
             B = np.asarray(Image.fromarray((B * 255).astype(np.uint8)).resize(A.shape[::-1], Image.BILINEAR), dtype=np.float32) / 255.0
         stack = 1.0 - (1.0 - A) * (1.0 - B)
-        ps = spec.faces[fid]
         cap = (f"{fid}: {ps.pattern_slug}{' ' + str(ps.pattern_params.get('image')) if ps.pattern_params.get('image') else ''}"
                f"  {ps.width_um/1000:.1f}x{ps.height_um/1000:.2f} mm  rim {ps.weld_margin_um/1000:.2f} mm"
                f"  {'single ply' if rd.get('single_ply') else ('blank' if rd.get('blank') else 'F+B')}"
@@ -95,7 +104,7 @@ def main() -> int:
     sheet.save(out / "production_box_faces.png")
     # individual faces at full raster size
     for fid, stack_im, front_im, _ in tiles:
-        stack_im.save(out / f"face_{fid}_stack.png")
+        stack_im.save(out / f"face_{fid.split(' ')[0] if not fid.startswith('side') else 'side_' + fid.split(' ')[1]}_stack.png")
     print("wrote", out / "production_box_faces.png")
     return 0
 

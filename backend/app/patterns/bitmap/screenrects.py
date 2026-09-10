@@ -328,6 +328,89 @@ def stripe_rects(
     return out
 
 
+def stripe_rects_floored(
+    rects: np.ndarray,
+    period_um: np.ndarray | float,
+    duty: np.ndarray | float,
+    *,
+    metal: bool = True,
+    min_um: float = 2.0,
+    max_rects: int = MAX_RECTS,
+) -> np.ndarray:
+    """The sub-grating of each band with its two ENDS held to the litho floor,
+    or (``metal=False``) the exact clear complement of that geometry.
+
+    ``stripe_plan`` keeps whole stripes whose centre lies in the band, so the
+    first stripe starts anywhere in ``[x0 - line/2, x0 + period - line/2)``: a
+    gap of 0..~4 um between the band wall and the first gold stripe. Where a
+    coloured band abuts a solid one (a zone edge inside a row), a gap under
+    ``min_um`` is a clear slit the resist cannot resolve; the merged-metal heal
+    then welds it and leaves a jagged sub-micron pocket — 800 of them on one
+    coloured photo die. Here the END stripe is simply widened to the wall when
+    that gap is under the floor (a stripe grows by < 2 um; tone is unchanged
+    to the eye), a band too narrow to hold one whole stripe is filled solid if
+    it is under the floor, and the complement is built from the same numbers
+    — gaps between stripes, end gaps at or over the floor, whole bands over it
+    — so metal and clear tile every band exactly.
+    """
+    rects = np.asarray(rects, dtype=np.float64)
+    if rects.shape[0] == 0:
+        return np.empty((0, 4), dtype=np.float64)
+    plan = stripe_plan(rects, period_um, duty, phase_um=0.0)
+    n, d, line = plan["n"], plan["period_um"], plan["line_um"]
+    total = int(n.sum())
+    if total > max_rects:
+        raise ValueError(f"sub-grating would emit {total:,} rectangles (cap {max_rects:,})")
+    x0, x1, y0, y1 = rects[:, 0], rects[:, 1], rects[:, 2], rects[:, 3]
+    src = np.repeat(np.arange(rects.shape[0]), n)
+    off = np.arange(total) - np.repeat(np.cumsum(n) - n, n)
+    sx0 = plan["k0"][src] * d[src] + off * d[src]
+    sx1 = sx0 + line[src]
+    has = n > 0
+    first = np.cumsum(n) - n            # index of each band's first stripe (valid where has)
+    last = np.cumsum(n) - 1
+    left_gap = np.where(has, sx0[np.clip(first, 0, max(total - 1, 0))] - x0, 0.0)
+    right_gap = np.where(has, x1 - sx1[np.clip(last, 0, max(total - 1, 0))], 0.0)
+    if total == 0:
+        left_gap = right_gap = np.zeros(rects.shape[0])
+    width = x1 - x0
+    if metal:
+        out = np.empty((total, 4), dtype=np.float64)
+        out[:, 0], out[:, 1] = sx0, sx1
+        out[:, 2], out[:, 3] = y0[src], y1[src]
+        if total:
+            # widen the end stripes over a sub-floor gap (a negative gap is a
+            # stripe already protruding past the wall: leave it)
+            lo = has & (left_gap > 0) & (left_gap < min_um)
+            hi = has & (right_gap > 0) & (right_gap < min_um)
+            out[first[lo], 0] = x0[lo]
+            out[last[hi], 1] = x1[hi]
+        # a band too narrow for one whole stripe: solid if under the floor
+        solid = (~has) & (width < min_um) & (width > 0)
+        parts = [out]
+        if solid.any():
+            parts.append(rects[solid])
+        return np.concatenate(parts, axis=0)
+    # --- the clear complement of exactly the geometry above --------------------
+    parts = []
+    if total:
+        same = src[1:] == src[:-1]           # consecutive stripes of one band
+        g0, g1 = sx1[:-1][same], sx0[1:][same]
+        gs = src[:-1][same]
+        parts.append(np.stack([g0, g1, y0[gs], y1[gs]], axis=1))
+        lo = has & (left_gap >= min_um)
+        hi = has & (right_gap >= min_um)
+        parts.append(np.stack([x0[lo], sx0[first[lo]], y0[lo], y1[lo]], axis=1))
+        parts.append(np.stack([sx1[last[hi]], x1[hi], y0[hi], y1[hi]], axis=1))
+    empty = (~has) & (width >= min_um)
+    if empty.any():
+        parts.append(rects[empty])
+    if not parts:
+        return np.empty((0, 4), dtype=np.float64)
+    out = np.concatenate(parts, axis=0)
+    return out[(out[:, 1] - out[:, 0]) > 0]
+
+
 def split_by_colour(
     rects: np.ndarray, pid: np.ndarray, periods_um: dict[int, float]
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

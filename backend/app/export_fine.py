@@ -1103,7 +1103,60 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # Each bucket b fills its cells with a grating rotated to
     # base + angle_off + (b - (N-1)/2)·span. Emitted as grating-local rects +
     # angle (rotated to polys only at GDS placement).
-    if zm.frame.any():
+    if zm.frame.any() and single_ply:
+        # ONE PLY: no carrier to beat against, so the leaves are fine
+        # diffractive gratings (plates.SINGLE_PLY_LEAF_PERIOD_UM) with one
+        # orientation PER MOTIF FAMILY — the frame's angle buckets, fanned over
+        # the half-turn instead of the two-ply 1 deg — so each family flashes
+        # on its own under a lamp. The bucket seam gutter (1 cell) keeps the
+        # differently angled gratings from crossing where families touch.
+        # WHICH fill (line angles, a period ladder, pads) is the selectable part;
+        # see app/leaf_fills.py. "lines" is the default and emits exactly what
+        # this branch emitted before the knob existed.
+        from . import leaf_fills as LF
+
+        leaf_period = P.SINGLE_PLY_LEAF_PERIOD_UM
+        fill = str(getattr(P, "SINGLE_PLY_LEAF_FILL", "lines"))
+        hue_periods = tuple(getattr(P, "SINGLE_PLY_LEAF_HUE_PERIODS_UM", ()))
+        dot_cov = float(getattr(P, "SINGLE_PLY_LEAF_DOT_COVERAGE", 0.5))
+        floor_p = LF.min_period_um(fill, leaf_period, coverage=dot_cov)
+        probe = min([p for p, _ in LF.bucket_layers(fill, 0, frame_count, 0.0,
+                                                    leaf_period, hue_periods)] or [leaf_period])
+        if probe < floor_p - 1e-9:
+            raise ValueError(
+                f"single-ply leaf fill {fill!r} at {probe} um breaks the 2 um litho "
+                f"floor (needs p >= {floor_p:.2f} um)")
+        rng = np.random.default_rng(int(getattr(spec.frame, "seed", 1)) * 7919 + 17)
+        fan0 = float(rng.uniform(0.0, 180.0))          # the face's own starting angle
+        n_used = 0
+        for b in range(frame_count):
+            lvl_lo = P.FRAME_BUCKET0 + b * P.FRAME_BUCKET_STEP - P.FRAME_BUCKET_STEP // 2
+            lvl_hi = P.FRAME_BUCKET0 + b * P.FRAME_BUCKET_STEP + P.FRAME_BUCKET_STEP // 2
+            in_bucket = (zm.frame_level > max(0, lvl_lo)) & (zm.frame_level <= lvl_hi)
+            if not in_bucket.any():
+                continue
+            in_bucket = _erode_zone(in_bucket, 1)
+            if not in_bucket.any():
+                continue
+            if fill == "dots":
+                pads = LF.dot_rects(in_bucket, pitch, leaf_period, coverage=dot_cov)
+                if pads.shape[0]:
+                    front_rects_parts.append(pads)
+            else:
+                for per_um, ang in LF.bucket_layers(
+                    fill, b, frame_count, fan0, leaf_period, hue_periods
+                ):
+                    _emit_grating(
+                        in_bucket, pitch, extent, per_um, duty, ang,
+                        0.0, front_rects_parts, front_angled,
+                    )
+            n_used += 1
+        stats["single_ply_leaves"] = {
+            "n_families": int(n_used), "period_um": float(leaf_period), "duty": float(duty),
+            "fan_start_deg": round(fan0, 2), "fan_step_deg": round(180.0 / max(1, frame_count), 2),
+            **LF.describe(fill, leaf_period, hue_periods, coverage=dot_cov),
+        }
+    elif zm.frame.any():
         base_front = base_angle + angle_off
         for b in range(frame_count):
             lvl_lo = P.FRAME_BUCKET0 + b * P.FRAME_BUCKET_STEP - P.FRAME_BUCKET_STEP // 2
@@ -1220,19 +1273,12 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # seam gutter the two-ply carrier takes: an angled grating's rotated
     # rectangles end in slanted tips that would otherwise close the gap to the
     # abutting field below the litho floor.
-    if single_ply:
-        carrier_zone = zm.back_window.copy()
-        if zm.art_box is not None:
-            carrier_zone &= ~zm.art_box
-        carrier_zone = _erode_zone(carrier_zone, 2)
-        if carrier_zone.any():
-            # Lighter than the two-ply carrier: the leaves sit ON this field and
-            # the photograph fades INTO it (plates.SINGLE_PLY_CARRIER_DUTY is the
-            # photo module's fade target, so the two agree by construction).
-            _emit_grating(
-                carrier_zone, pitch, extent, back_period, P.SINGLE_PLY_CARRIER_DUTY,
-                base_angle, 0.0, front_rects_parts, front_angled,
-            )
+    # 2026-09-10: a single ply carries NO carrier at all. The photograph and the
+    # leaf gratings are the whole face; the picture's edge dissolves to bare
+    # glass (photo.CARRIER_COV = 0) and the leaves stand on glass. A carrier on
+    # the same ply as the leaves made a static union moire — bright bars where
+    # the two gratings interleaved — which is not an effect one sheet can make
+    # honestly, only a printed texture; Jay chose photo + frame without it.
 
     # --- BACK carrier grating (22 µm) over the whole window ----------------
     if not single_ply and zm.back_window.any():

@@ -3,6 +3,9 @@ Prepared side-plate photographs, 1400 px square, sRGB.
 <name>.png          the cropped (and for night-group, matted and ghost-grounded) source
 <name>.subject.png  0..255 matte of the people (rembg u2net), used to push the edge fade outward
 <name>.fade.png     (night-group only) the fade field its ground was built with
+paris.png           the right tenth of the square dropped and the left tenth extended (the
+                    mirrored edge band, blurred progressively toward the edge, slightly
+                    darkened) so the couple sits at mid-frame with their full bodies
 
 Produced by tools/dev/render_side_plate.py + the fade study; originals live in photos/.
 {

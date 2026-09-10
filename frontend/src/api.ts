@@ -316,6 +316,12 @@ export type PlateRecipeData = Record<string, unknown> & {
   single_ply?: boolean;
   /** Informational: BOTH rasters are empty (a bare-glass face). */
   blank?: boolean;
+  /** The per-leaf diffractive grating pitch (µm) a single-ply face writes its
+   * garland at (0, or absent, on a two-ply face, whose leaves are moiré
+   * louvres instead). Mirrors backend `plates._carrier_recipe_data`'s
+   * `single_ply_leaf_period_um`; also the pitch `files.period_front` carries
+   * over that face's leaf texels, outside the art box. */
+  single_ply_leaf_period_um?: number;
 };
 
 export type PlateManifest = {
@@ -528,7 +534,7 @@ export function defaultPlateSpec(
   patternSlug: string,
   seed = 1,
   frameOverrides: Partial<FrameSpec> = {},
-  opts: { params?: Record<string, unknown>; singlePly?: boolean } = {}
+  opts: { params?: Record<string, unknown>; singlePly?: boolean; carrierScaleMode?: 'gap' | 'fixed' } = {}
 ): PlateSpec {
   return {
     pattern_slug: patternSlug,
@@ -541,13 +547,22 @@ export function defaultPlateSpec(
     weld_margin_um: 1000,
     back_margin_um: null,
     carrier_pitch_um: 22.0,
-    carrier_scale_mode: 'gap',
+    carrier_scale_mode: opts.carrierScaleMode ?? 'gap',
     label: '',
   };
 }
 
 /**
- * The PRODUCTION box — 29.1 × 29.1 × 32.01 mm outer, bonded 2.25 mm fused-quartz
+ * PRODUCTION moire carrier, micrometres as fabricated: the period subtends
+ * 0.75 arcmin at 300 mm so the lines are invisible in hand and only the beat
+ * shows. Mirrors backend witness_geom.BOX_CARRIER_UM / boxes.PRODUCTION_CARRIER_UM;
+ * the production faces run carrier_scale_mode 'fixed' so this is the literal pitch.
+ */
+export const PRODUCTION_CARRIER_UM = 65.5;
+
+/**
+ * The PRODUCTION box — 32 × 32 × 35 mm outer (a 23 × 23 × 26 mm interior for a
+ * 21 mm ring standing in a 1 mm liner; backend boxes.RING_*), bonded 2.25 mm fused-quartz
  * plies. MUST stay identical to backend `boxes.default_box_spec()`: this is what
  * the live preview POSTs and what the fab bake ships.
  */
@@ -566,17 +581,18 @@ export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxS
     faces[fid] = defaultPlateSpec(slug, seed, { ...frameOverrides, motif_scale: 0.68, band_um: 2400 }, {
       params: plan.params,
       singlePly: plan.singlePly,
+      carrierScaleMode: 'fixed',
     });
   });
   const spec: BoxSpec = {
-    width_um: 29100.0,
-    depth_um: 29100.0,
-    height_um: 32010.0,
+    width_um: 32000.0,
+    depth_um: 32000.0,
+    height_um: 35000.0,
     glass: defaultGlassSpec(),
     foil: defaultFoilSpec(),
     hinge: defaultHingeSpec(),
     faces,
-    carrier_pitch_um: 22.0,
+    carrier_pitch_um: PRODUCTION_CARRIER_UM,
     bonded: true,
     metal: 'gold',
     label: '',

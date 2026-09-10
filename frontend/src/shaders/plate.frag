@@ -332,11 +332,16 @@ uniform vec2 uCoverageSizePx;
 // Its design value is the paraxial air gap T/n the scene places the plane at.
 uniform float uInnerGapUm;
 // Sub-grating period map for the FRONT layer: R = period um * 25 (so the byte
-// range 0..255 covers 0..10.2 um; 0 = no sub-grating on this pixel). The ONE
-// non-literal term left on this path — a 2-4 um diffraction grating is far below
-// what any raster can carry, so the bands that have one are handed to
-// diffractionSheen() exactly as the RAINBOW accent is on the procedural path.
-// Flagged, deliberate, and the only stand-in here.
+// range 0..255 covers 0..10.2 um; 0 = no sub-grating on this pixel). Carries
+// the photo faces' colour-zone periods AND, on a single-ply face, the
+// garland's 6 um leaf diffraction gratings outside the art box
+// (recipe_data.single_ply_leaf_period_um) — one map, same convention. The ONE
+// non-literal term left on this path — a 2-6 um diffraction grating is far below
+// what any raster can carry, so the bands/leaves that have one are handed to
+// diffractionSheen() exactly as the RAINBOW accent is on the procedural path,
+// at the single fixed uRainbowAngleRad: the map has no per-family fan angle,
+// so a single-ply garland's leaves all sheen alike instead of lighting up
+// family by family. Flagged, deliberate, and the only stand-in here.
 uniform sampler2D uPeriodMap;
 uniform float uPeriodReady;        // 1 once a period map is bound (front plane only)
 
@@ -1229,11 +1234,15 @@ vec4 runLiteralLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
   float cov = clamp(acc / max(taps, 1.0), 0.0, 1.0);
 
   // The one non-literal term on this path (flagged in the uPeriodMap comment):
-  // a sub-5 µm colour grating is orders of magnitude below what a 2048 px raster
-  // can carry, so where the period map says one was fabricated we hand it to the
-  // same diffractionSheen() stand-in the RAINBOW accent uses, at the per-pixel
-  // pitch. r is the byte/255, and the byte is period_um * 25, so the pitch in µm
-  // is r * 255/25 = r * 10.2. Sampled ONCE at the pixel centre (LOD 0, like every
+  // a sub-5 µm colour grating — or, on a single-ply face, the 6 µm garland leaf
+  // grating — is orders of magnitude below what a 2048 px raster can carry, so
+  // where the period map says one was fabricated we hand it to the same
+  // diffractionSheen() stand-in the RAINBOW accent uses, at the per-pixel pitch
+  // but the SAME uRainbowAngleRad for every pixel: the per-family fan angle a
+  // single-ply garland's leaves are actually cut at is not in the map, so every
+  // leaf sheens identically rather than flashing family by family. r is the
+  // byte/255, and the byte is period_um * 25, so the pitch in µm is
+  // r * 255/25 = r * 10.2. Sampled ONCE at the pixel centre (LOD 0, like every
   // read on this path): it is a slowly varying zone map, not a lattice.
   float sheenPeriodUm = 0.0;
   float diffFrac = 0.0;
