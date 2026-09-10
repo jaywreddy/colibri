@@ -142,7 +142,14 @@ heavy_compute_gate = threading.BoundedSemaphore(1)
 # v3: capybara water band carved to `below & ~capy` (the submerged body keeps
 #     its carrier; ripples never print on the animal) — polygons, measured
 #     min_feature_um and the min_*_gold_um extras all move.
-PATTERN_GEN_VERSION = 6
+# v7: two new registered generators — ``blank`` (bare glass, empty layers) and
+#     ``photo-halftone`` (a prepared photograph as a line screen with a
+#     coverage-space edge fade and an optional colour period field). New slugs
+#     alone would not need a bump, but the plate compositor now reads
+#     ``photo-halftone``'s metadata on the box path and the manifest shape grows
+#     the ``art_solid`` recipe_data key, so a warm ``backend/data`` must
+#     re-derive rather than serve variants written before either existed.
+PATTERN_GEN_VERSION = 7
 
 
 def _params_hash(params: dict[str, Any]) -> str:

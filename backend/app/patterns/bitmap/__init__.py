@@ -1,5 +1,5 @@
 from __future__ import annotations
 
-from . import halftone
+from . import halftone, photo
 
-__all__ = ["halftone"]
+__all__ = ["halftone", "photo"]

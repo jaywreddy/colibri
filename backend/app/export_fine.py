@@ -322,6 +322,24 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     front_accent = np.zeros((fh, fw), dtype=bool)
     art_box = np.zeros((fh, fw), dtype=bool)
 
+    if spec.pattern_slug == P.BLANK_SLUG:
+        # BARE GLASS: every zone stays empty, so every ``.any()`` gate in
+        # ``build_plate_fine`` falls through and the plate emits no geometry at
+        # all. Returning here rather than special-casing each emitter means any
+        # OTHER caller of the zone masks (witness_dies._static_garland_metal,
+        # the render tools) also sees a blank face as blank.
+        return ZoneMasks(
+            pitch_um=pitch_um,
+            extent_um=(W, H),
+            frame=frame,
+            frame_level=frame_level,
+            back_window=back_window,
+            front_art=front_art,
+            back_art=back_art,
+            front_accent=front_accent,
+            art_box=art_box,
+        )
+
     # --- FRONT perimeter foliage band (graylevel = angle bucket) -----------
     active_w, active_h = spec.active_dims()
     if active_w > 0 and active_h > 0:
@@ -1051,6 +1069,13 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     center_period = float(rd.get("fab_center_period_um", rd["center_period_um"]))  # 60.0
     center_axis = float(rd["switch_axis_deg"])
     is_interlace = spec.pattern_slug in P.SWITCH_INTERLACE_SLUGS
+    # PHOTOGRAPH: the centerpiece is a line screen, emitted as exact rectangles
+    # from ``plates.photo_band_rects`` (front layer only) rather than a
+    # silhouette filled with the switch carrier.
+    is_photo = spec.pattern_slug == P.PHOTO_SLUG
+    # SINGLE PLY: no inner ply exists, so the uniform carrier joins the leaves on
+    # the FRONT layer and the back layer stays empty.
+    single_ply = bool(getattr(spec, "single_ply", False))
 
     W, H = spec.width_um, spec.height_um
 
@@ -1111,7 +1136,23 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # (≫ 2 µm floor). Legacy phase-switch faces (front-only shimmer): the
     # FRONT silhouette filled with the phase-0 switch carrier. Both exclude
     # the accent zone (4.4 µm grating).
-    if is_interlace:
+    if is_photo:
+        # LINE SCREEN, front layer only, at the face's art box. Exact vector
+        # rectangles: the bands themselves plus, inside every coloured band, its
+        # vertical diffraction sub-grating (``screenrects.stripe_plan``'s whole
+        # stripes). Built by ``plates.photo_band_rects``, the SAME function the
+        # fab SVG bakes and (through ``photo_coverage``) the preview stamp reads,
+        # so the picture in the GDS is the picture on screen.
+        #
+        # Nothing on the back: a halftone's tone IS its band height, and gold on
+        # the inner ply would show through the gaps and lift every shadow.
+        band_rects = P.photo_band_rects(spec)
+        front_rects_parts.append(band_rects)
+        stats["photo"] = {
+            "n_band_rects": int(band_rects.shape[0]),
+            "art_box_um": round(P.CENTERPIECE_FILL * P._aperture(spec), 1),
+        }
+    elif is_interlace:
         comb_box = zm.art_box if zm.art_box is not None else (zm.front_art | zm.back_art)
         comb_zone = _erode_zone(comb_box & ~zm.front_accent, 1)
         if comb_zone.any():
@@ -1169,8 +1210,29 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
 
     is_scanimation = zm.water_band is not None
 
+    # --- SINGLE PLY: the carrier moves to the FRONT layer -------------------
+    # One sheet of glass, so there is no inner ply to carry the uniform carrier.
+    # It joins the leaves on the outer ply over the back window MINUS the art
+    # box, and every BACK emitter below is skipped. This is exactly
+    # ``witness_dies._static_garland_metal`` — the geometry the production
+    # witness plate's colour sides are written from — reached from the ordinary
+    # per-face path instead of a parallel one. The 2-cell erosion is the same
+    # seam gutter the two-ply carrier takes: an angled grating's rotated
+    # rectangles end in slanted tips that would otherwise close the gap to the
+    # abutting field below the litho floor.
+    if single_ply:
+        carrier_zone = zm.back_window.copy()
+        if zm.art_box is not None:
+            carrier_zone &= ~zm.art_box
+        carrier_zone = _erode_zone(carrier_zone, 2)
+        if carrier_zone.any():
+            _emit_grating(
+                carrier_zone, pitch, extent, back_period, duty, base_angle,
+                0.0, front_rects_parts, front_angled,
+            )
+
     # --- BACK carrier grating (22 µm) over the whole window ----------------
-    if zm.back_window.any():
+    if not single_ply and zm.back_window.any():
         # Carrier fills the window MINUS the centerpiece art (art gets its own
         # phase-π switch carrier); on capybara the water band is scanimation.
         if is_scanimation:
@@ -1213,7 +1275,7 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # Laid at a SMALL crossing to the accent's 45° front bands so the pair beats
     # at a spacing the eye resolves; the frame's per-species angle fan does not
     # apply here because the accent is centerpiece geometry, not frame foliage.
-    if zm.front_accent.any():
+    if not single_ply and zm.front_accent.any():
         acc_back = _erode_zone(zm.front_accent, 2)
         if acc_back.any():
             _emit_grating(
@@ -1226,7 +1288,10 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # The half-period offset makes the colibrí↔globe interlace. center_period is
     # EXACTLY 60 µm so phase 0.5 is EXACTLY a 30 µm shift in the shared frame.
     # switch_axis_deg is 0 in the confirmed plan → axis-aligned rects.
-    if is_interlace:
+    if single_ply:
+        # No back layer at all — see the single-ply block above.
+        pass
+    elif is_interlace:
         # Barrier-interlace BACK layer: both silhouettes interleaved in alternating
         # lanes (lane pitch = half the barrier period). A (front silhouette) fills
         # the even lanes — a 0.5-duty barrier-period grating at phase 0 gates the

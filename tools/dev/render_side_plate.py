@@ -72,33 +72,33 @@ RED = 1.45 ** 0.5        # 6.02 um: the red end
 
 RECIPES = {
     "PXL_20240807_233638672.MP": dict(
-        file="photos/PXL_20240807_233638672.MP.jpg", crop=(0.20, 0.03, 0.62), fade=(0.50, 0.94),
+        file="photos/PXL_20240807_233638672.MP.jpg", crop=(0.20, 0.03, 0.62), fade=(0.40, 0.94),
         plan=cp.ColourPlan(name="faces", mode="hue", coarsen_px=14, hue_equalize=False, hue_min_sat=0.28, hue_min_value=0.22),
         why="auto-zones: the faces are the only saturated thing, so they alone take colour; sea and sky stay gold"),
     "IMG_1827~2": dict(
-        file="photos/IMG_1827~2.jpg", crop=(0.147, 0.0, 0.763), fade=(0.50, 0.94),
+        file="photos/IMG_1827~2.jpg", crop=(0.147, 0.0, 0.763), fade=(0.40, 0.94),
         plan=cp.ColourPlan(name="sunset", mode="zones", coarsen_px=7, rules=(
             _rule("shirt", (185.0, 250.0), sat=(0.12, 1.0), val=(0.35, 1.0), bbox=(0.45, 0.15, 1.0, 0.95), scale=BLUE),
             _rule("sun", (15.0, 55.0), sat=(0.35, 1.0), val=(0.85, 1.0), bbox=(0.0, 0.15, 0.5, 0.5), scale=RED),
         )),
         why="authored zones: his shirt at the blue end, the sun disc at the red end, everything else plain gold"),
     "PXL_20240803_232128378.MP": dict(
-        file="photos/PXL_20240803_232128378.MP.jpg", crop=(0.19, 0.24, 0.62), fade=(0.50, 0.94),
+        file="photos/PXL_20240803_232128378.MP.jpg", crop=(0.19, 0.24, 0.62), fade=(0.35, 0.94),
         plan=cp.ColourPlan(name="dress", mode="zones", coarsen_px=7, rules=(
             _rule("dress", (195.0, 255.0), sat=(0.28, 1.0), val=(0.25, 1.0), bbox=(0.4, 0.3, 1.0, 1.0), scale=BLUE),
         )),
         why="authored zones: the dress alone at the blue end; the garden stays plain so it cannot compete"),
     "IMG_6584": dict(
-        file="photos/IMG_6584.jpg", crop=(0.0, 0.02626, 1.0), fade=(0.45, 0.94),
+        file="photos/IMG_6584.jpg", crop=(0.0, 0.02626, 1.0), fade=(0.40, 0.94),
         plan=cp.ColourPlan(name="plain", mode="plain"),
         why="plain gold with the park kept; the wider fade lets the busy background dissolve first"),
     "IMG_1290-EDIT": dict(
         file="photos/IMG_1290-EDIT.jpg", crop=None, source_png="IMG_1290_v3_source.png", fade_png="IMG_1290_fade_field.png",
-        fade=(0.50, 0.94),
+        fade=(0.35, 0.94), lift=0.65,
         plan=cp.ColourPlan(name="plain", mode="plain"),
         why="the fade study's ground: people matted out, contrast stretched on them, the marina kept as a low-contrast ghost that decays with distance from the people and continues the bodies past the frame edge — no mirror, no box; re-targeted here so it dissolves into the carrier field"),
     "signal-2026-01-05-11-40-52-562": dict(
-        file="photos/signal-2026-01-05-11-40-52-562.jpg", crop=(0.125, 0.0, 0.75), fade=(0.50, 0.94),
+        file="photos/signal-2026-01-05-11-40-52-562.jpg", crop=(0.125, 0.0, 0.75), fade=(0.40, 0.94),
         plan=cp.ColourPlan(name="plain", mode="plain"),
         why="plain gold with the porch kept, as a group scene"),
 }
@@ -188,8 +188,11 @@ def prepare(stem, r, photos, fade_dir):
     if r.get("source_png"):
         im = Image.open(fade_dir / r["source_png"]).convert("RGB").resize((SRC_PX, SRC_PX), Image.LANCZOS)
         rgb = np.asarray(im, np.float32) / 255.0
-        ff = np.asarray(Image.open(fade_dir / r["fade_png"]).convert("L").resize((SRC_PX, SRC_PX), Image.BILINEAR), np.float32) / 255.0
-        return rgb, None, ff, {"external_source": r["source_png"]}
+        # the study's feathered people matte (G channel) drives the fade push;
+        # its own late-starting fade field is not used (the reviewer measured the
+        # ramp starting at ~80% of the half-width -- too late)
+        m = np.asarray(Image.open(fade_dir / "IMG_1290_matte.png").convert("RGB").resize((SRC_PX, SRC_PX), Image.BILINEAR), np.float32)[..., 1] / 255.0
+        return rgb, blur(m, 0.02 * SRC_PX), None, {"external_source": r["source_png"]}
     im = load_square(ROOT / r["file"], r["crop"])
     rgb = np.asarray(im, np.float32) / 255.0
     subj = people_matte(im)
@@ -258,7 +261,14 @@ def render_plate(stem, rgb, subj, fade_field, r, out, face="left"):
         cov_art = cov_art + (1 - ff) * (CARRIER_COV - cov_art)
         fw_map = ff
     else:
-        cov_art, fw_map = context_fade(cov_art, resize(subj, n_art), *r["fade"])
+        subj_s = resize(subj, n_art)
+        if r.get("lift"):
+            # the study's ground decays to black around the people; move it
+            # most of the way to the carrier field and keep the remainder as
+            # the marina's ghost, so the group stands in a slightly darker
+            # field rather than in a dark slab inside the frame
+            cov_art = np.clip(cov_art + r["lift"] * (CARRIER_COV - cov_art) * (1 - subj_s), 0, 1)
+        cov_art, fw_map = context_fade(cov_art, subj_s, *r["fade"])
     ids, pmap, _ = cp.build_period_field(rgb, r["plan"])
     ids_s = np.asarray(Image.fromarray(ids.astype(np.int32)).resize((n_art, n_art), Image.NEAREST))
     lut = np.zeros(int(max(ids.max(), 0)) + 1, np.float32)

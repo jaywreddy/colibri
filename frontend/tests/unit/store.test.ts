@@ -23,16 +23,24 @@ afterEach(() => {
 });
 
 describe('store (Ring Box Studio v2)', () => {
-  it('boots with the contract default box spec', () => {
+  it('boots with the production default box spec', () => {
     const s = useStore.getState().boxSpec;
-    expect(s.width_um).toBe(50000);
-    expect(s.depth_um).toBe(50000);
-    expect(s.height_um).toBe(40000);
+    expect(s.width_um).toBe(29100);
+    expect(s.depth_um).toBe(29100);
+    expect(s.height_um).toBe(32010);
+    expect(s.bonded).toBe(true);
     expect(s.foil.tape_width_um).toBe(6350);
     expect(s.hinge.segments).toBe(5);
   });
 
   it('patchFoil merges and re-stamps keep-out into every face', () => {
+    // Thin single-ply glass first. On the PRODUCTION box the bonded 2.25 mm
+    // plies make the tape wrap a stepped edge that consumes 3p = 6.75 mm, so no
+    // preset tape folds over at all and every keep-out collapses to the bare
+    // safety margin — a correct number, but one that cannot show that the
+    // re-stamp happened at all. Move to a geometry where the tape does fold.
+    useStore.getState().patchBoxSpec({ bonded: false });
+    useStore.getState().patchGlass({ thickness_um: 500 });
     useStore.getState().patchFoil({ tape_width_um: 4763 });
     const s = useStore.getState().boxSpec;
     expect(s.foil.tape_width_um).toBe(4763);
@@ -45,8 +53,8 @@ describe('store (Ring Box Studio v2)', () => {
   it('patchGlass re-stamps cut dims into the faces', () => {
     useStore.getState().patchGlass({ thickness_um: 1000 });
     const s = useStore.getState().boxSpec;
-    expect(s.faces.front!.height_um).toBe(38000); // H - 2t
-    expect(s.faces.left!.width_um).toBe(48000); // D - 2t
+    expect(s.faces.front!.height_um).toBe(30010); // H - 2t
+    expect(s.faces.left!.width_um).toBe(27100); // D - 2t
     expect(s.faces.front!.glass.thickness_um).toBe(1000);
   });
 

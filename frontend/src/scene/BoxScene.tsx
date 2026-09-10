@@ -16,7 +16,7 @@ import frag from '../shaders/plate.frag';
 import { log } from '../logger';
 import { useStore } from '../store';
 import { KIT, Button } from '../ui/kit';
-import { FACE_IDS, RECIPE_IDS, type FaceId } from '../api';
+import { FACE_IDS, RECIPE_IDS, type FaceId, type PlateManifest } from '../api';
 import {
   FOIL_COLORS,
   cutList,
@@ -378,6 +378,12 @@ type Ctx = {
   envTex: THREE.Texture;
   /** Baked diffraction colour table (null until the fetch lands). */
   diffLut: THREE.DataTexture | null;
+  /**
+   * The 1x1 placeholder every sampler starts on. Held here so the bind path can
+   * point a sampler BACK at it when a layer turns out to carry no chrome —
+   * leaving the disposed previous texture bound is a use-after-free on the GPU.
+   */
+  blank: THREE.DataTexture;
   /** Background gradient + soft ground-shadow textures (created once). */
   bgTex: THREE.CanvasTexture;
   /** Backdrop presets incl. the backlight light-table field (created once). */
@@ -454,6 +460,80 @@ function makeBlankTexture(): THREE.DataTexture {
   const blank = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
   blank.needsUpdate = true;
   return blank;
+}
+
+/**
+ * Load one mode-L PNG as a SINGLE-CHANNEL, mipmapped, anisotropic texture —
+ * the loader for the literal fabricated-chrome rasters and their period maps.
+ *
+ * Why not `TextureLoader`: it hands the browser's decoded `<img>` straight to
+ * `texImage2D`, which uploads RGBA. Twelve 2048² rasters plus period maps at
+ * 4 bytes/texel is ~200 MB of VRAM for data that is one byte wide; decoding to
+ * `RedFormat` here makes it ~50 MB (~67 MB with the mip chain). The shader only
+ * ever reads `.r`, so nothing downstream changes.
+ *
+ * Filtering is deliberately the OPPOSITE of the level-coded masks, which are
+ * sampled NEAREST because bilinear interpolation between region CODES invents
+ * codes that never existed. A literal raster is not a code — it is metal
+ * coverage — so mipmapped trilinear + max anisotropy is exactly the eye's
+ * integration of a sub-acuity lattice at viewing distance, and is what keeps the
+ * fine chrome from aliasing into screen-space moiré.
+ *
+ * Returns `null` for an all-zero raster (a blank face, or the back of a
+ * single-ply one): the caller drops that plane rather than uploading 4 MB of
+ * zeros and drawing a fully transparent surface over the glass.
+ *
+ * Rows are flipped here, not by `flipY`: three leaves `flipY` false on a
+ * DataTexture, and matching the `TextureLoader` convention (image row 0 at
+ * v = 1) in the copy is deterministic across drivers.
+ */
+async function loadCoverageTexture(
+  url: string,
+  anisotropy: number
+): Promise<THREE.DataTexture | null> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`);
+  const bitmap = await createImageBitmap(await res.blob(), {
+    // Raw bytes, not a colour-managed image: this is a coverage map.
+    colorSpaceConversion: 'none',
+    premultiplyAlpha: 'none',
+  });
+  const w = bitmap.width;
+  const h = bitmap.height;
+  let rgba: Uint8ClampedArray;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const c2d = canvas.getContext('2d', { willReadFrequently: true });
+    if (!c2d) throw new Error('2d context unavailable');
+    c2d.drawImage(bitmap, 0, 0);
+    rgba = c2d.getImageData(0, 0, w, h).data;
+  } finally {
+    bitmap.close();
+  }
+  const red = new Uint8Array(w * h);
+  let peak = 0;
+  for (let y = 0; y < h; y++) {
+    const src = y * w * 4;
+    const dst = (h - 1 - y) * w; // flipY, done in the copy
+    for (let x = 0; x < w; x++) {
+      const v = rgba[src + x * 4];
+      red[dst + x] = v;
+      if (v > peak) peak = v;
+    }
+  }
+  if (peak === 0) return null; // no chrome anywhere on this layer
+  const tex = new THREE.DataTexture(red, w, h, THREE.RedFormat, THREE.UnsignedByteType);
+  tex.colorSpace = THREE.NoColorSpace; // coverage, not colour — never transfer-decoded
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.anisotropy = anisotropy;
+  tex.unpackAlignment = 1; // one byte per texel: rows are not 4-aligned
+  tex.needsUpdate = true;
+  return tex;
 }
 
 /** Vertical two-stop gradient backdrop texture (sRGB). */
@@ -702,6 +782,13 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       // colibri-flap, plus the SOLVED lattice phase the backend publishes.
       uSwitchInterlace: { value: 0.0 },
       uSwitchBarrierPhaseUm: { value: 0.0 },
+      // LITERAL fabricated-geometry path. 1 = uFront carries a raster of the
+      // real chrome and the shader just samples it (no procedural gratings);
+      // 0 = the level-coded procedural path. Bound from recipe_data.literal.
+      uLiteral: { value: 0.0 },
+      // Per-pixel sub-grating pitch (files.period_front), front plane only.
+      uPeriodMap: { value: blank },
+      uPeriodReady: { value: 0.0 },
     },
   });
   m.alphaToCoverage = true;
@@ -1816,6 +1903,7 @@ export default function BoxScene() {
       pmrem,
       envTex,
       diffLut: null,
+      blank,
       bgTex,
       backdropTexs,
       shadowTex,
@@ -2189,6 +2277,158 @@ export default function BoxScene() {
     const token = ++ctx.bindToken;
     const loader = new THREE.TextureLoader();
     const retryTimers: number[] = [];
+    const anisotropy = ctx.renderer.capabilities.getMaxAnisotropy();
+
+    /**
+     * Bind one LITERAL face: the backend published a raster of the FABRICATED
+     * CHROME per layer, so both planes just sample their own file and the shader
+     * synthesizes no gratings at all (see plate.frag::runLiteralLayer). Moiré,
+     * switches and shimmer emerge from the perspective projection of the two
+     * real planes across the paraxial T/n gap, exactly as they do on the
+     * procedural path — only the source of the geometry changes.
+     *
+     * A layer whose raster carries NO chrome (loadCoverageTexture returns null:
+     * a blank face, or the back of a single-ply one) gets no texture upload and
+     * its plane is switched off. `recipe_data.single_ply` / `.blank` say the
+     * same thing, but the raster is the primary source — believing the flag over
+     * the file would put a face's appearance one manifest field away from its
+     * fabrication. The glass slabs are untouched, so a blank face still reads as
+     * the bare quartz wall it is.
+     */
+    const bindLiteralFace = (fid: FaceId, fm: PlateManifest, rt: FaceRT): void => {
+      const rd = fm.recipe_data ?? {};
+      const frontUrl = fm.files.literal_front;
+      const backUrl = fm.files.literal_back;
+      const periodUrl = fm.files.period_front;
+      if (!frontUrl) {
+        // recipe_data claims literal but no raster was published, so this face's
+        // geometry does not exist. REFUSE it rather than falling back to reading
+        // front.png procedurally: on a blank or halftone face the level codes
+        // mean nothing, and that fallback would synthesize gratings and present
+        // them as the fabricated part.
+        log('face_recipe_data_incomplete', {
+          face: fid,
+          slug: fm.spec.pattern_slug,
+          missing: ['literal_front'],
+        });
+        rt.shader.visible = false;
+        rt.shaderBack.visible = false;
+        rt.boundFront = null;
+        rt.boundBack = null;
+        requestRender();
+        return;
+      }
+      const backKey = backUrl ?? null;
+      // Content-addressed under data/plates/<hash>/, so the same pair of URLs IS
+      // the same composed plate and every uniform below is a pure function of
+      // it — nothing to re-decode. (Same reasoning as the procedural path's
+      // `alreadyBound`; 'Retry' clears these first so it stays a real reload.)
+      if (rt.boundFront === frontUrl && rt.boundBack === backKey) return;
+
+      const attemptLiteral = (attempt: number): void => {
+        Promise.all([
+          loadCoverageTexture(frontUrl, anisotropy),
+          backUrl ? loadCoverageTexture(backUrl, anisotropy) : Promise.resolve(null),
+          periodUrl ? loadCoverageTexture(periodUrl, anisotropy) : Promise.resolve(null),
+        ])
+          .then(([front, back, period]) => {
+            if (ctxRef.current !== ctx || ctx.bindToken !== token) {
+              for (const t of [front, back, period]) t?.dispose();
+              return;
+            }
+            for (const old of rt.textures) old.dispose();
+            rt.textures = [front, back, period].filter(
+              (t): t is THREE.DataTexture => t !== null
+            );
+            const applyShared = (u: Record<string, THREE.IUniform>) => {
+              (u.uExtentUm.value as THREE.Vector2).set(fm.extent_um[0], fm.extent_um[1]);
+              u.uThicknessUm.value = fm.substrate.thickness_um;
+              u.uN.value = fm.substrate.n;
+              u.uRecipe.value = RECIPE_IDS.foliage_moire;
+              // THE switch: sample the fabricated raster, draw no gratings.
+              u.uLiteral.value = 1.0;
+              // Legacy stereo_lenticular samplers — never read on this path, but
+              // left pointing at a real texture so none dangles.
+              u.uViewA.value = front ?? ctx.blank;
+              u.uViewB.value = front ?? ctx.blank;
+            };
+            applyShared(rt.shader.uniforms);
+            applyShared(rt.shaderBack.uniforms);
+            // Per-plane: OUTER samples the front raster, INNER the back. uBack is
+            // kept bound (legacy single-plane recipes read it); runLiteralLayer
+            // reads only uFront — this layer's own fabricated geometry.
+            rt.shader.uniforms.uFront.value = front ?? ctx.blank;
+            rt.shader.uniforms.uBack.value = back ?? ctx.blank;
+            rt.shaderBack.uniforms.uFront.value = back ?? ctx.blank;
+            rt.shaderBack.uniforms.uBack.value = front ?? ctx.blank;
+            // Sub-grating period map: FRONT plane only (the backend publishes
+            // period_front alone), and the one non-literal term on this path.
+            rt.shader.uniforms.uPeriodMap.value = period ?? ctx.blank;
+            rt.shader.uniforms.uPeriodReady.value = period ? 1.0 : 0.0;
+            rt.shaderBack.uniforms.uPeriodMap.value = ctx.blank;
+            rt.shaderBack.uniforms.uPeriodReady.value = 0.0;
+            // Drop the planes that carry no chrome (see the doc comment).
+            rt.shader.visible = front !== null;
+            rt.shaderBack.visible = back !== null;
+            for (const [layer, tex] of [
+              ['front', front],
+              ['back', back],
+            ] as const) {
+              if (tex === null) {
+                log('face_layer_empty', {
+                  face: fid,
+                  slug: fm.spec.pattern_slug,
+                  layer,
+                  single_ply: rd.single_ply === true,
+                  blank: rd.blank === true,
+                });
+              }
+            }
+            rt.boundFront = frontUrl;
+            rt.boundBack = backKey;
+            requestRender();
+            log('face_texture_bound', {
+              face: fid,
+              slug: fm.spec.pattern_slug,
+              recipe: 'foliage_moire',
+              // The @effects suite reads this event as proof a new mask landed;
+              // `literal` says WHICH geometry source it was.
+              literal: true,
+              stereo_views: false,
+            });
+            clearFaceFailed(fid);
+          })
+          .catch((e) => {
+            if (ctxRef.current !== ctx || ctx.bindToken !== token) return;
+            const message = (e as Error).message;
+            if (attempt + 1 < FACE_TEXTURE_ATTEMPTS) {
+              log('face_texture_retry', {
+                face: fid,
+                slug: fm.spec.pattern_slug,
+                attempt: attempt + 1,
+                error: message,
+              });
+              retryTimers.push(
+                window.setTimeout(() => {
+                  if (ctxRef.current === ctx && ctx.bindToken === token) {
+                    attemptLiteral(attempt + 1);
+                  }
+                }, FACE_TEXTURE_RETRY_MS)
+              );
+              return;
+            }
+            log('face_texture_failed', {
+              face: fid,
+              slug: fm.spec.pattern_slug,
+              attempts: attempt + 1,
+              error: message,
+            });
+            markFaceFailed(fid);
+          });
+      };
+      attemptLiteral(0);
+    };
+
     for (const fid of FACE_IDS) {
       const fm = boxManifest.faces[fid];
       if (!fm) continue;
@@ -2223,6 +2463,14 @@ export default function BoxScene() {
       // Recipe extras (slimmed recipe_data still carries the scalar knobs — only
       // frame_scene is stripped).
       const rd = fm.recipe_data ?? {};
+      // LITERAL faces take the other material path entirely: their geometry
+      // arrives as a raster of the fabricated chrome, so none of the procedural
+      // scalar knobs below (bucket encoding, preview periods, barrier phase)
+      // apply — there is no lattice to reconstruct.
+      if (rd.literal === true) {
+        bindLiteralFace(fid, fm, rt);
+        continue;
+      }
       // recipe_data keys whose absence changes the GEOMETRY rather than a shade:
       // the art-box rect gates the barrier comb and registers the capybara wake (a
       // (0,0) fallback stretches both to the whole face), the preview periods carry
@@ -2306,6 +2554,12 @@ export default function BoxScene() {
               u.uThicknessUm.value = fm.substrate.thickness_um;
               u.uN.value = fm.substrate.n;
               u.uRecipe.value = RECIPE_IDS.foliage_moire;
+              // Procedural path: level-coded masks, gratings synthesized below.
+              // Explicit (not merely defaulted) so a face that was literal on the
+              // previous manifest and is not on this one flips back.
+              u.uLiteral.value = 0.0;
+              u.uPeriodReady.value = 0.0;
+              u.uPeriodMap.value = ctx.blank;
               // uViewA/uViewB belong to the legacy stereo_lenticular path (recipe 0),
               // which a composed plate can never be — the guard above refused
               // anything but foliage_moire. Point them at a real texture anyway so no

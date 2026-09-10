@@ -16,6 +16,9 @@ import app.patterns.artistic  # noqa: F401
 
 def test_all_patterns_registered():
     expected = {
+        # Production box faces (2026-09): a photograph face and bare glass
+        "photo-halftone",
+        "blank",
         # Original catalog
         "wayuu-kanasu-moire",
         "emerald-facet-moire",
@@ -44,6 +47,10 @@ def test_all_patterns_registered():
 def test_every_pattern_generates_and_rasterizes():
     for slug, cls in registry.items():
         gp = cls.generate(**cls.defaults())
+        if slug == "blank":
+            # bare glass by definition: both layers empty is the contract
+            assert gp.front.is_empty and gp.back.is_empty
+            continue
         assert not (gp.front.is_empty and gp.back.is_empty), f"{slug}: both layers empty"
         img = rasterize(
             gp.front if not gp.front.is_empty else gp.back,

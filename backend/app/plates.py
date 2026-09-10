@@ -29,6 +29,7 @@ import hashlib
 import json
 import logging
 import math
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -200,6 +201,17 @@ class PlateSpec:
     # The switch/scanimation barrier periods scale with the gap regardless
     # (fab_center_period_um) — their crossing angle is the effect.
     carrier_scale_mode: str = "gap"
+    # SINGLE-PLY face: this side of the box is ONE sheet of glass, not a bonded
+    # pair, so there is no inner ply to write a back layer on. Everything moves
+    # to the FRONT (outer) layer — the frame leaves AND the uniform carrier
+    # grating, the carrier filling the back window MINUS the centerpiece art box
+    # — and the BACK layer is left empty. The garland's shimmer then comes from
+    # each leaf's grating beating against the carrier IN THE PLANE (the two-ply
+    # moiré at zero gap: static fringes rather than travelling ones), which is
+    # the honest thing a single ply can do. Reference geometry:
+    # ``witness_dies._static_garland_metal``, which is what the production
+    # witness plate's colour sides are actually written from.
+    single_ply: bool = False
     label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -214,6 +226,7 @@ class PlateSpec:
             "back_margin_um": self.back_margin_um,
             "carrier_pitch_um": self.carrier_pitch_um,
             "carrier_scale_mode": self.carrier_scale_mode,
+            "single_ply": self.single_ply,
             "label": self.label,
         }
 
@@ -236,6 +249,7 @@ class PlateSpec:
             ),
             carrier_pitch_um=float(data.get("carrier_pitch_um", 22.0)),
             carrier_scale_mode=str(data.get("carrier_scale_mode", "gap")),
+            single_ply=bool(data.get("single_ply", False)),
             label=data.get("label", ""),
         )
 
@@ -530,6 +544,19 @@ WATER_SCAN_SLUG = "capybara-scanimation"
 SWITCH_INTERLACE_SLUGS = frozenset(
     {"globe-duo-phase", "gear-quill-switch", "colibri-flap-phase"}
 )
+# BARE GLASS. A face whose slug is this gets NO frame, NO carrier and NO
+# centerpiece on either layer — the production box's back and bottom are plain
+# quartz on purpose (see patterns/blank.py). Every writer tests the slug once:
+# the composed preview (``_raster_compose_plate``), the fab SVG (``_bake_plate_svg``)
+# and the fine GDS (``export_fine.build_plate_fine``, via an all-empty ZoneMasks).
+BLANK_SLUG = "blank"
+# PHOTOGRAPH. The centerpiece is not a silhouette but a LINE SCREEN: horizontal
+# bands whose height tracks the picture's coverage, front layer only, with the
+# coloured bands carrying a diffraction sub-grating. ``_centerpiece_masks``
+# returns None for it (there is no silhouette to place); ``_paste_centerpiece``
+# stamps the bands, and ``photo_band_rects`` is the exact vector form both fab
+# writers bake. See patterns/bitmap/photo.py for the tone model.
+PHOTO_SLUG = "photo-halftone"
 # Fab (SVG/GDS) barrier-grid parameters — the standalone builder's defaults
 # (60 µm slit pitch, N=4 → 15 µm slot, 24 µm body-shimmer carrier). These bake
 # the REAL slit barrier + interleaved ripple frames into the box back plate.
@@ -730,6 +757,36 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         # (SWITCH_INTERLACE_SLUGS); every other face keeps the legacy 2-phase
         # centerpiece (which post-rebuild means the front-only shimmer faces).
         "switch_interlace": spec.pattern_slug in SWITCH_INTERLACE_SLUGS,
+        # BARE GLASS: this face carries no gold at all, so the renderer can skip
+        # its passes rather than sample two empty masks. Emitted unconditionally
+        # (like switch_barrier_phase_um): a consumer that reads the flag on every
+        # face cannot drift from it, and a key that appears on some faces and not
+        # others is how a stale manifest quietly changes meaning.
+        "blank": spec.pattern_slug == BLANK_SLUG,
+        # SOLID ART: the centerpiece is a line-screen picture whose bands are
+        # already the tone, so the shader must fill ART_LEVEL with plain gold
+        # instead of running the procedural switch carrier over it — a second
+        # grating on top would multiply the halftone's duty and wash the picture
+        # out. (RAINBOW_LEVEL bands keep their diffraction sheen; those ARE the
+        # colour sub-grating.)
+        "art_solid": spec.pattern_slug == PHOTO_SLUG,
+        # SINGLE PLY: one sheet of glass, so the carrier lives on the OUTER
+        # plane with the leaves and the inner plane is empty. The shader must
+        # draw the carrier at zero gap — the fringes are static under tilt
+        # because there is no gap to shear across, which is the truth about
+        # this face and not a limitation of the preview.
+        "single_ply": bool(getattr(spec, "single_ply", False)),
+        # RENDER IT LITERALLY: this face publishes ``files.literal_front`` /
+        # ``files.literal_back`` — coverage rasters of the ACTUAL DRC-healed
+        # chrome geometry the mask writer emits (``export_fine.build_plate_fine``),
+        # not the graylevel zone codes in front.png/back.png. The renderer samples
+        # those on the two pattern planes instead of synthesising gratings, so the
+        # preview is a picture of the plate rather than an impression of it.
+        # Unconditionally True on every composed face (an empty layer is written
+        # as an all-zero raster, never as a missing file) for the same reason
+        # ``blank`` is emitted unconditionally: a key that appears on some faces
+        # and not others is how a stale manifest quietly changes meaning.
+        "literal": True,
         # Solved barrier REGISTRATION, published rather than rediscovered. One
         # convention for all three consumers — the fab SVG bake
         # (``_barrier_masks``), the preview shader, and the six standalone
@@ -901,6 +958,15 @@ def _centerpiece_masks(
     silhouette ignore it.
     """
     params = params or {}
+    if slug in (BLANK_SLUG, PHOTO_SLUG):
+        # Neither face has a silhouette centerpiece, and saying so HERE is what
+        # keeps every consumer consistent: the composed preview, the fab SVG's
+        # ``_center_masks`` and ``export_fine._build_zone_masks`` all read this
+        # one function, so a blank face gets no art on either layer and a photo
+        # face gets no ``front_art``/``back_art`` for the switch carrier to fill.
+        # The photo's own geometry is a LINE SCREEN, not a silhouette — it comes
+        # from ``_photo_band_stamp`` (preview) / ``photo_band_rects`` (fab).
+        return None
     if slug == "colibri-flap-phase":
         # Wing-flap A/B tilt switch: the SAME hummingbird in two wing poses —
         # A = pose "up" (hover V), B = pose "down" (mid-downstroke + trailing
@@ -1128,6 +1194,212 @@ def _front_accent_zone(slug: str, art: "np.ndarray") -> "np.ndarray | None":
     return z if z.any() else None
 
 
+# --- photo-halftone centerpiece ---------------------------------------------
+# A photo face's centerpiece is a LINE SCREEN, so it has no silhouette and no
+# back layer: the picture is written entirely in the height of the front bands.
+# Three writers need it — the composed preview PNG, the fab SVG and the fine GDS
+# — and all three go through this pair, so the picture on screen and the picture
+# in the mask are the same screen at the same tone model.
+
+
+def _photo_screen_inputs(spec: PlateSpec) -> dict[str, Any] | None:
+    """Resolved photo params + the art-box side, or None if the face has none."""
+    from .patterns.bitmap import photo as ph
+
+    side_um = CENTERPIECE_FILL * _aperture(spec)
+    if side_um <= 0:
+        return None
+    p = {**registry[PHOTO_SLUG].defaults(), **spec.pattern_params}
+    period = float(p["line_period_um"])
+    steps = ph.resolve_steps(period, int(p["tone_steps"]))
+    return {
+        "side_um": side_um,
+        "image": str(p["image"]),
+        "colour_mode": str(p["colour_mode"]),
+        "fade_start": float(p["fade_start"]),
+        "fade_gate": float(p["fade_gate"]),
+        "line_period_um": period,
+        "tone_steps": steps,
+        # Sized off the ART BOX, not the plate, and identically in all three
+        # writers — so the preview stamp and the two fab bakes prep the SAME
+        # source array and cannot disagree about a pixel of coverage.
+        "asset_px": ph.asset_px_for(side_um, period),
+    }
+
+
+def _photo_band_stamp(
+    spec: PlateSpec, side_px: int
+) -> tuple["np.ndarray", "np.ndarray"] | None:
+    """``(gold, coloured)`` bool grids of ``side_px``², y-DOWN, over the art box.
+
+    This is ``screenrects.screen_bands``' geometry evaluated ON THE PLATE RASTER
+    instead of emitted as rectangles: line ``j`` occupies ``[j·P, (j+1)·P)``
+    measured down from the art box's top edge, the band is CENTRED in its line,
+    and its height is ``floor(coverage·steps)/steps · P`` — the screen's real
+    tone ladder, not a rounding artefact. The coverage and colour fields are
+    sampled through ``screenrects._sample_rows`` at the same ``(n_lines,
+    n_cols)`` grid the rectangle path uses, so the preview is a rasterization of
+    the fab geometry rather than a second, similar-looking screen.
+
+    On a 29 mm face the plate raster is ~19 um, i.e. only ~2.3 px per 44 um
+    line, so the preview's bands are coarse. That is accepted (the preview is
+    what it is); the exact bands are ``photo_band_rects``.
+    """
+    import numpy as np
+
+    from .patterns.bitmap import screenrects as sr
+    from .patterns.bitmap import photo as ph
+
+    inp = _photo_screen_inputs(spec)
+    if inp is None or side_px <= 0:
+        return None
+    side_um = inp["side_um"]
+    period = inp["line_period_um"]
+    steps = inp["tone_steps"]
+
+    cov, ids, periods = ph.photo_coverage(
+        inp["image"],
+        inp["fade_start"],
+        inp["fade_gate"],
+        steps,
+        inp["asset_px"],
+        colour_mode=inp["colour_mode"],
+    )
+
+    # The screen's own sampling grid (screen_bands): one line per period, one
+    # column per tone cell, capped against the asset so we never sample finer
+    # than the source has.
+    n_lines = max(1, int(round(side_um / period)))
+    want_cols = int(round(side_um / (period / steps)))
+    n_cols = max(8, min(want_cols, cov.shape[1] * 4))
+    tone = sr._sample_rows(cov, n_lines, n_cols)
+    level = np.floor(np.clip(tone, 0.0, 1.0) * steps).astype(np.int32)
+    if inp["colour_mode"] == "plain":
+        pid = np.zeros(level.shape, dtype=np.int32)
+    else:
+        pid = sr._sample_rows(ids.astype(np.float32), n_lines, n_cols).astype(np.int32)
+
+    # Art-box pixel centres, in um from the top-left of the box.
+    cell = side_um / side_px
+    ys = (np.arange(side_px) + 0.5) * cell
+    xs = (np.arange(side_px) + 0.5) * cell
+    li = np.minimum((ys / period).astype(np.int64), n_lines - 1)
+    col_um = side_um / n_cols
+    ci = np.minimum((xs / col_um).astype(np.int64), n_cols - 1)
+
+    lvl = level[li[:, None], ci[None, :]]
+    band_h = (lvl.astype(np.float64) / steps) * period
+    line_centre = (li[:, None] + 0.5) * period
+    gold = (np.abs(ys[:, None] - line_centre) <= band_h / 2.0) & (lvl > 0)
+
+    # A band is "coloured" when its period id maps to a real sub-grating period;
+    # id 0 (and any id absent from the table) stays plain gold — the same rule
+    # ``screenrects.split_by_colour`` applies to the rectangles.
+    lut = np.zeros(int(pid.max()) + 1 if pid.size else 1, dtype=np.float64)
+    for k, v in periods.items():
+        if 0 <= int(k) < lut.size:
+            lut[int(k)] = float(v)
+    coloured = gold & (lut[pid[li[:, None], ci[None, :]]] > 0.0)
+    return gold, coloured
+
+
+def _photo_halftone_art(spec: PlateSpec, *, defer_arrays: bool):
+    """The face's screened halftone (``witness_cells.CellArt``), or None.
+
+    One preparation of the picture — coverage, colour plan, band ladder —
+    behind both photo consumers, so the exact rectangles the fab writes and the
+    period map the renderer samples cannot be screened from two different
+    coverage maps. ``defer_arrays`` picks which form the coloured bands come
+    back in (see ``build_halftone_bands``): False concatenates every whole
+    sub-grating stripe into ``art.front``; True leaves them as one
+    ``art.arrays`` band-plus-period reference.
+    """
+    from . import witness_cells as wc
+    from .patterns.bitmap import photo as ph
+
+    inp = _photo_screen_inputs(spec)
+    if inp is None:
+        return None
+    cov, ids, periods = ph.photo_coverage(
+        inp["image"],
+        inp["fade_start"],
+        inp["fade_gate"],
+        inp["tone_steps"],
+        inp["asset_px"],
+        colour_mode=inp["colour_mode"],
+    )
+    plan = ph.colour_plan(inp["colour_mode"])
+    side = inp["side_um"]
+    art, _report = wc.build_halftone_bands(
+        0.0,
+        0.0,
+        side,
+        side,
+        coverage=cov,
+        period_id=None if plan.mode == "plain" else ids,
+        periods=periods,
+        duty=plan.duty,
+        line_period_um=inp["line_period_um"],
+        tone_steps=inp["tone_steps"],
+        defer_arrays=defer_arrays,
+        polarity="metal",
+    )
+    return art
+
+
+def photo_band_rects(spec: PlateSpec) -> "np.ndarray":
+    """EXACT front-layer geometry of a photo face: ``(N, 4)`` ``[x0,x1,y0,y1]`` um.
+
+    The line-screen bands plus, inside every coloured band, the vertical
+    diffraction sub-grating (``screenrects.stripe_plan``'s whole stripes). Plate
+    coords, origin at the plate centre, y UP — the same frame
+    ``_helpers.raster_to_polygons`` and ``export_fine``'s rect sets use, so this
+    drops into the fab SVG and the fine GDS without a transform.
+
+    Front layer ONLY. A halftone's tone IS its band height; putting anything on
+    the inner ply under it would show through the gaps and lift the shadows.
+    """
+    import numpy as np
+
+    # defer_arrays=False: the SVG/GDS writers here want real rectangles. The
+    # array-reference path (`stripe_plan`) is the witness plate's, where a
+    # periodic sub-grating becomes one GDS array instead of 100k boxes.
+    art = _photo_halftone_art(spec, defer_arrays=False)
+    if art is None:
+        return np.empty((0, 4), dtype=float)
+    return np.asarray(art.front, dtype=float)
+
+
+def photo_colour_band_periods(spec: PlateSpec) -> tuple["np.ndarray", "np.ndarray"]:
+    """The COLOURED halftone bands and their sub-grating periods.
+
+    ``((N,4) [x0,x1,y0,y1] µm bands, (N,) period µm)`` in plate coords, y UP —
+    the same band rectangles ``photo_band_rects`` fills with whole stripes, but
+    kept whole so the period behind each one is still a number rather than
+    geometry. This is what ``period_front.png`` is painted from: at 2048 px the
+    stripes themselves are far below a pixel, so the raster carries their
+    COVERAGE while this carries the period that sets their diffracted colour.
+
+    Empty on a plain (uncoloured) screen and on any non-photo face.
+    """
+    import numpy as np
+
+    empty = (np.empty((0, 4), dtype=float), np.empty((0,), dtype=float))
+    if spec.pattern_slug != PHOTO_SLUG:
+        return empty
+    # defer_arrays=True: we want the band + period reference, NOT the expanded
+    # stripes (which is also why this is cheaper than photo_band_rects).
+    art = _photo_halftone_art(spec, defer_arrays=True)
+    if art is None or not art.arrays:
+        return empty
+    plan = art.arrays[0]
+    rects = np.asarray(plan["rects"], dtype=float)
+    periods = np.asarray(plan["period_um"], dtype=float)
+    if rects.shape[0] == 0 or periods.shape[0] != rects.shape[0]:
+        return empty
+    return rects, periods
+
+
 def _paste_centerpiece(
     spec: PlateSpec,
     front: Image.Image,
@@ -1149,15 +1421,40 @@ def _paste_centerpiece(
         return
     side_um = CENTERPIECE_FILL * aperture
     side_px = max(8, int(round(side_um / pitch_um)))
-    masks = _centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
-    if masks is None:
-        return
-    front_art, back_art = masks
 
     cx = plate_w // 2
     cy = plate_h // 2
     x0 = cx - side_px // 2
     y0 = cy - side_px // 2
+
+    if spec.pattern_slug == PHOTO_SLUG:
+        # LINE SCREEN, front only. Bands go in at ART_LEVEL — with
+        # ``recipe_data['art_solid']`` the shader fills that level with solid
+        # gold instead of the procedural switch carrier, because the band height
+        # IS the tone and a second grating over it would halve every duty. The
+        # bands that carry a colour period go in at RAINBOW_LEVEL instead, where
+        # the shader already adds the travelling spectral sheen that stands in
+        # for their sub-grating (which the fab bakes for real).
+        stamp = _photo_band_stamp(spec, side_px)
+        if stamp is None:
+            return
+        gold, coloured = stamp
+        lvl = np.where(coloured, RAINBOW_LEVEL, np.where(gold, ART_LEVEL, 0)).astype(
+            np.uint8
+        )
+        # Binary paste mask, not the graylevel — an 'L' mask alpha-blends and
+        # would drag RAINBOW_LEVEL 200 down to ~157 (same trap as _paste below).
+        front.paste(
+            Image.fromarray(lvl, "L"),
+            box=(x0, y0),
+            mask=Image.fromarray((gold.astype(np.uint8) * 255), "L"),
+        )
+        return
+
+    masks = _centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
+    if masks is None:
+        return
+    front_art, back_art = masks
 
     def _resize_to_side(art: "np.ndarray") -> "np.ndarray":
         if art.shape[0] != side_px or art.shape[1] != side_px:
@@ -1236,6 +1533,44 @@ def _paste_centerpiece(
         _paste(front, water_full, with_accent=False, box=(wx0, y0))
     else:
         _paste(back, back_art, with_accent=False)
+
+
+def _paste_front_carrier(
+    spec: PlateSpec,
+    front: Image.Image,
+    pitch_um: float,
+    plate_w: int,
+    plate_h: int,
+) -> None:
+    """SINGLE-PLY: paint the uniform carrier window onto the FRONT mask.
+
+    The carrier spans the whole exposed face (``back_dims`` — foil overlap only,
+    the window it would occupy on the inner ply of a bonded face) MINUS the
+    centerpiece art box, which the picture/motif fills itself. That subtraction
+    is the geometry ``witness_dies._static_garland_metal`` writes for the
+    production plate's colour sides, and it is why the picture's edge fade has a
+    50 % gold field to dissolve into rather than bare glass.
+
+    Painted at FRAME_LEVEL, the same level the two-ply back window uses, so the
+    shader's frame branch handles it — with ``recipe_data['single_ply']`` telling
+    it the grating sits on the OUTER plane.
+    """
+    back_w, back_h = spec.back_dims()
+    if back_w <= 0 or back_h <= 0:
+        return
+    d = ImageDraw.Draw(front)
+    bw_px = max(1, int(round(back_w / pitch_um)))
+    bh_px = max(1, int(round(back_h / pitch_um)))
+    bx0 = (plate_w - bw_px) // 2
+    by0 = (plate_h - bh_px) // 2
+    d.rectangle((bx0, by0, bx0 + bw_px - 1, by0 + bh_px - 1), fill=FRAME_LEVEL)
+    aperture = _aperture(spec)
+    if aperture <= 0:
+        return
+    side_px = max(8, int(round(CENTERPIECE_FILL * aperture / pitch_um)))
+    ax0 = plate_w // 2 - side_px // 2
+    ay0 = plate_h // 2 - side_px // 2
+    d.rectangle((ax0, ay0, ax0 + side_px - 1, ay0 + side_px - 1), fill=0)
 
 
 def compose_plate(spec: PlateSpec) -> GeneratedPattern:
@@ -1357,12 +1692,30 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     front = Image.new("L", (plate_w, plate_h), 0)
     back = Image.new("L", (plate_w, plate_h), 0)
 
+    # BARE GLASS: no frame, no carrier, no centerpiece, on either layer. The
+    # plate still exists — the box needs its cut dims, glass and assembly entry
+    # — it just describes a rectangle of quartz. See BLANK_SLUG.
+    is_blank = spec.pattern_slug == BLANK_SLUG
+    # SINGLE PLY: there is no inner ply to write on, so the uniform carrier
+    # joins the leaves on the FRONT layer (over the back window MINUS the art
+    # box) and the back layer stays empty. Reference: witness_dies.
+    single_ply = bool(getattr(spec, "single_ply", False)) and not is_blank
+    back_margin = spec.weld_margin_um if spec.back_margin_um is None else spec.back_margin_um
+
+    # --- SINGLE PLY: the carrier joins the front layer, under everything -----
+    # Painted FIRST so the frame graylevels and the centerpiece stamp land on
+    # top of it (both paste with a binary mask, so they overwrite cleanly).
+    if single_ply:
+        _paste_front_carrier(spec, front, plate_pitch, plate_w, plate_h)
+
     # --- FRONT: perimeter foliage frame band ---------------------------------
     # The colonize band hugs the four edges (fill_interior=False), leaving the
     # center open for the art centerpiece. Painted at FRAME_LEVEL so the shader
     # tells frame foliage apart from the ART_LEVEL centerpiece.
     active_w, active_h = spec.active_dims()
-    if active_w > 0 and active_h > 0:
+    if is_blank:
+        scene = None
+    elif active_w > 0 and active_h > 0:
         rect = RectFrame(width_um=active_w, height_um=active_h)
         frame_params = spec.frame.to_frame_params()
         frame_params.fill_interior = False  # perimeter band, center stays open
@@ -1391,8 +1744,10 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
         scene = None  # weld swallowed the active area — degenerate but legal
 
     # --- BACK: solid uniform carrier window across the whole exposed face ----
+    # Skipped on a single-ply face (the carrier is already on the front, above)
+    # and on a blank one (no gold anywhere).
     back_w, back_h = spec.back_dims()
-    if back_w > 0 and back_h > 0:
+    if not is_blank and not single_ply and back_w > 0 and back_h > 0:
         back_w_px = max(1, int(round(back_w / plate_pitch)))
         back_h_px = max(1, int(round(back_h / plate_pitch)))
         bx0 = (plate_w - back_w_px) // 2
@@ -1406,7 +1761,8 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     # to the frame. The two silhouettes are painted at ART_LEVEL so the shader
     # runs the phase-shift switch inside the centerpiece while the frame band
     # around it runs the foliage-moiré shimmer.
-    _paste_centerpiece(spec, front, back, plate_pitch, plate_w, plate_h)
+    if not is_blank:
+        _paste_centerpiece(spec, front, back, plate_pitch, plate_w, plate_h)
 
     # Belt-and-suspenders: clear each layer's OWN keep-out rim. The front art
     # must stay inside the weld margin (foil overlap + safety); the back
@@ -1422,8 +1778,17 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
         d.rectangle((0, 0, m, plate_h), fill=0)
         d.rectangle((plate_w - m, 0, plate_w, plate_h), fill=0)
 
-    _zero_rim(front, spec.weld_margin_um)
-    back_margin = spec.weld_margin_um if spec.back_margin_um is None else spec.back_margin_um
+    # On a SINGLE-PLY face the carrier is the back layer moved onto the outer
+    # ply, so its keep-out is the BACK window (foil overlap only), not the front
+    # weld margin — the same split witness_dies._static_garland_metal makes. The
+    # frame band is bounded by the active rect and the centerpiece by the art
+    # box, so nothing else can reach into the ring between the two rims; taking
+    # the smaller of them keeps the frame's own keep-out honest whichever way
+    # round the two margins happen to fall for a given foil/glass pair.
+    _zero_rim(
+        front,
+        min(spec.weld_margin_um, back_margin) if single_ply else spec.weld_margin_um,
+    )
     _zero_rim(back, back_margin)
 
     save_png_atomic(front, out_dir / "front.png")
@@ -1477,6 +1842,186 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     }
 
 
+# --- LITERAL rasters: the fabricated chrome, sampled as coverage -------------
+#
+# ``front.png`` / ``back.png`` are SHADER masks: graylevel ZONE CODES
+# (FRAME_LEVEL, ART_LEVEL, RAINBOW_LEVEL, the FRAME_BUCKET angle ladder) that
+# tell plate.frag which procedural effect to run where, at a pitch far too
+# coarse to carry a grating without aliasing rings. The literal rasters are the
+# opposite kind of image: no codes and no zones, just the actual DRC-healed
+# litho polygons ``export_fine.build_plate_fine`` hands the GDS writer, sampled
+# as area coverage. 255 = chrome/metal present, 0 = bare glass.
+#
+# The renderer samples these on the outer and inner pattern planes instead of
+# synthesising gratings, which is what makes the preview a picture of the plate
+# rather than an impression of it — and it is the same geometry the mask writer
+# prints, so a moiré on screen is a moiré the fab will make.
+#
+# Same extent, orientation and centre as front.png/back.png (whole plate
+# INCLUDING the weld margin, unmirrored, plate µm with the origin at the plate
+# centre and y UP mapped to row 0 = top) so the two overlay pixel for pixel
+# after a uniform scale. An EMPTY layer is a valid literal raster and is
+# written as all zeros — a blank face, or the back of a single-ply one — never
+# left as a missing file.
+LITERAL_RASTER_PX = 2048
+# The mask is binary, so no anti-aliasing is wanted; but a bare centre-sampling
+# polygon fill DROPS every sub-pixel line, and at ~14 µm/px on a production
+# face that silently deletes the entire 5 µm colour sub-grating. Fill at 2× and
+# BOX-downsample so each line averages in at its true coverage instead. This is
+# coverage, not smoothing.
+LITERAL_SUPERSAMPLE = 2
+# ``period_front.png`` packs the sub-grating period as period_um × 25, so the
+# whole diffractive family fits an 8-bit channel (0-10.2 µm at 0.04 µm steps)
+# and 0 keeps its meaning: no sub-grating here.
+LITERAL_PERIOD_SCALE = 25.0
+
+
+def _literal_raster_dims(spec: PlateSpec) -> tuple[int, int]:
+    """``(w_px, h_px)`` for the literal rasters: plate aspect, 2048 on the long side."""
+    w_um = max(1e-6, float(spec.width_um))
+    h_um = max(1e-6, float(spec.height_um))
+    if w_um >= h_um:
+        return LITERAL_RASTER_PX, max(1, int(round(LITERAL_RASTER_PX * h_um / w_um)))
+    return max(1, int(round(LITERAL_RASTER_PX * w_um / h_um))), LITERAL_RASTER_PX
+
+
+def _literal_layer_raster(
+    polys: list["np.ndarray"], spec: PlateSpec, w_px: int, h_px: int
+) -> Image.Image:
+    """One layer's plate-frame polygon rings → an ``L`` coverage raster.
+
+    ``polys`` are ``build_plate_fine``'s healed EXTERIOR rings (holes already
+    dropped by ``drc_clean_region`` — a fill-only gold mask), so a plain
+    fill-255 polygon draw is the whole rasterization. Plate µm (origin centre,
+    y up) map to pixels exactly as ``_raster_compose_plate`` maps them: x + W/2
+    scaled across the width, H/2 - y scaled down the height.
+    """
+    import numpy as np
+
+    ss = max(1, int(LITERAL_SUPERSAMPLE))
+    img = Image.new("L", (w_px * ss, h_px * ss), 0)
+    if polys:
+        draw = ImageDraw.Draw(img)
+        w_um = max(1e-6, float(spec.width_um))
+        h_um = max(1e-6, float(spec.height_um))
+        sx = (w_px * ss) / w_um
+        sy = (h_px * ss) / h_um
+        hx, hy = 0.5 * w_um, 0.5 * h_um
+        for ring in polys:
+            r = np.asarray(ring, dtype=float)
+            if r.ndim != 2 or r.shape[0] < 3:
+                continue
+            xs = (r[:, 0] + hx) * sx
+            ys = (hy - r[:, 1]) * sy
+            draw.polygon(
+                [(float(a), float(b)) for a, b in zip(xs.tolist(), ys.tolist())],
+                fill=255,
+            )
+    if ss > 1:
+        # BOX = exact area average of each ss×ss block, i.e. the coverage the
+        # supersample was taken for. Any other filter would ring.
+        img = img.resize((w_px, h_px), Image.BOX)
+    return img
+
+
+def _literal_period_raster(spec: PlateSpec, w_px: int, h_px: int) -> Image.Image | None:
+    """``period_front.png``: the sub-grating PERIOD field, or None if there is none.
+
+    Only a photo-halftone face with a colour plan has one. Its diffraction
+    sub-grating is ~5 µm lines on a few-µm period — three orders of magnitude
+    below a 2048 px plate raster — so ``literal_front`` can only carry the
+    stripes' COVERAGE (a grey inside each coloured band). The colour they
+    diffract comes from their PERIOD, which is what this map publishes:
+    ``period_um × LITERAL_PERIOD_SCALE`` inside every band that carries one,
+    0 everywhere else.
+
+    Bands are painted at final resolution and outset to whole pixels: a band is
+    thinner than a pixel at this scale, and a label field that rounds its thin
+    bands away publishes "no sub-grating here" — a worse lie than a band one
+    pixel too wide.
+    """
+    rects, periods = photo_colour_band_periods(spec)
+    if rects.shape[0] == 0:
+        return None
+    img = Image.new("L", (w_px, h_px), 0)
+    draw = ImageDraw.Draw(img)
+    w_um = max(1e-6, float(spec.width_um))
+    h_um = max(1e-6, float(spec.height_um))
+    sx, sy = w_px / w_um, h_px / h_um
+    hx, hy = 0.5 * w_um, 0.5 * h_um
+    painted = False
+    for (x0, x1, y0, y1), period in zip(rects.tolist(), periods.tolist()):
+        value = min(255, int(round(float(period) * LITERAL_PERIOD_SCALE)))
+        if value <= 0:
+            continue
+        px0 = int(math.floor((x0 + hx) * sx))
+        px1 = max(px0, int(math.ceil((x1 + hx) * sx)) - 1)
+        py0 = int(math.floor((hy - y1) * sy))
+        py1 = max(py0, int(math.ceil((hy - y0) * sy)) - 1)
+        if px1 < 0 or py1 < 0 or px0 >= w_px or py0 >= h_px:
+            continue
+        draw.rectangle((px0, py0, px1, py1), fill=value)
+        painted = True
+    if not painted or img.getextrema()[1] == 0:
+        return None
+    return img
+
+
+def _write_literal_rasters(spec: PlateSpec, out_dir: Path, pid: str) -> dict[str, str]:
+    """Publish the plate's literal rasters; return the ``files`` entries for them.
+
+    ``literal_front`` / ``literal_back`` always, ``period_front`` only when the
+    face actually has a sub-grating period field (an all-zero period map is
+    noise — the absent key IS "no sub-gratings on this face"). Any period map
+    left by an earlier compose of this slot is removed, so the manifest and the
+    directory cannot disagree.
+
+    ONE ``build_plate_fine`` per face: it is the expensive call on this path
+    (seconds to ~40 s), and it already reuses this plate's frame-scene sidecar
+    rather than regrowing the band — see ``frame_scene_for_plate`` and the
+    fresh-compose window ``_materialize_plate_locked`` opens around it.
+    """
+    from .export_fine import build_plate_fine
+
+    w_px, h_px = _literal_raster_dims(spec)
+    # ``face`` is informational on this path (it labels PlateFine.face for the
+    # wafer report's per-face stats and picks nothing geometric); a plate
+    # materialized on its own has no box face id, so it is labelled by what it
+    # actually is.
+    t_fine = time.perf_counter()
+    fine = build_plate_fine(spec, spec.label or spec.pattern_slug)
+    fine_ms = int((time.perf_counter() - t_fine) * 1000)
+
+    t_raster = time.perf_counter()
+    files: dict[str, str] = {}
+    for name, layer in (("literal_front", fine.front_polys), ("literal_back", fine.back_polys)):
+        save_png_atomic(
+            _literal_layer_raster(layer, spec, w_px, h_px), out_dir / f"{name}.png"
+        )
+        files[name] = f"/data/plates/{pid}/{name}.png"
+
+    period = _literal_period_raster(spec, w_px, h_px)
+    period_path = out_dir / "period_front.png"
+    if period is None:
+        period_path.unlink(missing_ok=True)
+    else:
+        save_png_atomic(period, period_path)
+        files["period_front"] = f"/data/plates/{pid}/period_front.png"
+    _log.info(
+        "literal_rasters id=%s slug=%s %dx%d fine=%dms raster=%dms polys=%d/%d period=%s",
+        pid,
+        spec.pattern_slug,
+        w_px,
+        h_px,
+        fine_ms,
+        int((time.perf_counter() - t_raster) * 1000),
+        len(fine.front_polys),
+        len(fine.back_polys),
+        period is not None,
+    )
+    return files
+
+
 # Bump when the composed-plate output changes under an unchanged spec hash:
 # ``_raster_compose_plate``, ``_paste_centerpiece``, ``_centerpiece_masks``, the
 # mask level palette (FRAME_LEVEL / ART_LEVEL / FRAME_BUCKET* / RAINBOW_LEVEL),
@@ -1517,7 +2062,38 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 #     default 1.0 is bit-identical to v12's geometry, but the field is part of
 #     the frame recipe the compose path bakes, so warm slots must re-derive
 #     rather than serve a manifest that predates the knob.
-PLATE_COMPOSE_VERSION = 13
+# v14: the PRODUCTION box lands — three new compose behaviours and three new
+#     recipe_data keys. BLANK faces (``BLANK_SLUG``) emit nothing on either
+#     layer; SINGLE-PLY faces (``PlateSpec.single_ply``) move the uniform
+#     carrier onto the FRONT mask over the back window minus the art box and
+#     leave the back empty; PHOTO faces (``PHOTO_SLUG``) stamp line-screen bands
+#     at ART_LEVEL / RAINBOW_LEVEL instead of a silhouette. ``_carrier_recipe_data``
+#     grows ``blank`` / ``art_solid`` / ``single_ply`` unconditionally, so even a
+#     face whose PNGs are unchanged must re-derive rather than serve a manifest
+#     that predates the keys.
+# v15: RENDER IT LITERALLY. Every composed face publishes coverage rasters of
+#     its actual DRC-healed chrome (``literal_front``/``literal_back``, plus
+#     ``period_front`` where a halftone carries colour sub-gratings) and stamps
+#     ``recipe_data['literal']``. The manifest SHAPE changed — new ``files``
+#     keys and a new recipe_data key — and the payload PNGs do not exist beside
+#     a v14 manifest at all, so a warm slot must re-derive rather than serve a
+#     manifest whose renderer contract it cannot satisfy.
+PLATE_COMPOSE_VERSION = 15
+
+
+# Plate ids whose ``scene.json`` was written by the compose CURRENTLY running on
+# this thread. The literal-raster bake runs INSIDE ``_materialize_plate_locked``,
+# before the manifest is published — so ``get_plate`` still reads the old
+# manifest (or none at all) and the compose_version gate below would reject a
+# sidecar this very compose just wrote, regrowing the band a second time in the
+# same call. Thread-local rather than module-global: the gate exists to stop a
+# sidecar from an OLDER compose leaking in, and only the thread inside the
+# compose knows the file is current. Set/cleared in _materialize_plate_locked.
+_fresh_scene = threading.local()
+
+
+def _scene_sidecar_is_fresh(plate_id: str) -> bool:
+    return plate_id in getattr(_fresh_scene, "ids", ())
 
 
 def frame_scene_for_plate(
@@ -1537,9 +2113,14 @@ def frame_scene_for_plate(
     version bump.
 
     Gated on the manifest's ``compose_version`` so a sidecar left by an older
-    compose cannot leak into a plate that the current compose would rebuild.
+    compose cannot leak into a plate that the current compose would rebuild —
+    or, mid-compose, on ``_scene_sidecar_is_fresh``, which is the same
+    guarantee before there is a manifest to read it from.
     """
-    if manifest is not None and manifest.get("compose_version") == PLATE_COMPOSE_VERSION:
+    fresh = _scene_sidecar_is_fresh(plate_dir.name)
+    if fresh or (
+        manifest is not None and manifest.get("compose_version") == PLATE_COMPOSE_VERSION
+    ):
         data = read_json_cache(plate_dir / "scene.json")
         if data is not None and "segments" in data:
             return Scene.from_dict(data)
@@ -1588,6 +2169,22 @@ def _materialize_plate_locked(spec: PlateSpec, pid: str, force: bool) -> dict[st
         out.mkdir(parents=True, exist_ok=True)
         raster_result = _raster_compose_plate(spec, out)
         pitch = raster_result["pixel_pitch_um"]
+
+        # LITERAL rasters — the fabricated chrome the renderer actually samples
+        # (see LITERAL_RASTER_PX). Built here, next to the shader masks, so a
+        # plate slot is never half a contract: the manifest published at the
+        # bottom of this block is the only thing that makes any of it visible,
+        # and it advertises both. The fresh-scene window lets the fine bake read
+        # the scene.json _raster_compose_plate just wrote instead of regrowing
+        # the foliage band a second time in the same call.
+        ids = getattr(_fresh_scene, "ids", None)
+        if ids is None:
+            ids = _fresh_scene.ids = set()
+        ids.add(pid)
+        try:
+            literal_files = _write_literal_rasters(spec, out, pid)
+        finally:
+            ids.discard(pid)
 
         # SVG is built on demand by the /export endpoint (see ensure_plate_svg)
         # — the polygon path is ~40× slower than raster and the interactive UI
@@ -1638,6 +2235,12 @@ def _materialize_plate_locked(spec: PlateSpec, pid: str, force: bool) -> dict[st
             "files": {
                 "front_png": f"/data/plates/{pid}/front.png",
                 "back_png": f"/data/plates/{pid}/back.png",
+                # The literal chrome rasters the renderer samples on the two
+                # pattern planes: literal_front / literal_back always (an empty
+                # layer is an all-zero raster, not a missing key), period_front
+                # only where a halftone carries colour sub-gratings. Same URL
+                # form as front_png — the files are already on disk above.
+                **literal_files,
                 "front_svg": "",
                 "back_svg": "",
                 "thumbnail": f"/data/plates/{pid}/thumbnail.png",
@@ -1676,6 +2279,39 @@ def _mask_rim(grid: "np.ndarray", margin_um: float, pitch_um: float) -> None:
     grid[-m:, :] = False
     grid[:, :m] = False
     grid[:, -m:] = False
+
+
+def _back_window_grid(
+    spec: PlateSpec, fw: int, fh: int, pitch_um: float
+) -> "np.ndarray":
+    """The uniform-carrier window as a bool grid, rimmed at the BACK keep-out.
+
+    The window spans the whole EXPOSED face (``back_dims`` — foil overlap only,
+    wider than the front weld margin). Shared by the two-ply BACK bake and the
+    single-ply FRONT bake so the carrier occupies the identical rectangle
+    whichever ply it ends up on.
+    """
+    import numpy as np
+
+    win = np.zeros((fh, fw), dtype=bool)
+    back_w, back_h = spec.back_dims()
+    if back_w <= 0 or back_h <= 0:
+        return win
+    bw = max(1, int(round(back_w / pitch_um)))
+    bh = max(1, int(round(back_h / pitch_um)))
+    bx = (fw - bw) // 2
+    by = (fh - bh) // 2
+    win[by : by + bh, bx : bx + bw] = True
+    back_margin = spec.weld_margin_um if spec.back_margin_um is None else spec.back_margin_um
+    _mask_rim(win, back_margin, pitch_um)
+    return win
+
+
+def _photo_multipolygon(spec: PlateSpec) -> MultiPolygon:
+    """A photo face's exact front geometry as polygons (bands + sub-gratings)."""
+    from .patterns.bitmap.photo import rects_to_multipolygon
+
+    return rects_to_multipolygon(photo_band_rects(spec))
 
 
 def _strip_svg_body(full_svg: str) -> str:
@@ -1886,6 +2522,15 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     if manifest is None or "spec" not in manifest:
         return None
     spec = PlateSpec.from_dict(manifest["spec"])
+    if spec.pattern_slug == BLANK_SLUG:
+        # BARE GLASS: two valid but empty documents. Written (rather than
+        # skipped) so the export bundle carries a file per layer per face and a
+        # fab reader sees "this face is blank", not "this face is missing".
+        _publish_svg_pair(
+            manifest, manifest_path, plate_id, front_svg, back_svg,
+            spec.width_um, spec.height_um, "", "", {},
+        )
+        return front_svg, back_svg
     rd = _carrier_recipe_data(spec)
     back_period = float(rd["fab_back_period_um"])
     front_period = float(rd["fab_front_period_um"])
@@ -1967,6 +2612,8 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             spec.pattern_slug,
         )
     is_interlace = spec.pattern_slug in SWITCH_INTERLACE_SLUGS
+    is_photo = spec.pattern_slug == PHOTO_SLUG
+    single_ply = bool(getattr(spec, "single_ply", False))
     aperture = _aperture(spec)
     side_px = max(8, int(round(CENTERPIECE_FILL * aperture / pitch))) if aperture > 0 else 0
     cxg = fw // 2
@@ -2264,7 +2911,13 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             # Opaque bars of the solved lattice (``barrier_comb`` is a column
             # mask; its complement is the open slit, centred on an A|B boundary).
             art_carrier = art_box & barrier_comb[None, :]
-        elif water_front_extra is not None:
+        elif water_front_extra is not None or is_photo:
+            # Nothing from the raster path. The capybara's grating is the exact
+            # vector comb OR-ed in below; the photo's is the exact line screen
+            # concatenated after the raster (see ``photo_band_rects``). In both
+            # cases filling a silhouette with the centerpiece carrier as well
+            # would superimpose a second 50 %-duty grating on geometry that is
+            # already carrying the effect.
             art_carrier = np.zeros((fh, fw), dtype=bool)
         else:
             center_grating = _grating_grid(fw, fh, pitch, center_period, duty, center_axis)
@@ -2310,21 +2963,42 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
                     accent_max_pitch,
                     DIFFRACTION_ACCENT_PERIOD_UM,
                 )
+        if single_ply:
+            # SINGLE PLY: the uniform carrier rides on the OUTER ply with the
+            # leaves, over the back window MINUS the art box — the geometry
+            # ``witness_dies._static_garland_metal`` writes for the production
+            # plate's colour sides. Each leaf's grating then beats against this
+            # carrier IN THE PLANE (static fringes, the two-ply moiré at zero
+            # gap), which is the effect a single sheet of glass can actually
+            # deliver. The back layer is left empty below.
+            carrier_zone = _back_window_grid(spec, fw, fh, pitch)
+            if side_px > 0:
+                ax0 = max(0, cxg - side_px // 2)
+                ay0 = max(0, cyg - side_px // 2)
+                carrier_zone[
+                    ay0 : min(fh, ay0 + side_px), ax0 : min(fw, ax0 + side_px)
+                ] = False
+            front_grid |= carrier_zone & _grating_grid(
+                fw, fh, pitch, back_period, duty, base_angle
+            )
         front_polys = raster_to_polygons(front_grid, pitch, (W, H))
+        if is_photo:
+            # The line screen is EXACT vector geometry — bands plus, inside each
+            # coloured band, its diffraction sub-grating — so it bypasses the
+            # coarse budget raster entirely and is concatenated (never unioned;
+            # see _concat_polygons) onto the frame's polygons.
+            front_polys = _concat_polygons(
+                front_polys, _photo_multipolygon(spec)
+            )
         front_group = _group("frame+centerpiece", _strip_svg_body(to_svg(front_polys, (W, H), background=None)))
 
     # --- BACK: uniform carrier grating + globe centerpiece (phase π) --------
+    # Empty on a single-ply face: there is no inner ply, and the carrier that
+    # would live here is already on the front layer above.
     back_group = ""
     back_w, back_h = spec.back_dims()
-    if back_w > 0 and back_h > 0:
-        win = np.zeros((fh, fw), dtype=bool)
-        bw = max(1, int(round(back_w / pitch)))
-        bh = max(1, int(round(back_h / pitch)))
-        bx = (fw - bw) // 2
-        by = (fh - bh) // 2
-        win[by : by + bh, bx : bx + bw] = True
-        back_margin = spec.weld_margin_um if spec.back_margin_um is None else spec.back_margin_um
-        _mask_rim(win, back_margin, pitch)
+    if not single_ply and back_w > 0 and back_h > 0:
+        win = _back_window_grid(spec, fw, fh, pitch)
         carrier_grating = _grating_grid(fw, fh, pitch, back_period, duty, base_angle)
         if is_interlace:
             # Barrier-interlace back layer: BOTH silhouettes interleaved in
@@ -2371,10 +3045,34 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         back_polys = raster_to_polygons(back_grid, pitch, (W, H))
         back_group = _group("carrier+centerpiece", _strip_svg_body(to_svg(back_polys, (W, H), background=None)))
 
-    # SVGs first, manifest last — the manifest's svg_bake_* record must never
-    # describe geometry that is not on disk yet.
-    write_text_atomic(front_svg, _wrap_svg(W, H, [front_group]))
-    write_text_atomic(back_svg, _wrap_svg(W, H, [back_group]))
+    _publish_svg_pair(
+        manifest, manifest_path, plate_id, front_svg, back_svg,
+        W, H, front_group, back_group, svg_bake,
+    )
+    return front_svg, back_svg
+
+
+def _publish_svg_pair(
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    plate_id: str,
+    front_svg: Path,
+    back_svg: Path,
+    width_um: float,
+    height_um: float,
+    front_group: str,
+    back_group: str,
+    svg_bake: dict[str, Any],
+) -> None:
+    """Write the fab SVG pair and stamp the manifest that describes it.
+
+    SVGs first, manifest last — the manifest's ``svg_bake_*`` record must never
+    describe geometry that is not on disk yet. Shared with the BLANK early
+    return so a blank face publishes through exactly the same steps (empty
+    groups, cleared bake record) rather than a second, nearly-identical tail.
+    """
+    write_text_atomic(front_svg, _wrap_svg(width_um, height_um, [front_group]))
+    write_text_atomic(back_svg, _wrap_svg(width_um, height_um, [back_group]))
 
     files = manifest.setdefault("files", {})
     files["front_svg"] = f"/data/plates/{plate_id}/front.svg"
@@ -2387,7 +3085,6 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
         rd_out.pop(key, None)
     rd_out.update(svg_bake)
     write_json_atomic(manifest_path, manifest)
-    return front_svg, back_svg
 
 
 # recipe_data keys ensure_plate_svg writes to describe the EFFECTIVE baked
@@ -2439,7 +3136,13 @@ _SVG_BAKE_KEYS = (
 #     bars across the animal, back.svg no longer interleaves ripple crests under
 #     it, and the plain back carrier is kept over the submerged body instead of
 #     being cleared for the band. Only the capybara face changes.
-PLATE_SVG_VERSION = "plate-svg-v11"
+# v12: production-box faces. A BLANK face bakes two empty documents; a
+#     SINGLE-PLY face bakes the carrier grating into front.svg (over the back
+#     window MINUS the art box) and an EMPTY back.svg; a PHOTO face bakes the
+#     line-screen bands and their colour sub-gratings as exact rectangles at the
+#     art box, front layer only — vector geometry that never passes through the
+#     coarse budget raster, so it is period-exact even here.
+PLATE_SVG_VERSION = "plate-svg-v12"
 
 
 def _svg_is_current(svg_path: Path) -> bool:

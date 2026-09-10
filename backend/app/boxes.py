@@ -47,17 +47,22 @@ _log = logging.getLogger("optics.boxes")
 
 BOXES_ROOT = DATA_ROOT / "boxes"
 
+# --- the PRODUCTION box ------------------------------------------------------
+# Four written faces and two of bare glass. That is a decision, not an
+# omission: the lid's monogram and the front's globe switch are the two-ply
+# effects the bonded build exists for, the two sides are PHOTOGRAPHS on single
+# plies, and the back and bottom are left as quartz so the piece has somewhere
+# to be quiet. See patterns/blank.py.
 DEFAULT_FACE_PATTERN_SLUG = "globe-duo-phase"      # front: rotating CA↔Colombia globe
 LID_PATTERN_SLUG = "monogram-jp"                   # top
-BOTTOM_PATTERN_SLUG = "inscription-line"           # bottom
-# Confirmed six-face plan: each wall gets its own showpiece.
-BACK_PATTERN_SLUG = "inscription-line"       # capybara scanimation cut 2026-09: its 15 um
-                                             # slots are far below the 1.5 mm near-field limit
-LEFT_PATTERN_SLUG = "jamon-tray"             # jamón + tray (food-pair-chirp stays in catalog)
-RIGHT_PATTERN_SLUG = "gear-quill-switch"     # gear ↔ quill+book tilt switch
+BOTTOM_PATTERN_SLUG = "blank"                      # bottom: bare glass
+BACK_PATTERN_SLUG = "blank"                        # back: bare glass
+                                             # (capybara scanimation cut 2026-09: its 15 um
+                                             # slots are far below the 1.5 mm near-field limit)
+LEFT_PATTERN_SLUG = "photo-halftone"          # left: the beach photograph, faces coloured
+RIGHT_PATTERN_SLUG = "photo-halftone"         # right: the sunset photograph, plain gold
 
-# Per-face default centerpiece slug (the confirmed plan). front carries the
-# rotating CA↔Colombia duo-globe barrier switch; each other wall its own motif.
+# Per-face default centerpiece slug (the production plan).
 _FACE_PATTERN_SLUG: dict[str, str] = {
     "front": DEFAULT_FACE_PATTERN_SLUG,
     "back": BACK_PATTERN_SLUG,
@@ -66,6 +71,39 @@ _FACE_PATTERN_SLUG: dict[str, str] = {
     "top": LID_PATTERN_SLUG,
     "bottom": BOTTOM_PATTERN_SLUG,
 }
+
+# Per-face pattern params. Both sides run the same generator on different
+# photographs: the beach group takes colour on the FACES (the only saturated
+# thing in it, so the sea and sky stay gold), the sunset stays plain because its
+# whole subject is one warm gradient and a hue ladder over it would read as
+# banding rather than as colour.
+_FACE_PATTERN_PARAMS: dict[str, dict[str, Any]] = {
+    "left": {"image": "beach", "colour_mode": "faces"},
+    "right": {"image": "sunset", "colour_mode": "plain"},
+}
+
+# Faces built from ONE ply instead of a bonded pair. A photograph is a
+# single-layer effect — its tone is the height of its bands — so a second ply
+# under it would earn nothing and its gold would show through the gaps and lift
+# every shadow. The garland on these faces therefore carries BOTH gratings on
+# the outer ply (leaves + carrier), and its shimmer is the in-plane beat rather
+# than a parallax one. See PlateSpec.single_ply.
+_SINGLE_PLY_FACES: frozenset[str] = frozenset({"left", "right"})
+
+# Motif size dial for every face's frame. 0.75 makes the foliage read finer and
+# lacier without narrowing the band — the leaves simply come more often. Matches
+# witness_dies.MOTIF_SCALE, which is what the production plate is written at.
+PRODUCTION_MOTIF_SCALE = 0.75
+
+# The production stock: 2.25 mm fused quartz plies, bonded face-to-face, so the
+# wall is 4.5 mm and the optical parallax gap is t/n = 1543 um.
+PRODUCTION_PLY_UM = 2250.0
+PRODUCTION_GLASS_MATERIAL = "fused quartz"
+PRODUCTION_GLASS_N = 1.4585
+# Outer box dimensions (um). Square in plan; the height carries the lid.
+PRODUCTION_WIDTH_UM = 29100.0
+PRODUCTION_DEPTH_UM = 29100.0
+PRODUCTION_HEIGHT_UM = 32010.0
 
 # Per-face frame recipe. Each face gets a distinct seed (which the plate
 # compositor turns into a distinct moiré CARRIER ANGLE via (seed*17)%180) plus
@@ -238,36 +276,47 @@ class BoxSpec:
 
 
 def default_box_spec() -> BoxSpec:
-    """The default ring box — MUST match the frontend's ``defaultBoxSpec()``.
+    """The PRODUCTION ring box — MUST match the frontend's ``defaultBoxSpec()``.
 
-    50 x 50 x 40 mm, 1/4" foil, 5-segment tube hinge. Every face gets a
-    perimeter foliage FRAME with its own seed + band-composition profile (so
-    each side is a visibly distinct engraved border) around a centerpiece:
+    29.1 x 29.1 x 32.01 mm, BONDED from 2.25 mm fused-quartz plies, 1/4" foil,
+    5-segment tube hinge. Every written face gets a perimeter foliage FRAME with
+    its own seed + band-composition profile (so each side is a visibly distinct
+    engraved border) at ``motif_scale`` 0.75, around a centerpiece:
 
-      * TOP (lid) → the interlocked cursive J+P monogram (``monogram-jp``),
-        a front-only tilt shimmer — the engagement engraving.
+      * TOP (lid) → the interlocked cursive J+P monogram (``monogram-jp``), a
+        shading moiré against the carrier — the engagement engraving.
       * FRONT → the California↔Colombia duo-globe barrier switch
         (``globe-duo-phase``, real Natural Earth geography): one globe that
         appears to rotate between the couple's two homes as the box tilts.
-      * BACK → the capybara + water scanimation (``capybara-scanimation``): a
-        still capybara on a waterline with an N-phase ripple field below it that
-        FLOWS on tilt (shader water-scan path in preview; real slit barrier +
-        interleaved ripple frames baked in the fab SVG).
-      * LEFT → jamón ibérico on its jamonero (``jamon-tray``), a front-only
-        gold-stripe glimmer (``food-pair-chirp`` stays in the catalog).
-      * RIGHT → the gear↔quill+book tilt-switch (``gear-quill-switch``, "the
-        engineer and the historian") with a diffraction-rainbow hub accent.
-      * BOTTOM (hidden) → a cursive inscription line (``inscription-line``),
-        "J & P · 2026" with an editable year — the private line the couple
-        reads when they lift the box, also a front-only shimmer.
+      * LEFT → the beach photograph as a gold line screen (``photo-halftone``),
+        SINGLE PLY, with the faces taking diffraction colour.
+      * RIGHT → the sunset photograph, same screen in plain gold, SINGLE PLY.
+      * BACK, BOTTOM → ``blank``: bare quartz, no gold on either ply.
+
+    The two photographs are single-ply because a halftone is a single-layer
+    effect (its tone is the height of its bands); their garlands therefore
+    carry both gratings — leaves AND carrier — on the one outer ply, which is
+    what the picture's edge fade dissolves into.
     """
-    spec = BoxSpec()
+    spec = BoxSpec(
+        width_um=PRODUCTION_WIDTH_UM,
+        depth_um=PRODUCTION_DEPTH_UM,
+        height_um=PRODUCTION_HEIGHT_UM,
+        glass=GlassSpec(
+            thickness_um=PRODUCTION_PLY_UM,
+            material=PRODUCTION_GLASS_MATERIAL,
+            n=PRODUCTION_GLASS_N,
+        ),
+        bonded=True,
+    )
     for fid in FACE_IDS:
         profile = _FACE_FRAME_PROFILE.get(fid, {})
         slug = _FACE_PATTERN_SLUG.get(fid, DEFAULT_FACE_PATTERN_SLUG)
         spec.faces[fid] = PlateSpec(
             pattern_slug=slug,
-            frame=FrameSpec(**profile),
+            pattern_params=dict(_FACE_PATTERN_PARAMS.get(fid, {})),
+            frame=FrameSpec(**profile, motif_scale=PRODUCTION_MOTIF_SCALE),
+            single_ply=fid in _SINGLE_PLY_FACES,
         )
     spec.normalize_face_dims()
     return spec

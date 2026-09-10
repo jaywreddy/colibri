@@ -63,8 +63,8 @@ describe('api', () => {
     const body = JSON.parse(opts.body as string);
     expect(body.box_id).toBe('my-box');
     expect(body.force).toBe(true);
-    expect(body.width_um).toBe(50000);
-    expect(body.glass.n).toBe(1.46);
+    expect(body.width_um).toBe(29100);
+    expect(body.glass.n).toBe(1.4585);
     expect(body.foil.tape_width_um).toBe(6350);
     expect(body.hinge.style).toBe('tube');
     expect(Object.keys(body.faces)).toHaveLength(6);
@@ -72,12 +72,13 @@ describe('api', () => {
 });
 
 describe('defaultBoxSpec (contract defaults)', () => {
-  it('matches the v2 contract exactly', () => {
+  it('matches the PRODUCTION box exactly (= backend default_box_spec)', () => {
     const s = api.defaultBoxSpec();
-    expect(s.width_um).toBe(50000);
-    expect(s.depth_um).toBe(50000);
-    expect(s.height_um).toBe(40000);
-    expect(s.glass).toEqual({ thickness_um: 500, material: 'fused silica', n: 1.46 });
+    expect(s.width_um).toBe(29100);
+    expect(s.depth_um).toBe(29100);
+    expect(s.height_um).toBe(32010);
+    expect(s.bonded).toBe(true);
+    expect(s.glass).toEqual({ thickness_um: 2250, material: 'fused quartz', n: 1.4585 });
     expect(s.foil).toEqual({
       tape_width_um: 6350,
       safety_um: 500,
@@ -94,23 +95,35 @@ describe('defaultBoxSpec (contract defaults)', () => {
     expect(s.label).toBe('');
   });
 
-  it('applies the confirmed six-face plan with per-face frame seeds', () => {
-    // Post-merge contract: every wall carries its own showpiece (front =
-    // colibri<->globe duo switch, back = capybara scanimation, etc.) and
-    // per-face frame profiles seeded 100..105 in profile order.
+  it('applies the production six-face plan with per-face frame seeds', () => {
+    // Production plan: top = J+P monogram, front = colibri<->globe duo switch,
+    // left/right = the two halftone photos on SINGLE-PLY walls, back + bottom =
+    // bare glass. Per-face frame profiles stay seeded 100..105 in profile order,
+    // now at the production motif scale.
     const s = api.defaultBoxSpec();
     const expectedSeed: Record<string, number> = {
       front: 100, back: 101, top: 102, bottom: 103, left: 104, right: 105,
     };
     expect(s.faces.front!.pattern_slug).toBe('globe-duo-phase');
-    const slugs = api.FACE_IDS.map((fid) => s.faces[fid]!.pattern_slug);
-    expect(new Set(slugs).size).toBe(6); // six distinct showpieces
+    expect(s.faces.top!.pattern_slug).toBe('monogram-jp');
+    expect(s.faces.back!.pattern_slug).toBe('blank');
+    expect(s.faces.bottom!.pattern_slug).toBe('blank');
+    expect(s.faces.left!.pattern_slug).toBe('photo-halftone');
+    expect(s.faces.right!.pattern_slug).toBe('photo-halftone');
+    expect(s.faces.left!.pattern_params).toEqual({ image: 'beach', colour_mode: 'faces' });
+    expect(s.faces.right!.pattern_params).toEqual({ image: 'sunset', colour_mode: 'plain' });
     api.FACE_IDS.forEach((fid) => {
       const f = s.faces[fid]!;
       expect(f.frame.seed).toBe(expectedSeed[fid]);
+      expect(f.frame.motif_scale).toBe(0.75);
       expect(f.glass).toEqual(s.glass);
-      // stamped keep-out: (6350-500)/2 + 500
-      expect(f.weld_margin_um).toBe(3425);
+      // Only the two photo walls leave their inner ply bare.
+      expect(f.single_ply).toBe(fid === 'left' || fid === 'right');
+      // Stamped keep-out = foil overlap + safety. The bonded 2.25 mm plies make
+      // the tape wrap a stepped edge that consumes 3p = 6750 um, wider than the
+      // 6350 um (1/4") tape, so the overlap floors at 0 and only the safety
+      // margin remains: the tape does not fold over a production wall at all.
+      expect(f.weld_margin_um).toBe(500);
     });
   });
 });

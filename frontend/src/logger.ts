@@ -82,6 +82,8 @@ export const EVENT_TYPES = [
   'face_param_changed',
   'face_apply_all',
   'face_seed_shuffled',
+  /** Per-face ply policy toggled (chrome on the outer ply only). */
+  'face_single_ply_changed',
   'frame_param_changed',
   'foil_tape_changed',
   'grating_pitch_changed',
@@ -109,6 +111,12 @@ export const EVENT_TYPES = [
   'face_recipe_unsupported',
   /** Geometry-critical recipe_data keys absent — face renders degraded. */
   'face_recipe_data_incomplete',
+  /**
+   * A LITERAL raster carried no chrome at all, so that pattern plane was
+   * dropped instead of uploading an empty 2048² texture: the back of a
+   * single-ply face, or both layers of a blank one. The glass slabs stay.
+   */
+  'face_layer_empty',
 
   // --- WebGL context lifecycle / recovery --------------------------------
   'webgl_init_failed',

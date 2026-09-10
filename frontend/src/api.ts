@@ -266,6 +266,15 @@ export type PlateSpec = {
   pattern_params: Record<string, unknown>;
   frame: FrameSpec;
   glass: GlassSpec;
+  /**
+   * Single-ply face: chrome on the OUTER ply only, the inner ply left as bare
+   * glass. The composed plate then publishes an EMPTY back raster, the renderer
+   * skips the inner pattern plane entirely (the glass slabs stay), and nothing
+   * on this face can beat against a second layer — which is the point for a
+   * continuous-tone photo halftone, where a back carrier would only add a moiré
+   * the picture does not want. Default false (both plies carry chrome).
+   */
+  single_ply: boolean;
   width_um: number;
   height_um: number;
   /** Front-art blank rim: foil overlap + safety — no foliage gold inside. */
@@ -286,6 +295,27 @@ export type PlateSpec = {
   label: string;
 };
 
+/**
+ * A composed plate's `recipe_data`. Still an open bag — the renderer reads
+ * ~30 scalar knobs out of it by name — but the three keys that decide WHICH
+ * material path a face takes are typed, because getting one of them wrong is
+ * not a shading difference, it is the wrong physics on the wall.
+ */
+export type PlateRecipeData = Record<string, unknown> & {
+  /**
+   * This face publishes LITERAL rasters of the fabricated chrome geometry
+   * (`files.literal_front` / `literal_back`), so the renderer samples the real
+   * mask instead of drawing procedural gratings inside level-coded regions.
+   * Moiré, switches and shimmer then emerge from perspective across the real
+   * T/n plane gap with no analytic grating anywhere in the shader.
+   */
+  literal?: boolean;
+  /** Informational mirror of `spec.single_ply` — the back raster is empty. */
+  single_ply?: boolean;
+  /** Informational: BOTH rasters are empty (a bare-glass face). */
+  blank?: boolean;
+};
+
 export type PlateManifest = {
   kind: 'plate';
   id: string;
@@ -299,7 +329,7 @@ export type PlateManifest = {
   min_feature_um: number;
   extra: Record<string, unknown>;
   render_recipe?: RenderRecipe;
-  recipe_data?: Record<string, unknown>;
+  recipe_data?: PlateRecipeData;
   files: {
     front_png: string;
     back_png: string;
@@ -309,6 +339,24 @@ export type PlateManifest = {
     /** Per-litho-metal chips (gold | chrome | chrome-ar). Absent on manifests
      * written before per-metal thumbnails existed — fall back to `thumbnail`. */
     thumbnails?: Record<string, string>;
+    /**
+     * LITERAL rasters of the fabricated chrome, one per layer. PNG mode L,
+     * 2048 px on the long side, 255 = metal present / 0 = bare glass, same
+     * orientation and extent as `front_png`/`back_png` (the whole plate incl.
+     * weld margin and design frame, unmirrored). Present iff
+     * `recipe_data.literal`; an all-zero raster means that layer carries no
+     * chrome at all (blank face, or the back of a single-ply face) and the
+     * renderer drops the plane rather than uploading an empty texture.
+     */
+    literal_front?: string;
+    literal_back?: string;
+    /**
+     * Optional sub-grating period map for the FRONT layer, same size/mode:
+     * R = period µm × 25 (0..255 → 0..10.2 µm; 0 = no sub-grating). Bands that
+     * carry a diffraction colour grating light up through diffractionSheen()
+     * at the sampled period.
+     */
+    period_front?: string;
   };
 };
 
@@ -397,21 +445,50 @@ export function defaultFrameSpec(seed = 1, overrides: Partial<FrameSpec> = {}): 
  * default_box_spec exactly. Each face gets a distinct seed (→ distinct moiré
  * carrier angle) + distinct band composition, so every side reads uniquely. */
 export const LID_PATTERN_SLUG = 'monogram-jp';
-export const BOTTOM_PATTERN_SLUG = 'inscription-line';
-export const BACK_PATTERN_SLUG = 'inscription-line'; // capybara cut 2026-09 (near-field)
-export const LEFT_PATTERN_SLUG = 'jamon-tray';
-export const RIGHT_PATTERN_SLUG = 'gear-quill-switch';
-/** Confirmed per-face default centerpiece — mirrors backend _FACE_PATTERN_SLUG.
- * front stays the colibrí↔globe switch (or a caller-supplied override); every
- * other wall gets its own showpiece. Keeps the live-preview POST byte-identical
- * to the backend's default_box_spec. */
-const FACE_PATTERN_SLUG: Record<FaceId, string> = {
-  front: DEFAULT_PATTERN_SLUG,
-  back: BACK_PATTERN_SLUG,
-  left: LEFT_PATTERN_SLUG,
-  right: RIGHT_PATTERN_SLUG,
-  top: LID_PATTERN_SLUG,
-  bottom: BOTTOM_PATTERN_SLUG,
+/** Bare glass — no centerpiece, no frame gold. Both literal rasters empty. */
+export const BLANK_PATTERN_SLUG = 'blank';
+/** Continuous-tone photo, rasterised as halftone bands in the front layer. */
+export const PHOTO_PATTERN_SLUG = 'photo-halftone';
+export const BOTTOM_PATTERN_SLUG = BLANK_PATTERN_SLUG;
+export const BACK_PATTERN_SLUG = BLANK_PATTERN_SLUG; // capybara cut 2026-09 (near-field)
+export const LEFT_PATTERN_SLUG = PHOTO_PATTERN_SLUG;
+export const RIGHT_PATTERN_SLUG = PHOTO_PATTERN_SLUG;
+/**
+ * The PRODUCTION six-face plan — mirrors backend boxes._FACE_PATTERN_SLUG /
+ * _FACE_PATTERN_PARAMS / _FACE_SINGLE_PLY, so the live-preview POST is the
+ * same box the fab bake ships.
+ *
+ *   TOP    — the interlocked cursive J+P monogram (the engagement engraving).
+ *   FRONT  — the California↔Colombia duo-globe barrier switch (or a
+ *            caller-supplied override, for themed boxes).
+ *   LEFT   — the beach photo, halftoned, colour-separated by FACES.
+ *   RIGHT  — the sunset photo, halftoned, PLAIN (single-tone) separation.
+ *   BACK   — bare glass.
+ *   BOTTOM — bare glass.
+ *
+ * Both photo walls are SINGLE-PLY: a back carrier under a continuous-tone
+ * picture buys nothing but an unwanted moiré, so the inner ply stays clean.
+ */
+type FacePlan = {
+  slug: string;
+  params: Record<string, unknown>;
+  singlePly: boolean;
+};
+const FACE_PLAN: Record<FaceId, FacePlan> = {
+  front: { slug: DEFAULT_PATTERN_SLUG, params: {}, singlePly: false },
+  back: { slug: BACK_PATTERN_SLUG, params: {}, singlePly: false },
+  left: {
+    slug: LEFT_PATTERN_SLUG,
+    params: { image: 'beach', colour_mode: 'faces' },
+    singlePly: true,
+  },
+  right: {
+    slug: RIGHT_PATTERN_SLUG,
+    params: { image: 'sunset', colour_mode: 'plain' },
+    singlePly: true,
+  },
+  top: { slug: LID_PATTERN_SLUG, params: {}, singlePly: false },
+  bottom: { slug: BOTTOM_PATTERN_SLUG, params: {}, singlePly: false },
 };
 const FACE_FRAME_PROFILE: Record<FaceId, Partial<FrameSpec> & { seed: number }> = {
   front: { seed: 100, edge_gradient: 0.75, understory: 0.9, border_vine: 1.2, corner_fans: 1.1 },
@@ -422,8 +499,14 @@ const FACE_FRAME_PROFILE: Record<FaceId, Partial<FrameSpec> & { seed: number }> 
   right: { seed: 105, edge_gradient: 0.85, understory: 0.8, border_vine: 1.05, corner_fans: 0.95 },
 };
 
+/**
+ * PRODUCTION glass: 2.25 mm fused quartz per ply (the box is bonded, so the
+ * wall is 4.5 mm and the optical parallax gap is one ply, 2250/1.4585 ≈
+ * 1543 µm of paraxial air). n is the real fused-quartz index at d-line, not
+ * the 1.46 round number the pre-production default carried.
+ */
 export function defaultGlassSpec(): GlassSpec {
-  return { thickness_um: 500.0, material: 'fused silica', n: 1.46 };
+  return { thickness_um: 2250.0, material: 'fused quartz', n: 1.4585 };
 }
 
 export function defaultFoilSpec(): FoilSpec {
@@ -437,13 +520,15 @@ export function defaultHingeSpec(): HingeSpec {
 export function defaultPlateSpec(
   patternSlug: string,
   seed = 1,
-  frameOverrides: Partial<FrameSpec> = {}
+  frameOverrides: Partial<FrameSpec> = {},
+  opts: { params?: Record<string, unknown>; singlePly?: boolean } = {}
 ): PlateSpec {
   return {
     pattern_slug: patternSlug,
-    pattern_params: {},
+    pattern_params: { ...(opts.params ?? {}) },
     frame: defaultFrameSpec(seed, frameOverrides),
     glass: defaultGlassSpec(),
+    single_ply: opts.singlePly ?? false,
     width_um: 50000,
     height_um: 50000,
     weld_margin_um: 1000,
@@ -454,27 +539,36 @@ export function defaultPlateSpec(
   };
 }
 
+/**
+ * The PRODUCTION box — 29.1 × 29.1 × 32.01 mm outer, bonded 2.25 mm fused-quartz
+ * plies. MUST stay identical to backend `boxes.default_box_spec()`: this is what
+ * the live preview POSTs and what the fab bake ships.
+ */
 export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxSpec {
   const faces: Partial<Record<FaceId, PlateSpec>> = {};
   FACE_IDS.forEach((fid) => {
     const { seed, ...frameOverrides } = FACE_FRAME_PROFILE[fid];
-    // Confirmed six-face plan (see FACE_PATTERN_SLUG): top = J+P monogram,
-    // bottom = hidden inscription, back = capybara scanimation, left = coffee +
-    // arepa, right = gear↔quill, front = colibrí↔globe. A caller-supplied
+    const plan = FACE_PLAN[fid];
+    // The production plan (see FACE_PLAN): top = J+P monogram, front =
+    // colibrí↔globe duo switch, left/right = the two halftone photos on
+    // single-ply walls, back + bottom = bare glass. A caller-supplied
     // `patternSlug` overrides only the FRONT face (themed override boxes).
-    const slug = fid === 'front' ? patternSlug : FACE_PATTERN_SLUG[fid];
-    faces[fid] = defaultPlateSpec(slug, seed, frameOverrides);
+    const slug = fid === 'front' ? patternSlug : plan.slug;
+    faces[fid] = defaultPlateSpec(slug, seed, { ...frameOverrides, motif_scale: 0.75 }, {
+      params: plan.params,
+      singlePly: plan.singlePly,
+    });
   });
   const spec: BoxSpec = {
-    width_um: 50000.0,
-    depth_um: 50000.0,
-    height_um: 40000.0,
+    width_um: 29100.0,
+    depth_um: 29100.0,
+    height_um: 32010.0,
     glass: defaultGlassSpec(),
     foil: defaultFoilSpec(),
     hinge: defaultHingeSpec(),
     faces,
     carrier_pitch_um: 22.0,
-    bonded: false,
+    bonded: true,
     metal: 'gold',
     label: '',
   };

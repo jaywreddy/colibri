@@ -41,6 +41,9 @@ EXPECTED_SLUGS = {
     "inscription-line",
     "jamon-tray",
     "monogram-jp",
+    # Production box faces (2026-09): a photograph face and a bare-glass face
+    "photo-halftone",
+    "blank",
 }
 
 
@@ -182,6 +185,9 @@ def test_thumbnail_endpoint_404s_for_unknown_slug(client: TestClient) -> None:
 _VALID_RECIPES = {
     "stereo_lenticular",
     "moire_interactive",
+    # the composed-plate recipe; the photo and blank faces bind it directly
+    # because they exist to be composed into a box (CLAUDE.md renderer honesty)
+    "foliage_moire",
 }
 
 

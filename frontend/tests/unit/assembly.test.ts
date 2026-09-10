@@ -18,7 +18,30 @@ import {
   SEGMENT_GAP_UM,
 } from '../../src/assembly';
 
-const spec = (): BoxSpec => defaultBoxSpec();
+/**
+ * The 50 x 50 x 40 mm / 0.5 mm single-plate geometry every number in this file
+ * is pinned to.
+ *
+ * Written out here rather than taken from `defaultBoxSpec()`: this suite tests
+ * the ASSEMBLY FORMULAS against the design contract, and it used to ride on the
+ * default box, so the day the default became the PRODUCTION box (29.1 x 29.1 x
+ * 32.01 mm, bonded 2.25 mm quartz plies) every pinned number here went red
+ * without a single formula changing. The default box's own values are pinned in
+ * api.test.ts, where they belong; the golden-fixture suite
+ * (assemblyGolden.test.ts) is what cross-checks the formulas against the
+ * backend, including the bonded cases.
+ */
+const spec = (): BoxSpec => {
+  const s = defaultBoxSpec();
+  return {
+    ...s,
+    width_um: 50000,
+    depth_um: 50000,
+    height_um: 40000,
+    glass: { thickness_um: 500, material: 'fused silica', n: 1.46 },
+    bonded: false,
+  };
+};
 
 describe('foil overlap + keep-out', () => {
   it('defaults (1/4" tape, 500 um glass, 500 um safety): overlap 2925, keepout 3425', () => {
@@ -165,6 +188,13 @@ describe('hinge layout (defaults: tube 2400, rod 1600, 5 segments, 0.8 coverage)
 describe('validation', () => {
   it('default ring box is valid', () => {
     expect(validateBox(spec())).toEqual([]);
+  });
+
+  it('the PRODUCTION default box is valid (bonded 2.25 mm quartz plies)', () => {
+    // The box the app boots on and the live preview POSTs. `spec()` above is the
+    // legacy single-plate geometry the formula pins are written against, so
+    // without this the shipped default would go unvalidated by this suite.
+    expect(validateBox(defaultBoxSpec())).toEqual([]);
   });
 
   it('flags a box too small to keep a patternable aperture', () => {

@@ -96,41 +96,43 @@ def asset_px_for(
 # --- the headline cell ------------------------------------------------------
 
 
-def build_halftone(
+def build_halftone_bands(
     cx: float,
     cy: float,
     w: float,
     h: float,
     *,
-    plan: cp.ColourPlan,
-    prep: ip.PrepSpec | None = None,
+    coverage: np.ndarray,
+    period_id: np.ndarray | None,
+    periods: dict[int, float],
+    duty: float = 0.5,
     line_period_um: float = REF_SCREEN_UM,
     tone_steps: int = REF_TONE_STEPS,
     defer_arrays: bool = True,
     polarity: str = METAL,
-) -> CellArt:
-    """One halftone portrait cell, plain or colour-shaded.
+) -> tuple[CellArt, dict[str, Any]]:
+    """The line screen itself: coverage + a period field -> band rectangles.
 
-    The whole three-variant question reduces to which ``plan`` is passed: a
-    ``plain`` plan yields an empty period field and no sub-grating at all, so
-    the control cell runs the same code path rather than a different one. Any
-    difference on the finished plate is the colour and nothing else.
+    Split out of :func:`build_halftone` so a caller with its OWN prepared image
+    can reuse the band logic instead of copying it. The witness plate's portrait
+    cells go through ``build_halftone`` (which loads the fixed ``SOURCE_PHOTO``
+    and preps it here); the box's ``photo-halftone`` faces go through
+    ``plates.photo_band_rects``, which prepares an arbitrary asset — with its own
+    edge fade, which is why it hands in a finished COVERAGE map rather than a
+    photograph. Both then land in this one function, so the plate and the box
+    screen a picture identically.
+
+    ``period_id`` is ``None`` for a plain screen (solid gold bands, no
+    sub-grating). Returns ``(art, report)``; the report carries the band counts
+    the callers fold into their own stats.
     """
     steps = max(2, min(int(tone_steps), int(line_period_um / MIN_FEATURE_UM)))
-    px = asset_px_for(min(w, h), line_period_um)
-    gray, rgb = portrait_source(px)
-    spec = prep or ip.PrepSpec(tone_steps=steps)
-    if spec.tone_steps != steps:
-        spec = ip.PrepSpec(**{**spec.__dict__, "tone_steps": steps})
-    dark = ip.prep_darkness(gray, spec)
-
-    ids, periods, field_report = cp.build_period_field(rgb, plan)
     bands, pid, band_report = sr.screen_bands(
-        dark,
+        coverage,
         extent_um=min(w, h),
         line_period_um=line_period_um,
         tone_steps=steps,
-        period_id=None if plan.mode == "plain" else ids,
+        period_id=period_id,
         origin=(cx, cy),
         emit=polarity,
     )
@@ -139,8 +141,8 @@ def build_halftone(
     # In CLEAR polarity the sub-grating inverts too: the clear stripes are the
     # gaps of the metal ones, which is duty 1-c at phase c*d. The phase is
     # per-rectangle because d differs from rung to rung.
-    sub_duty = plan.duty if polarity == METAL else 1.0 - plan.duty
-    sub_phase = 0.0 if polarity == METAL else per * plan.duty
+    sub_duty = duty if polarity == METAL else 1.0 - duty
+    sub_phase = 0.0 if polarity == METAL else per * duty
 
     art = CellArt(front=plain)
     n_stripes = 0
@@ -160,24 +162,80 @@ def build_halftone(
             art.front = _cat(art.front, sr.stripe_rects(
                 coloured, per, sub_duty, phase_um=sub_phase))
 
-    art.stats = {
-        "polarity": polarity,
-        "mode": plan.mode,
-        "extent_um": round(min(w, h), 1),
-        "asset_px": px,
-        "line_period_um": line_period_um,
+    report = {
         "tone_steps": steps,
         "finest_band_um": round(line_period_um / steps, 3),
         "n_band_rects": int(len(bands)),
         "n_plain_rects": int(len(plain)),
         "n_coloured_bands": int(len(coloured)),
         "n_stripes_if_flat": int(n_stripes),
+        "rects_per_line": band_report["rects_per_line"],
+    }
+    return art, report
+
+
+def build_halftone(
+    cx: float,
+    cy: float,
+    w: float,
+    h: float,
+    *,
+    plan: cp.ColourPlan,
+    prep: ip.PrepSpec | None = None,
+    line_period_um: float = REF_SCREEN_UM,
+    tone_steps: int = REF_TONE_STEPS,
+    defer_arrays: bool = True,
+    polarity: str = METAL,
+) -> CellArt:
+    """One halftone portrait cell of the reference photo, plain or colour-shaded.
+
+    The whole three-variant question reduces to which ``plan`` is passed: a
+    ``plain`` plan yields an empty period field and no sub-grating at all, so
+    the control cell runs the same code path rather than a different one. Any
+    difference on the finished plate is the colour and nothing else.
+    """
+    steps = max(2, min(int(tone_steps), int(line_period_um / MIN_FEATURE_UM)))
+    px = asset_px_for(min(w, h), line_period_um)
+    gray, rgb = portrait_source(px)
+    spec = prep or ip.PrepSpec(tone_steps=steps)
+    if spec.tone_steps != steps:
+        spec = ip.PrepSpec(**{**spec.__dict__, "tone_steps": steps})
+    dark = ip.prep_darkness(gray, spec)
+
+    ids, periods, field_report = cp.build_period_field(rgb, plan)
+    art, report = build_halftone_bands(
+        cx,
+        cy,
+        w,
+        h,
+        coverage=dark,
+        period_id=None if plan.mode == "plain" else ids,
+        periods=periods,
+        duty=plan.duty,
+        line_period_um=line_period_um,
+        tone_steps=steps,
+        defer_arrays=defer_arrays,
+        polarity=polarity,
+    )
+
+    art.stats = {
+        "polarity": polarity,
+        "mode": plan.mode,
+        "extent_um": round(min(w, h), 1),
+        "asset_px": px,
+        "line_period_um": line_period_um,
+        "tone_steps": report["tone_steps"],
+        "finest_band_um": report["finest_band_um"],
+        "n_band_rects": report["n_band_rects"],
+        "n_plain_rects": report["n_plain_rects"],
+        "n_coloured_bands": report["n_coloured_bands"],
+        "n_stripes_if_flat": report["n_stripes_if_flat"],
         "frac_coloured": field_report["frac_coloured"],
         "rungs_used": field_report["rungs_used"],
         "base_period_um": plan.base_period_um,
         "hue_equalize": field_report.get("hue_equalize", False),
         "all_used_rungs_printable": field_report["all_used_rungs_printable"],
-        "rects_per_line": band_report["rects_per_line"],
+        "rects_per_line": report["rects_per_line"],
         # Eye cells across the picture at 300 mm; under ~150 it is a thumbnail.
         "eye_cells_across": int(min(w, h) / 87.0),
     }

@@ -295,24 +295,302 @@ def test_default_box_spec_matches_contract():
     from app.boxes import FACE_IDS, default_box_spec
 
     spec = default_box_spec()
-    assert (spec.width_um, spec.depth_um, spec.height_um) == (50000.0, 50000.0, 40000.0)
+    # THE PRODUCTION BOX: bonded 2.25 mm fused-quartz plies. These six numbers
+    # are mirrored term for term by the frontend's defaultBoxSpec(); the two
+    # must move together or the live preview stops describing the real part.
+    assert (spec.width_um, spec.depth_um, spec.height_um) == (29100.0, 29100.0, 32010.0)
+    assert spec.bonded is True
+    assert spec.glass.thickness_um == 2250.0
+    assert spec.glass.material == "fused quartz"
+    assert spec.glass.n == pytest.approx(1.4585)
     assert set(spec.faces) == set(FACE_IDS)
-    # Confirmed six-face plan (rev: round-8 user decisions — front carries the
-    # rotating CA↔Colombia duo-globe, left the jamón tray; food-pair-chirp
-    # remains in the catalog; colibri-globe-phase was later removed as a
-    # redundant twin of colibri-globe-lenticular).
+    # Four written faces and two of bare glass — see boxes.default_box_spec.
     expected_slug = {
         "front": "globe-duo-phase",
-        "back": "inscription-line",
+        "back": "blank",
         "top": "monogram-jp",
-        "bottom": "inscription-line",
-        "left": "jamon-tray",
-        "right": "gear-quill-switch",
+        "bottom": "blank",
+        "left": "photo-halftone",
+        "right": "photo-halftone",
     }
     for i, fid in enumerate(FACE_IDS):
         assert spec.faces[fid].pattern_slug == expected_slug[fid]
         # Per-face seed 100..105 in FACE_IDS order (distinct moiré carrier angle).
         assert spec.faces[fid].frame.seed == 100 + i
+        # Finer, lacier foliage at the same band width, on every face.
+        assert spec.faces[fid].frame.motif_scale == 0.75
+    # The two photographs, and the only two single-ply faces: a halftone's tone
+    # IS its band height, so a second ply under it would show through the gaps.
+    assert spec.faces["left"].pattern_params == {"image": "beach", "colour_mode": "faces"}
+    assert spec.faces["right"].pattern_params == {"image": "sunset", "colour_mode": "plain"}
+    assert [fid for fid in FACE_IDS if spec.faces[fid].single_ply] == ["left", "right"]
+
+
+# ----- production face types --------------------------------------------------
+
+
+def test_photo_halftone_registers_with_a_valid_recipe(isolated_data):
+    from app.patterns.base import RECIPE_NAMES, registry
+
+    cls = registry["photo-halftone"]
+    assert cls.render_recipe in RECIPE_NAMES
+    # The choice list is built from the prepared assets and must exclude the
+    # ``.subject`` / ``.fade`` sidecars — offering one as a "photograph" would
+    # screen a matte.
+    images = dict((p.name, p) for p in cls.params)["image"].choices
+    assert "beach" in images
+    assert not any("." in name for name in images)
+
+    gp = cls.generate(image="beach", extent_um=1000.0)
+    assert not gp.front.is_empty, "the line screen should carry bands"
+    # Front layer only: gold on the inner ply would show through the gaps
+    # between bands and lift every shadow in the picture.
+    assert gp.back.is_empty
+    assert gp.min_feature_um >= 2.0
+
+
+def test_photo_coverage_fades_to_the_carrier_field_but_keeps_the_centre(isolated_data):
+    import numpy as np
+    from app.patterns.bitmap.photo import CARRIER_COV, box_edge, photo_coverage
+
+    gate = 0.94
+    cov, ids, _periods = photo_coverage("beach", 0.50, gate, 22, 160, colour_mode="faces")
+    d = box_edge(cov.shape[0])
+
+    # Past the gate the picture is GONE — hard carrier field, so the art box
+    # dissolves into the surrounding garland carrier instead of ending at a
+    # border. (Corners are the only place d exceeds the gate on the rounded
+    # square metric, which is exactly the point of that metric.)
+    outside = d > gate
+    assert outside.any(), "the rounded-square metric must exceed the gate somewhere"
+    assert np.allclose(cov[outside], CARRIER_COV, atol=1e-6)
+
+    # The middle is still a photograph: the fade must not have flattened it.
+    n = cov.shape[0]
+    q = n // 4
+    centre = cov[q : n - q, q : n - q]
+    assert centre.std() > 0.05, f"centre went flat (std {centre.std():.4f})"
+    assert centre.min() < CARRIER_COV - 0.05 < CARRIER_COV + 0.05 < centre.max()
+
+    # Colour dies with the picture — no coloured band may survive out into the
+    # field, where a sub-grating would advertise the dissolve.
+    assert not ids[outside].any()
+
+
+def test_blank_face_composes_to_empty_layers(isolated_data):
+    import numpy as np
+    from PIL import Image
+    from app.plates import PLATES_ROOT, FrameSpec, PlateSpec, ensure_plate_svg, materialize_plate
+
+    spec = PlateSpec(
+        pattern_slug="blank",
+        frame=FrameSpec(seed=21),
+        width_um=8000.0,
+        height_um=8000.0,
+        weld_margin_um=500.0,
+    )
+    m = materialize_plate(spec)
+    for fname in ("front.png", "back.png"):
+        img = Image.open(PLATES_ROOT / m["id"] / fname).convert("L")
+        assert img.getextrema() == (0, 0), f"{fname} carries gold on a blank face"
+    assert m["recipe_data"]["blank"] is True
+    # The fab pair still EXISTS — a blank face reads as "blank", not "missing".
+    pair = ensure_plate_svg(m["id"])
+    assert pair is not None
+    for svg in pair:
+        body = svg.read_text(encoding="utf-8")
+        assert "<path" not in body, "a blank face must bake no geometry"
+
+
+def test_single_ply_face_puts_the_carrier_on_the_front(isolated_data):
+    """One ply: leaves AND carrier on the front, nothing on the back."""
+    import numpy as np
+    from PIL import Image
+    from app.plates import (
+        CENTERPIECE_FILL,
+        FRAME_LEVEL,
+        PLATES_ROOT,
+        FrameSpec,
+        PlateSpec,
+        _aperture,
+        materialize_plate,
+    )
+
+    def _spec(single_ply: bool) -> PlateSpec:
+        return PlateSpec(
+            pattern_slug="monogram-jp",
+            frame=FrameSpec(seed=22),
+            width_um=12000.0,
+            height_um=12000.0,
+            weld_margin_um=500.0,
+            back_margin_um=1200.0,
+            single_ply=single_ply,
+        )
+
+    one = materialize_plate(_spec(True))
+    two = materialize_plate(_spec(False))
+    assert one["id"] != two["id"], "single_ply must be part of the plate hash"
+    assert one["recipe_data"]["single_ply"] is True
+    assert two["recipe_data"]["single_ply"] is False
+
+    # A sample point in the ring between the centerpiece art box and the frame
+    # band — clean carrier territory on a two-ply face, so it isolates the
+    # carrier from the foliage.
+    spec = _spec(True)
+    pitch = one["pixel_pitch_um"]
+    aperture = _aperture(spec)
+    r_um = 0.5 * (CENTERPIECE_FILL * aperture / 2.0 + aperture / 2.0)
+    w, h = Image.open(PLATES_ROOT / one["id"] / "front.png").size
+    px = (w // 2 + int(round(r_um / pitch)), h // 2)
+
+    one_front = Image.open(PLATES_ROOT / one["id"] / "front.png").convert("L")
+    one_back = Image.open(PLATES_ROOT / one["id"] / "back.png").convert("L")
+    two_front = Image.open(PLATES_ROOT / two["id"] / "front.png").convert("L")
+    two_back = Image.open(PLATES_ROOT / two["id"] / "back.png").convert("L")
+
+    assert one_back.getextrema() == (0, 0), "a single ply has no back layer to write"
+    assert one_front.getpixel(px) == FRAME_LEVEL, "carrier missing from the front ply"
+    # The two-ply face is the control: same point, carrier on the BACK only.
+    assert two_back.getpixel(px) == FRAME_LEVEL
+    assert two_front.getpixel(px) == 0
+    # The art box itself is left for the centerpiece — the carrier stops there.
+    assert one_front.getpixel((w // 2, h // 2)) != FRAME_LEVEL
+
+
+def test_photo_face_composes_bands_on_the_front_only(isolated_data):
+    import numpy as np
+    from PIL import Image
+    from app.plates import (
+        ART_LEVEL,
+        PLATES_ROOT,
+        RAINBOW_LEVEL,
+        FrameSpec,
+        PlateSpec,
+        materialize_plate,
+        photo_band_rects,
+    )
+
+    spec = PlateSpec(
+        pattern_slug="photo-halftone",
+        pattern_params={"image": "beach", "colour_mode": "faces"},
+        frame=FrameSpec(seed=23),
+        width_um=12000.0,
+        height_um=12000.0,
+        weld_margin_um=500.0,
+        back_margin_um=1200.0,
+        single_ply=True,
+    )
+    m = materialize_plate(spec)
+    front = np.asarray(Image.open(PLATES_ROOT / m["id"] / "front.png").convert("L"))
+    back = Image.open(PLATES_ROOT / m["id"] / "back.png").convert("L")
+
+    assert (front == ART_LEVEL).any(), "no halftone bands in the composed front mask"
+    # Coloured bands get RAINBOW_LEVEL, where the shader adds the spectral sheen
+    # that stands in for the sub-grating the fab writes for real.
+    assert (front == RAINBOW_LEVEL).any(), "colour_mode='faces' coloured nothing"
+    assert back.getextrema() == (0, 0)
+    # The shader must fill ART with solid gold, not the procedural switch
+    # carrier — the band height already IS the tone.
+    assert m["recipe_data"]["art_solid"] is True
+
+    # The exact fab geometry the SVG and the fine GDS both bake, in plate µm.
+    rects = photo_band_rects(spec)
+    assert rects.shape[0] > 100
+    assert (rects[:, 1] > rects[:, 0]).all() and (rects[:, 3] > rects[:, 2]).all()
+
+    # PERIOD MAP: the colour sub-grating is ~5 µm lines, far under a pixel at
+    # 2048 px, so literal_front can only carry its coverage — the colour it
+    # diffracts comes from period_front (period µm × LITERAL_PERIOD_SCALE).
+    from app.plates import LITERAL_PERIOD_SCALE, photo_colour_band_periods
+
+    assert m["files"]["period_front"] == f"/data/plates/{m['id']}/period_front.png"
+    period_img = Image.open(PLATES_ROOT / m["id"] / "period_front.png")
+    assert period_img.mode == "L"
+    period = np.asarray(period_img)
+    assert period.max() > 0, "coloured bands published an empty period map"
+    _bands, periods_um = photo_colour_band_periods(spec)
+    assert periods_um.size > 0
+    # Every painted value decodes to a period the fab actually writes.
+    painted = np.unique(period[period > 0]) / LITERAL_PERIOD_SCALE
+    assert painted.min() >= periods_um.min() - 0.05
+    assert painted.max() <= periods_um.max() + 0.05
+    # The period field lives inside the picture, not over the whole plate.
+    assert 0.0 < np.count_nonzero(period) / period.size < 0.5
+
+
+def test_literal_rasters_publish_the_fabricated_chrome(isolated_data):
+    """Every composed face publishes coverage rasters of its REAL litho geometry.
+
+    The renderer samples these on the two pattern planes instead of
+    synthesising gratings, so the contract is exact: mode L, 2048 on the long
+    side, plate aspect, and a ``files`` URL in the same form as ``front_png``.
+    An empty layer is an all-zero raster, never an absent file.
+    """
+    import numpy as np
+    from PIL import Image
+    from app.plates import (
+        LITERAL_RASTER_PX,
+        PLATES_ROOT,
+        FrameSpec,
+        PlateSpec,
+        materialize_plate,
+    )
+
+    art = materialize_plate(
+        PlateSpec(
+            pattern_slug="wayuu-kanasu-moire",
+            frame=FrameSpec(seed=31),
+            width_um=8000.0,
+            height_um=6000.0,
+            weld_margin_um=400.0,
+        )
+    )
+    blank = materialize_plate(
+        PlateSpec(
+            pattern_slug="blank",
+            frame=FrameSpec(seed=32),
+            width_um=8000.0,
+            height_um=6000.0,
+            weld_margin_um=400.0,
+        )
+    )
+
+    for m in (art, blank):
+        pid = m["id"]
+        assert m["recipe_data"]["literal"] is True
+        # The frontend refuses any other recipe; literal rasters do not change it.
+        assert m["render_recipe"] == "foliage_moire"
+        for key in ("literal_front", "literal_back"):
+            assert m["files"][key] == f"/data/plates/{pid}/{key}.png", key
+            path = PLATES_ROOT / pid / f"{key}.png"
+            assert path.exists(), f"{key} missing on disk"
+            img = Image.open(path)
+            assert img.mode == "L", f"{key} is {img.mode}, not a coverage mask"
+            assert max(img.size) == LITERAL_RASTER_PX
+            # Plate aspect, and the same extent/orientation as front.png/back.png
+            # so the two rasters overlay under one uniform scale.
+            mask_w, mask_h = Image.open(PLATES_ROOT / pid / "front.png").size
+            assert img.size[0] * mask_h == pytest.approx(img.size[1] * mask_w, rel=2e-3)
+
+    def _arr(m, key):
+        return np.asarray(Image.open(PLATES_ROOT / m["id"] / f"{key}.png"))
+
+    # BARE GLASS on both plies: an all-zero raster is a valid literal layer.
+    assert _arr(blank, "literal_front").max() == 0
+    assert _arr(blank, "literal_back").max() == 0
+    # A written face carries chrome on both plies (foliage front, carrier back).
+    assert _arr(art, "literal_front").max() > 0
+    assert _arr(art, "literal_back").max() > 0
+    # Sub-pixel grating lines must AVERAGE in rather than drop out — a raster
+    # that only ever hit 0 or 255 would mean the supersample did nothing.
+    front = _arr(art, "literal_front")
+    assert ((front > 0) & (front < 255)).any()
+
+    # period_front is published only where a sub-grating period field exists;
+    # a plain face omits the file AND the key rather than shipping zeros.
+    for m in (art, blank):
+        assert "period_front" not in m["files"]
+        assert not (PLATES_ROOT / m["id"] / "period_front.png").exists()
 
 
 # ----- HTTP layer ------------------------------------------------------------

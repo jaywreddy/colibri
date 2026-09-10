@@ -281,7 +281,9 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           label={boxSpec.bonded ? 'Ply thickness' : 'Glass thickness'}
           value={boxSpec.glass.thickness_um / 1000}
           min={0.3}
-          max={2.0}
+          // 3.0, not 2.0: the production box is bonded 2.25 mm fused-quartz
+          // plies, which the old ceiling could not even express.
+          max={3.0}
           step={0.05}
           unit="mm"
           decimals={2}

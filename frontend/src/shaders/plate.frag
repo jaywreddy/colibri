@@ -282,6 +282,35 @@ uniform float uRainbowZeroOrder;   // eta_0 = duty^2: share left in specular
 uniform float uAccentBandPitchUm;  // interleave band pitch
 uniform float uAccentMoirePeriodUm;// the moire band's louvre period
 
+// --- LITERAL fabricated-geometry path (uLiteral == 1) -----------------------
+// "Render it literally." Everything above this line draws gratings PROCEDURALLY
+// inside level-coded mask regions: the mask says "frame band, bucket 3" and the
+// shader synthesizes the louvre that the fab bake will write there. That is two
+// implementations of one geometry, and they can disagree.
+//
+// On a literal face the backend publishes a RASTER OF THE FABRICATED CHROME
+// ITSELF (files.literal_front / literal_back, 2048 px on the long side, 255 =
+// metal), and this shader just samples it — no analytic gratings anywhere. The
+// moiré, the barrier switches and the shimmer then EMERGE, with nothing faked,
+// from the perspective projection of the two real planes across the paraxial
+// T/n gap: exactly the mechanism the honesty contract asks for, now with the
+// mask itself as the only source of geometry.
+//
+// Mipmapped LINEAR sampling is not a smoothing hack here — it IS the eye's
+// integration of a sub-acuity lattice at viewing distance. The mip level the GPU
+// picks is the footprint of one screen pixel on the plate, so the returned value
+// is the average metal coverage over exactly that footprint. Do NOT threshold it
+// back to binary: that would throw away the integration and alias.
+uniform float uLiteral;            // 1 = sample the literal raster, 0 = procedural
+// Sub-grating period map for the FRONT layer: R = period um * 25 (so the byte
+// range 0..255 covers 0..10.2 um; 0 = no sub-grating on this pixel). The ONE
+// non-literal term left on this path — a 2-4 um diffraction grating is far below
+// what any raster can carry, so the bands that have one are handed to
+// diffractionSheen() exactly as the RAINBOW accent is on the procedural path.
+// Flagged, deliberate, and the only stand-in here.
+uniform sampler2D uPeriodMap;
+uniform float uPeriodReady;        // 1 once a period map is bound (front plane only)
+
 // ITEM 2b — these are LINEAR-LIGHT reflectances. They used to be sRGB display
 // codes multiplied by lighting terms and written straight to the framebuffer, i.e.
 // the whole plate was lit in GAMMA space: a `lift` of 0.30 on an sRGB code is only
@@ -497,7 +526,14 @@ const float ART_MIN = 0.86;     // r above this = centerpiece art silhouette (1.
 // vector's tangent-space projection (so it travels as the piece tilts, like a
 // hologram-foil sticker); a narrow travelling band keeps it a tasteful moving
 // highlight rather than a flat rainbow wash. Returns an ADDITIVE colour.
-vec3 diffractionSheen(vec3 viewTangent, vec3 lightTangent, vec2 pUm, float ndl) {
+//
+// `periodUm` is the FABRICATED grating pitch at this fragment: the single
+// uRainbowPeriodUm constant on the procedural path, or the per-pixel value
+// sampled out of uPeriodMap on the literal one. It was a direct uniform read
+// before the literal path needed it to vary. (The old `pUm` argument was never
+// used — the position dependence enters through viewTangent, which a
+// perspective camera varies per fragment.)
+vec3 diffractionSheen(vec3 viewTangent, vec3 lightTangent, float ndl, float periodUm) {
   // Grating vector g in the surface tangent frame, from the FABRICATED angle.
   vec2 g = vec2(cos(uRainbowAngleRad), sin(uRainbowAngleRad));
 
@@ -507,7 +543,7 @@ vec3 diffractionSheen(vec3 viewTangent, vec3 lightTangent, vec2 pUm, float ndl) 
   // camera is perspective, viewTangent varies per fragment, so u varies across
   // the zone — that is what makes the spectrum SWEEP across the accent as the
   // piece moves, rather than flashing it as one flat colour.
-  float u = uRainbowPeriodUm * (dot(viewTangent.xy, g) + dot(lightTangent.xy, g));
+  float u = periodUm * (dot(viewTangent.xy, g) + dot(lightTangent.xy, g));
 
   // |u|: order m and -m are mirror images about the specular direction (u = 0).
   float idx = clamp(abs(u) / max(uDiffUMax, 1e-3), 0.0, 1.0);
@@ -665,6 +701,13 @@ float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
   // (1 - openFrac) exactly at w = 1 rather than being faded there by hand.
   return 1.0 - boxPulse(coord, openFrac, fwidth(coord));
 }
+
+// Forward declaration: the shading half of the two paths below lives after them
+// (it was lifted out of runFoliageMoireLayer, and keeping it in place keeps that
+// move reviewable as the mechanical edit it is).
+vec4 shadeCoverage(float cov, float dimCov, float hotCov, float accentDiffFrac,
+                   float sheenPeriodUm, bool isBack,
+                   vec3 viewTangent, vec3 lightTangent, float envUp);
 
 // Single real surface (outer front OR inner back, per uLayer). Draws ONLY this
 // layer's gold coverage from its own mask (bound to uFront) — no cross-layer
@@ -849,6 +892,29 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
     }
   }
 
+  return shadeCoverage(cov, dimCov, hotCov, accentDiffFrac, uRainbowPeriodUm,
+                       isBack, viewTangent, lightTangent, envUp);
+}
+
+// ----------------------------------------------------------------------------
+// SHADING of a metal-coverage field — shared by the procedural (foliage_moire)
+// and LITERAL paths, so both walls are the same physical gold under the same
+// lighting and only the GEOMETRY differs between them. Lifted verbatim out of
+// runFoliageMoireLayer when the literal path arrived; every constant, term and
+// order of operations is unchanged (the two edits are mechanical: `pUm` left
+// diffractionSheen's signature, which never read it, and the sheen's gate moved
+// from `rainbowHere > 0.0` to `accentDiffFrac > 0.0` — the added term is
+// multiplied by accentDiffFrac, so the two gates differ only where it is zero).
+//
+//   cov            total metal coverage of this fragment (0..1)
+//   dimCov/hotCov  shares of `cov` DISPLAYED recessed / extra-bright without
+//                  changing occlusion (the water barrier and the water behind it)
+//   accentDiffFrac share of the fragment sitting in a diffraction sub-grating
+//   sheenPeriodUm  that grating's fabricated pitch
+// ----------------------------------------------------------------------------
+vec4 shadeCoverage(float cov, float dimCov, float hotCov, float accentDiffFrac,
+                   float sheenPeriodUm, bool isBack,
+                   vec3 viewTangent, vec3 lightTangent, float envUp) {
   float ndl = max(0.0, lightTangent.z);
   vec3 color;
   if (uIllumination == 1) {
@@ -984,8 +1050,9 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
     // Flowing water: bright first-surface gold regardless of plane.
     color += uMetalAlbedo * hotCov * (0.43 + 0.67 * ndl);
     // Diffraction accent: OUTER plane only, labelled angle-hue sheen.
-    if (!isBack && rainbowHere > 0.0) {
-      color += diffractionSheen(viewTangent, lightTangent, pUm, ndl) * accentDiffFrac * uMetalSheen;
+    if (!isBack && accentDiffFrac > 0.0) {
+      color += diffractionSheen(viewTangent, lightTangent, ndl, sheenPeriodUm)
+             * accentDiffFrac * uMetalSheen;
     }
     // Ambient illuminant tint. uAmbientColor was bound by BoxScene but read by no
     // branch in any recipe — inert plumbing. Consume it here (rather than delete the
@@ -1019,6 +1086,45 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
   float hashA = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   aCov = clamp(aCov + (hashA - 0.5) * (4.0 * aCov * (1.0 - aCov)) * 0.5, 0.0, 1.0);
   return vec4(color, aCov);
+}
+
+// ----------------------------------------------------------------------------
+// LITERAL layer (uLiteral == 1). One real surface, one texture fetch: the
+// fabricated chrome raster IS the geometry. No gratings are synthesized, no
+// graylevel is decoded as a region code, no lattice is reconstructed from a
+// published period — if it is not in the mask, it is not on the wall.
+//
+// Everything the procedural path builds by hand comes out of the two planes for
+// free: the frame moiré is the outer louvre raster seen across the T/n gap
+// against the inner carrier raster, a barrier switch is the outer slit raster
+// walking over the inner interlace raster, and a halftone photo is simply its
+// own bands. Single-ply faces (empty back raster), blank faces (both empty) and
+// photo faces need no code here at all — the CPU side drops an empty plane and
+// this function never runs for it.
+//
+// The coverage is the sampled value, LINEAR and mipmapped, used as-is: see the
+// uLiteral comment for why that sample is the honest eye-integration and why
+// thresholding it would be the lie.
+// ----------------------------------------------------------------------------
+vec4 runLiteralLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
+  bool isBack = uLayer > 0.5;
+  float cov = clamp(texture2D(uFront, vUv).r, 0.0, 1.0);
+
+  // The one non-literal term on this path (flagged in the uPeriodMap comment):
+  // a sub-5 µm colour grating is orders of magnitude below what a 2048 px raster
+  // can carry, so where the period map says one was fabricated we hand it to the
+  // same diffractionSheen() stand-in the RAINBOW accent uses, at the per-pixel
+  // pitch. r is the byte/255, and the byte is period_um * 25, so the pitch in µm
+  // is r * 255/25 = r * 10.2.
+  float sheenPeriodUm = 0.0;
+  float diffFrac = 0.0;
+  if (!isBack && uPeriodReady > 0.5) {
+    sheenPeriodUm = texture2D(uPeriodMap, vUv).r * 10.2;
+    // A pitch below the litho floor is "no grating here", not a tiny one.
+    diffFrac = step(0.5, sheenPeriodUm) * cov;
+  }
+  return shadeCoverage(cov, 0.0, 0.0, diffFrac, sheenPeriodUm,
+                       isBack, viewTangent, lightTangent, envUp);
 }
 
 void main() {
@@ -1063,7 +1169,13 @@ void main() {
   // the legacy single-plane recipes (standalone-pattern previews) stay opaque.
   // (uRecipe == 2 no longer exists — phase_shift_overlay is retired.)
   if (uRecipe == 3) {
-    gl_FragColor = runFoliageMoireLayer(viewTangent, lightTangent, envUp);
+    // Both are recipe 3 and both are the two-plane geometric renderer; uLiteral
+    // only says whether this face's geometry ARRIVES as a fabricated raster or
+    // is synthesized from a level-coded mask. Faces without literal rasters keep
+    // the procedural path unchanged (the @effects suite still has its subject).
+    gl_FragColor = (uLiteral > 0.5)
+      ? runLiteralLayer(viewTangent, lightTangent, envUp)
+      : runFoliageMoireLayer(viewTangent, lightTangent, envUp);
   } else if (uRecipe == 0) {
     gl_FragColor = vec4(runStereoLenticular(viewTangent, lightTangent), 1.0);
   } else {

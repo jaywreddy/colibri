@@ -55,6 +55,12 @@ class PlateSpecBody(BaseModel):
     # reveal on any stock, no-op at the 500 µm baseline); "fixed" keeps the
     # literal fine pitch (refraction shimmer on thick stock).
     carrier_scale_mode: Literal["gap", "fixed"] = "gap"
+    # SINGLE-PLY face: one sheet of glass, so the frame leaves AND the uniform
+    # carrier both live on the FRONT layer and the back stays empty. Declared
+    # here so the flag survives ``model_dump`` into PlateSpec — an undeclared
+    # field is silently dropped from the request, which would quietly rebuild a
+    # single-ply photo side as a two-ply one.
+    single_ply: bool = False
     label: str = ""
 
     def to_spec(self) -> PlateSpec:

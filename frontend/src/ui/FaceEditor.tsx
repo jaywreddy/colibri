@@ -4,7 +4,7 @@ import { log } from '../logger';
 import FrameControls from './FrameControls';
 import ParameterPanel from './ParameterPanel';
 import { FACE_LABELS } from './FacesPanel';
-import { Button, FailedTile, KIT, Section, Shimmer } from './kit';
+import { Button, CheckRow, FailedTile, KIT, Section, Shimmer } from './kit';
 
 /**
  * Editor for the selected face: visual pattern picker (thumbnail cards) +
@@ -213,6 +213,25 @@ export default function FaceEditor() {
           >
             🎲 Shuffle seed
           </Button>
+        </div>
+
+        {/* Per-face ply policy. On a single-ply face the chrome lands on the
+            OUTER ply only and the inner ply stays bare glass: the composed
+            plate publishes an empty back raster, so the renderer drops the
+            inner pattern plane (the glass slabs stay) and nothing on this wall
+            can beat against a second layer. That is what a continuous-tone
+            photo halftone wants — a back carrier under it only adds a moiré
+            the picture did not ask for. */}
+        <div style={{ marginTop: 10 }}>
+          <CheckRow
+            label="Single ply (bare inner glass)"
+            checked={!!face.single_ply}
+            onChange={(single_ply) => {
+              log('face_single_ply_changed', { faceId: selectedFaceId, single_ply });
+              patchFace(selectedFaceId, { single_ply });
+            }}
+            testId="face-single-ply"
+          />
         </div>
       </Section>
 
