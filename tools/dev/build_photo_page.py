@@ -27,15 +27,21 @@ for nj in sys.argv[3:]:
         if isinstance(e, dict) and "file" in e:
             notes[Path(e["file"]).stem] = e
 colour = json.load(open(photos / "photo_colour.json", encoding="utf-8"))
+plates = {e["stem"]: e for e in json.load(open(photos / "side_plates.json", encoding="utf-8"))} if (photos / "side_plates.json").exists() else {}
 CSS = io.open(HERE / "witness_page.css", encoding="utf-8").read()
 
 
 def b64(p: Path) -> str:
-    return base64.b64encode(p.read_bytes()).decode()
+    """JPEG re-encode at embed time: six photos x three sheets as PNG is over the
+    16 MB artifact limit; as quality-88 JPEG it is a third of that."""
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.open(p).convert("RGB").save(buf, "JPEG", quality=88, optimize=True)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 def fig(p: Path, alt: str, cap: str) -> str:
-    return (f'<figure><img class="preview" alt="{H.escape(alt)}" src="data:image/png;base64,{b64(p)}">'
+    return (f'<figure><img class="preview" alt="{H.escape(alt)}" src="data:image/jpeg;base64,{b64(p)}">'
             f'<figcaption>{cap}</figcaption></figure>')
 
 
@@ -54,9 +60,26 @@ READING = {
     "IMG_1827~2": "The sunset owns the hue map: sky and sea go to the red-orange end, his shirt to blue, and 77% of the field is coloured. <b>Hue-equalised</b> spreads that into the green rungs and looks busier, not better. The authored version would be: shirt blue, sun disc red, everything else plain.",
     "PXL_20240803_232128378.MP": "The dress is the picture. Hue colours the foliage with it (80% of the field) and the dress loses its identity; <b>auto-zones</b> at 41% keeps the dress and the leaves both. A zone plan that colours the dress alone and leaves the garden plain would be the strongest side of the six for colour.",
     "IMG_6584": "Grass and trees swamp the hue map at 71% coloured; auto-zones brings it to 20%, mostly the dress and the tower. Colour will not rescue the busy background here, segmentation will. Plain, with a segmented background, is the honest recommendation.",
-    "IMG_1290-EDIT": "Four faces and the floral top give hue and hue-eq 83% coverage, all of it fragmentary at the eye cell. The mirror-padded top edge doubles the heads and must be replaced by a darkened extension before this is usable at all.",
+    "IMG_1290-EDIT": "Four faces and the floral top give hue and hue-eq 83% coverage, all of it fragmentary at the eye cell, so this one stays plain. The marina is matted out below rather than coloured over, and the square is made by placing the group on the glass ground — not by mirroring the frame, which doubled the heads.",
     "signal-2026-01-05-11-40-52-562": "Backlit foliage colours 86% of the frame in hue mode; auto-zones halves it and still lands mostly on the trellis. With five faces at ~35 cells each this is a scene, and a scene wants plain gold.",
 }
+
+def plate_block(stem: str) -> str:
+    pl = plates.get(stem)
+    if not pl:
+        return ""
+    prep_bits = []
+    if pl.get("segmented"):
+        prep_bits.append(f"people matted out with u2net ({pl.get('subject_fraction', 0)*100:.0f}% of the square), set on a light ground that prints as bare glass")
+    if pl.get("contrast"):
+        prep_bits.append("subject luminance stretched 2–98% and midtones opened")
+    if pl.get("square") == "pad":
+        prep_bits.append("landscape frame placed on the square ground — with the background gone there is nothing to extend")
+    prep_bits.append(f"edge fade over the outer {pl['fade']*100:.0f}% of the art box, so the picture dissolves into glass before the garland")
+    return f"""<h3>On the plate — chosen treatment</h3>
+<p><b>{H.escape(pl['why'])}.</b> {H.escape('; '.join(prep_bits))}. Coloured fraction {pl['coloured_fraction']*100:.0f}%.</p>
+{fig(photos / pl['plate'], stem + ' on the side plate', 'Left: the prepared source at art-box scale. Middle and right: the whole side plate (24.6 × 27.5 mm) as the eye sees it at 0° and 1° — the portrait in its 15.4 mm art box with the edge fade, the colour garland with each motif family at its hue rung, bare glass between them.')}"""
+
 
 sections = []
 for stem in ORDER + [c for c in (Path(e["file"]).stem for e in colour) if c not in ORDER]:
@@ -86,6 +109,7 @@ for stem in ORDER + [c for c in (Path(e["file"]).stem for e in colour) if c not 
 {fig(col, stem + " colour treatments", "Top row: the period field each plan assigns — red is the long-period end of the ladder (6.0 µm), violet the short (4.15 µm), grey stays plain gold. Middle and bottom rows: the rendered plate at 0° and 1° of tilt under a lamp, specular gold plus first-order sheen, eye-cell integrated.")}
 <div class="tbl-wrap"><table><thead><tr><th>treatment</th><th class="n">rungs</th><th class="n">coloured</th><th>what it does</th></tr></thead><tbody>{rows}</tbody></table></div>
 <p>{READING.get(stem, "")}</p>
+{plate_block(stem)}
 """)
 
 BODY = f"""<title>Side Photos</title>
@@ -114,10 +138,15 @@ figcaption {{ font-size: 13px; color: var(--muted); margin-top: 8px; max-width: 
     see is the picture, not the screen; the 3 mm patch on the crop sheet is the screen itself.</p>
     <p>An <b>authored zone plan</b> — like the reference portrait's, where the sweater, glasses and each
     flower colour are named — is what turns the auto-zones map into a design. The reading under each
-    photo says what that plan would be.</p></div>
+    photo says what that plan would be, and the last figure in each section shows the photo on the finished
+    side plate with the treatment I chose: inside the colour garland, edge-faded into the glass.</p>
+    <p><b>Blending into the frame.</b> The art box does not end at a square: the picture's coverage is
+    multiplied by a smooth fall-off over its outer 12–14%, rounded at the corners, so the last millimetre
+    is a gradient to bare glass; then a clear gap; then the garland. Where a background has been matted
+    out the ground is a light field, which prints as bare glass, so a segmented photo is its people alone.</p></div>
 {''.join(sections)}
   <footer>Crops and prep by the photo agents (<code>photo_notes.json</code>); colour fields and renders by
-  <code>tools/dev/render_photo_colour.py</code> with the witness previews' appearance model; page by
+  <code>tools/dev/render_photo_colour.py</code>, plate renders and segmentation by <code>render_side_plate.py</code> (rembg u2net), all with the witness previews' appearance model; page by
   <code>build_photo_page.py</code>.</footer>
 </div>"""
 out.write_text(BODY, encoding="utf-8")
