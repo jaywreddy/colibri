@@ -7,11 +7,17 @@ soldered seams, and hinged with a brass tube-and-rod hinge along the back top ed
 The browser preview renders the full box in 3D — glass slabs, pattern shaders, foil
 strips, solder beads, hinge — with an animated opening lid.
 
-**Design workflow:** size the box → tune the solder joints (foil tape, safety margin,
-bead, finish) → configure the hinge → assign a pattern + frame to each of the six
-faces → check the open-lid preview → **Export fab bundle**: a zip with per-face
-SVG/PNG lithography masks, `CUTLIST.csv` (glass cut list), and `ASSEMBLY.md`
-(numbered copper-foil build steps with real dimensions).
+**Where the design lives:** in code. `backend/app/boxes.py::default_box_spec` is the
+box — the six faces, their patterns, frame dials, band widths, seeds and ply policy —
+and `frontend/src/api.ts::defaultBoxSpec` mirrors it so the live preview POSTs the
+same box the fab bake ships. The browser screen is a VISUALIZER of that box: it sizes
+the envelope, tunes the solder joints and hinge, shows the cut list, and offers the one
+choice that is a view decision rather than a fab one — which of the prepared
+photographs goes on a given wall.
+
+**The fab bundle is a CLI step:** `just plate` writes the witness plate (per-face
+lithography masks as GDS + OASIS, the map SVG and the manifest). It is an ~8 minute
+rebuild and must run alone — never alongside another compute process (see CLAUDE.md).
 
 ## Quickstart
 
