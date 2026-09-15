@@ -16,18 +16,18 @@ export type ParamSpec = {
 };
 
 /**
- * Names map 1:1 to the `uRecipe` switch in plate.frag. Keep in sync with
- * RECIPE_NAMES in backend/app/patterns/base.py.
+ * The render recipe a manifest may declare. ONE is left: every composed box
+ * plate binds `foliage_moire` (plates.py forces it) and BoxScene REFUSES
+ * anything else rather than falling back on a single-plane approximation.
  *
- * Id 2 (phase_shift_overlay) is RETIRED with zero catalog users — its
- * two-image front/back phase split could never switch under honest parallax
- * (the front mask does not move with tilt). The numeric hole at 2 is
- * intentional: ids 0/1/3 are stable and must never be renumbered.
+ * The retired names and their ids stay documented because the backend's
+ * RECIPE_NAMES (app/patterns/base.py) is a positional list and the numbers
+ * must never be reused: 0 stereo_lenticular and 1 moire_interactive were the
+ * single-plane previews of standalone patterns, 2 phase_shift_overlay was the
+ * banned two-image phase split (a front-layer image cannot vanish under
+ * parallax), and foliage_moire has been 3 throughout.
  */
-export type RenderRecipe =
-  | 'stereo_lenticular'
-  | 'moire_interactive'
-  | 'foliage_moire';
+export type RenderRecipe = 'foliage_moire';
 
 export type PatternDescriptor = {
   slug: string;
@@ -66,10 +66,14 @@ export type PatternManifest = {
   };
 };
 
+/**
+ * Recipe name → the backend's numeric id. plate.frag no longer switches on it
+ * (it implements foliage_moire and nothing else), but BoxScene still records
+ * the accepted recipe per face as `uRecipe` so a dump says which geometry the
+ * bind path agreed to draw. 3, not 0, because ids 0-2 are retired names the
+ * backend's positional RECIPE_NAMES must never reuse.
+ */
 export const RECIPE_IDS: Record<RenderRecipe, number> = {
-  stereo_lenticular: 0,
-  moire_interactive: 1,
-  // 2 = retired phase_shift_overlay — hole kept so 3 never renumbers.
   foliage_moire: 3,
 };
 

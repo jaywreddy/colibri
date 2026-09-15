@@ -23,31 +23,31 @@
  */
 
 /**
- * Which catalog pattern each recipe's effect tests exercise — re-curated
- * 2026-07-19 after the parallax-honesty audit (app/sim2d.py + the taxonomy
- * investigation):
+ * The two-ply EXEMPLARS this suite assigns to the front face, and why they
+ * exist at all.
  *
- * - moire: the moire tests run against the default box front face — whatever
- *   default_box_spec ships there (currently globe-duo-phase, see
- *   backend/app/boxes.py) — rendered through the two-plane foliage_moire
- *   recipe like every composed plate.
- * - stereo: stays on globe-rotation-stereo (parallax barrier: slit front,
- *   both interlaced scenes in BACK — measured 0.895/0.000 channel separation
- *   at ±p/4 shift). jp-monogram-phase is ALSO a stereo_lenticular barrier
- *   after its rebuild and may be the stronger showpiece, but we do not swap
- *   the test pattern without a fresh composite to judge it by.
- * - reveal: the phase_shift_overlay recipe (2) is RETIRED with zero catalog
- *   users and deleted from the shader/API — its two-image front/back phase
- *   split could never switch under honest parallax (the front layer does not
- *   move; the 3D "flip" was an explicit view-sign bias cheat). Its former
- *   users were rebuilt as stereo_lenticular barriers or retagged to
- *   moire_interactive. Its slot in the suite is the honest T5 carrier reveal
- *   (single image halftoned onto a stripe carrier in FRONT, uniform
- *   image-free carrier in BACK).
+ * Every production wall is SINGLE-PLY and LITERAL: the backend publishes a
+ * raster of the fabricated chrome and the shader samples it, so the moiré and
+ * the barrier switch emerge from perspective across the real T/n plane gap with
+ * no analytic grating anywhere. The moiré / parallax / time / illumination /
+ * lid / turntable scenarios below therefore run against the DEFAULT box exactly
+ * as it ships (front = globe-atlantic, see backend/app/boxes.py) — nothing is
+ * injected.
+ *
+ * `interlace` is the one construction a literal single-ply face cannot show,
+ * because it needs a second written ply: BOTH images interlaced in the BACK
+ * layer under a neutral slit barrier in FRONT (CLAUDE.md's image-switch rule).
+ * globe-duo-phase stays registered as a hidden dev exemplar so that branch of
+ * plate.frag keeps a subject; it is not a face of the box.
+ *
+ * The retired entries: `stereo` (globe-rotation-stereo) previewed the deleted
+ * single-plane stereo_lenticular recipe, and `reveal` (monogram-carrier-reveal)
+ * stood in for the banned phase_shift_overlay. Both patterns went with the
+ * catalogue; the physics each was pinning is covered by the moiré-parallax
+ * scenario, which scales the real plane gap.
  */
 export const TEST_PATTERNS = {
-  stereo: 'globe-rotation-stereo',
-  reveal: 'monogram-carrier-reveal',
+  interlace: 'globe-duo-phase',
 } as const;
 
 export type EffectScenario = {
@@ -74,7 +74,7 @@ export const EFFECT_SCENARIOS: Record<string, EffectScenario> = {
   'moire-fringe-flow': {
     name: 'moire-fringe-flow',
     claim:
-      'The dual-layer gold moire is produced by sampling the real front/back lithography masks through a Snell-refracted parallax shift, so orbiting the camera makes the beat fringes flow continuously across the plate.',
+      'The gold moire is produced by sampling the real fabricated-chrome rasters of the two layers across the paraxial T/n plane gap, so orbiting the camera makes the beat fringes flow continuously across the plate.',
     signature:
       'A sweep of camera azimuths shows the same gold plate with fringe bands at progressively shifted positions; the plate outline and foil frame stay put.',
     failModes: [
@@ -95,27 +95,16 @@ export const EFFECT_SCENARIOS: Record<string, EffectScenario> = {
       'Same-gap recapture differs (nondeterministic rendering)',
     ],
   },
-  'stereo-lenticular-flip': {
-    name: 'stereo-lenticular-flip',
+  'barrier-interlace-swap': {
+    name: 'barrier-interlace-swap',
     claim:
-      'The stereo lenticular plate is a parallax-barrier: slits over two interlaced scene masks. Tilting the view across the slit axis flips which baked scene (view A vs view B) is visible; head-on, a close camera splits the plate into left/right viewing zones showing each scene.',
+      'The two-ply barrier interlace is a real parallax barrier: BOTH images live in the BACK layer as alternating lanes and the FRONT layer is a neutral slit comb over the whole art box. Tilting across the barrier axis walks the back lanes under the fixed comb, so one tilt shows A and the other shows B - a hard swap that emerges from perspective across the paraxial T/n gap, with no view-sign term anywhere.',
     signature:
-      'Two captures tilted +14deg and -14deg across the slit axis show clearly different imagery on the plate; the head-on capture shows a spatial mix (both scenes present in different zones across the plate). (In the box preview the outer plane is a neutral slit barrier over BOTH silhouettes interlaced on the inner plane at the paraxial T/n gap; the flip EMERGES from perspective across that gap — no view-sign mix — and re-flips periodically beyond the first zone.)',
+      'Two captures tilted +14deg and -14deg across the barrier axis show clearly different imagery inside the centerpiece; head-on the plate reads as a spatial mix, because a close perspective camera splits it into left/right viewing zones (real barrier behaviour) rather than blending.',
     failModes: [
-      'Both tilts show the same image (view textures not bound or mix not view-driven)',
-      'Head-on capture identical to one extreme (hard switch, no blend zone)',
-    ],
-  },
-  'carrier-reveal-tilt': {
-    name: 'carrier-reveal-tilt',
-    claim:
-      'The carrier reveal is the honest replacement for the retired phase_shift_overlay recipe: the figure is halftoned onto a stripe carrier in the FRONT mask on the outer plane, and a uniform image-free anti-phase carrier at the same period sits on the inner plane at the paraxial T/n gap (the box preview binds foliage_moire, two real planes — no view-sign bias). Tilting to the half-period Snell shift theta(p/2) = asin(n*sin(atan(p/(2t)))) de-registers the carriers by perspective across the gap and the figure contrast appears; zeroing the gap re-registers them and the reveal collapses. The effect depends only on the tilt MAGNITUDE, so opposite tilts must match — the physical signature that separates it from the old recipe-2 cheat, whose flip came from an explicit view-sign term.',
-    signature:
-      'Head-on the plate reads as a near-uniform fine carrier; at the manifest-derived tilt +/-theta(p/2) the figure stands out clearly, and zeroing the two-plane gap collapses it back to registration (the reveal is parallax-driven, not view-sign biased).',
-    failModes: [
-      'Tilting to theta(p/2) produces no contrast change (carriers not de-registering — parallax not applied)',
-      'Opposite tilts differ strongly (view-sign bias — the retired phase_shift_overlay cheat)',
-      'Tilt hardcoded at +/-14 deg instead of derived from the carrier period (zone aliasing: 84 um of shift is ~1-4 periods, landing arbitrarily mid-zone)',
+      'Both tilts show the same image (lanes not moving under the comb - parallax not applied)',
+      'The swap follows the sign of the view vector rather than the geometry (the banned phase-overlay cheat)',
+      'The front layer carries one of the two images (a front-layer image cannot vanish under tilt)',
     ],
   },
   'lid-transition': {

@@ -1,6 +1,10 @@
 precision highp float;
 
-#include './lib/parallax.glsl'
+// (The './lib/parallax.glsl' include is gone with the single-plane recipes that
+// called it: this renderer is GEOMETRIC — two real planes separated by the
+// paraxial T/n air gap — so the only ray walk left is the closed-form one in
+// runLiteralLayer, which reads the LIVE mesh separation rather than a slab
+// formula.)
 
 // ITEM 3 — world-space surface basis from plate.vert; the view and light directions
 // are built PER FRAGMENT in main() and passed down as explicit parameters. The old
@@ -27,27 +31,18 @@ uniform vec3 uLaserColor;
 uniform vec3 uBacklightColor;
 uniform vec3 uAmbientColor;    // ambient illuminant tint (linear; white today)
 
-// Which render recipe to run. Numeric IDs match RECIPE_IDS in frontend/src/api.ts:
-//   0 stereo_lenticular, 1 moire_interactive, 3 foliage_moire (every composed
-//   box plate). Id 2 (phase_shift_overlay) is RETIRED — the hole is
-//   intentional so 0/1/3 never renumber.
-uniform int uRecipe;
+// ONE recipe is implemented here: foliage_moire, which every composed box plate
+// binds (plates.py forces it and BoxScene refuses anything else). The legacy
+// single-plane recipes -- stereo_lenticular (0), moire_interactive (1) and the
+// retired phase_shift_overlay (2) -- are gone with the standalone pattern views
+// they previewed. The only branch left is uLiteral, which says whether this
+// face's geometry ARRIVES as a fabricated raster or is synthesized from a
+// level-coded mask.
+uniform float uSlitPeriodUm;       // frame louvre period (um)
+uniform float uSwitchAxis;         // radians; centerpiece grating axis
+uniform float uCarrierPeriodUm;    // carrier stripe period (um)
 
-// --- stereo_lenticular uniforms (only read when uRecipe == 0) ---------------
-uniform sampler2D uViewA;          // tilt-positive scene
-uniform sampler2D uViewB;          // tilt-negative scene
-uniform float uSlitOrientation;    // radians; slit-normal direction (0 = +X)
-uniform float uSlitPeriodUm;       // slit period Λ_slit (μm)
-
-// --- shared foliage/centerpiece uniforms (read when uRecipe == 3) -----------
-// Historically declared for the retired phase_shift_overlay recipe, but they
-// are LIVE on the foliage_moire path: uCarrierPeriodUm drives the frame back
-// carrier and uSwitchAxis the grating axis of the capybara body shimmer + the
-// legacy 2-phase centerpiece fallback. Do NOT delete with recipe 2.
-uniform float uSwitchAxis;         // radians; axis we project view onto
-uniform float uCarrierPeriodUm;    // carrier stripe period (μm)
-
-// --- foliage_moire uniforms (only read when uRecipe == 3) -------------------
+// --- foliage_moire uniforms -------------------------------------------------
 // Two fine gratings drawn ANALYTICALLY (no baked raster → no aliasing rings):
 //   back  grating: uCarrierPeriodUm @ uCarrierAngle, fills the back window
 //                  mask (uBack) which spans the whole exposed face.
@@ -202,62 +197,18 @@ uniform float uSwitchInterlace;
 // showed B where the part shows A and the swap ran backwards.
 uniform float uSwitchBarrierPhaseUm;
 
-// --- water scanimation (foliage_moire, capybara back face) ------------------
-// When uWaterScanN > 0 the centerpiece BACK-art region (uBack ART level) is the
-// WATER BAND, and the FRONT-art region (uFront ART level) is the still capybara.
-// Instead of the 2-phase colibrí/globe switch, the water region renders N-phase
-// travelling wavelets whose crest field slides sideways by ONE phase step per
-// parallax increment — the box rock walks the ripple through N phases so the
-// water appears to flow around the animal (the same barrier-grid scanimation
-// the standalone pattern + fab SVG bake, rendered analytically here). N == 0
-// (every non-capybara face) disables this branch entirely.
-//
-// FLOW RATE — there is no preview knob for it, and there was never a live one (a
-// uWaterPhasePitchPreviewUm uniform was declared, bound and documented as the
-// divisor that walks the phase, but no line of GLSL ever read it; the two-plane
-// rewrite had already made the phase emerge geometrically). The rate is set by the
-// geometry: the outer comb reveals the next 1/N lane after uCenterPeriodUm/N µm of
-// substrate parallax — 15 µm at the fab 60 µm pitch and N=4, i.e. ~2.5° of tilt per
-// ripple phase through the T/n gap, which is also the fab timing
-// (WATER_SCAN_FAB_PITCH_UM = 60 µm). Retune it by changing the barrier pitch or N,
-// never by a preview-only constant.
-uniform float uWaterScanN;               // ripple phase count (0 = disabled)
-uniform float uWaterRippleWavelengthUm;  // crest spacing along the flow axis (μm)
-// Body shimmer period (μm) over the DRY capybara: recipe_data
-// ``water_body_carrier_preview_um`` — the 24 µm period the fab path actually bakes
-// there (WATER_SCAN_FAB_CARRIER_UM), pre-magnified for preview like the frame pair
-// and therefore scaled by uPatternScale. It is NOT the frame carrier this branch
-// used to reuse (uCarrierPeriodUm, 22 µm design): the two disagreed by the 22-vs-24
-// gap on the one region the eye lands on. <= 0 → fall back to uCarrierPeriodUm.
-uniform float uWaterBodyPeriodUm;
-// Effective waterline in ART-BOX v (0 = box top, 1 = box bottom), i.e. where the
-// dry body ends and the water band begins. Drives the body/water split AND the
-// flow wake's depth shear + calm patch, so it must match the mask the plate baked
-// (capybara_scanimation.WATERLINE_Y, exposed there as a 0.4-0.85 param). Bound
-// from recipe_data; there is no in-shader constant to drift from any more.
-uniform float uWaterWaterlineY;
-// Centerpiece ART-BOX uv-rect. Two consumers: the capybara flow WAKE geometry
-// (body center, waterline, calm patch — all authored in the 0..1 art box) and the
-// barrier-interlace comb, which spans the WHOLE box (see uSwitchInterlace). The
+// Centerpiece ART-BOX uv-rect. Gates the barrier-interlace comb, which spans the
+// WHOLE box (see uSwitchInterlace) rather than the A-union-B silhouette. The
 // centerpiece is a SQUARE of side (CENTERPIECE_FILL·aperture) centered on the
 // plate, so on a non-square face it maps to different uv half-extents per axis.
 // uArtBoxHalfUv = (halfWidthUv, halfHeightUv); uArtBoxCenterUv = its uv center
 // (normally (0.5,0.5)). See plates.py recipe_data water_art_half_uv /
-// water_art_center_uv and the BoxScene uniform binding. Fallback (0,0) → treat the
+// water_art_center_uv (recipe_data key names that outlived the scanimation
+// which named them) and the BoxScene uniform binding. Fallback (0,0) → treat the
 // whole face as the art box (approx; only correct on a square face fully filled by
 // the centerpiece) — BoxScene logs that degradation rather than taking it quietly.
 uniform vec2 uArtBoxHalfUv;              // (halfW, halfH) of the art box in uv
 uniform vec2 uArtBoxCenterUv;            // uv center of the art box
-
-// --- diffraction rainbow accent (foliage_moire) -----------------------------
-// A reserved graylevel (RAINBOW_LEVEL = 200/255 ≈ 0.784, see plates.py) marks
-// "diffraction accent zone": in fab these pixels get a 4.4 µm (sub-5 µm) 45°
-// grating that fans white light into a first-order rainbow on tilt. In PREVIEW
-// we can't render true diffraction, so we fake the hologram-foil look: an
-// angle-dependent spectral sheen whose hue sweeps with the view vector's
-// projection, gated to a narrow travelling highlight band. uRainbowLevel < 0
-// disables the whole feature so pre-accent manifests render identically.
-uniform float uRainbowLevel;       // L of the accent level, normalized 0..1 (<0 = off)
 
 // --- physically baked diffraction (see backend app/diffraction.py) ----------
 // The accent's colour is no longer invented here. The backend integrates the
@@ -268,23 +219,20 @@ uniform float uRainbowLevel;       // L of the accent level, normalized 0..1 (<0
 //
 // where g is the in-plane grating vector. Order m lands in the eye at
 // lambda = u/m, so u carries every geometric dependency and ONE table serves
-// any pitch. uRainbowPeriodUm / uRainbowAngleRad are the REAL fabricated
-// grating's parameters, published in recipe_data straight from the constants
-// the mask is baked with — change the fab grating and this preview changes
-// with it, which the old hand-tuned hue ramp could not do.
+// any pitch. The PITCH is per-pixel (uPeriodMap, below); uRainbowAngleRad is the
+// fabricated grating's orientation, published in recipe_data straight from the
+// constant the mask is baked with.
+//
+// The procedural ACCENT ZONE that used to feed this — a reserved graylevel whose
+// pixels drew an interleaved diffraction/louvre band pair — is gone with the
+// level-coded accent. On a literal face the period MAP says where a sub-grating
+// was fabricated: the same answer read off the mask instead of reconstructed
+// from a level code.
 uniform sampler2D uDiffLut;
 uniform float uDiffUMax;           // u (um) at the last table entry
 uniform float uDiffReady;          // 1 once the table has been uploaded
-uniform float uRainbowPeriodUm;    // fabricated accent-grating period
 uniform float uRainbowAngleRad;    // fabricated accent-grating orientation
 uniform float uRainbowZeroOrder;   // eta_0 = duty^2: share left in specular
-// Accent INTERLEAVE (see backend gratings.band_select / export_fine). The accent
-// zone carries the diffraction grating and a moire louvre in alternating
-// sub-acuity bands, both written at the accent's 45 deg axis so they share one
-// lattice. Drawn here from the SAME published numbers the mask is baked with,
-// so the preview stops showing a blend the part does not have.
-uniform float uAccentBandPitchUm;  // interleave band pitch
-uniform float uAccentMoirePeriodUm;// the moire band's louvre period
 
 // --- LITERAL fabricated-geometry path (uLiteral == 1) -----------------------
 // "Render it literally." Everything above this line draws gratings PROCEDURALLY
@@ -378,105 +326,7 @@ const vec3 GOLD_F0 = vec3(1.000, 0.766, 0.336);
 // into having no view-dependent response at all.)
 
 // ----------------------------------------------------------------------------
-// Recipe 1: moire_interactive — sample front & back with physical parallax.
-// The Snell-refracted shift means rotating/orbiting the camera actually
-// produces moving moiré fringes.
-// ----------------------------------------------------------------------------
-vec3 runMoireInteractive(vec3 viewTangent, vec3 lightTangent) {
-  vec2 shift = parallax_offset(viewTangent, uThicknessUm, uN, uExtentUm);
-  float frontGold = texture2D(uFront, vUv).r;
-  float backGold  = texture2D(uBack,  vUv - shift).r;
-
-  // Transmission through *both* apertures — this is where moiré fringes
-  // show up as bright/dark beats.
-  float transmission = (1.0 - frontGold) * (1.0 - backGold);
-  float reflected    = max(frontGold, backGold * 0.55);
-
-  vec3 color;
-  if (uIllumination == 0) {
-    vec3 goldShade = GOLD * reflected * (0.3 + 0.7 * max(0.0, lightTangent.z));
-    color = goldShade + vec3(0.04) * transmission;
-    float overlap = frontGold * backGold;
-    color *= (1.0 - 0.35 * overlap);
-  } else if (uIllumination == 1) {
-    color = uLaserColor * transmission * (0.45 + 0.55 * max(0.0, lightTangent.z));
-    color += GOLD * 0.12 * reflected;
-  } else {
-    color = uBacklightColor * transmission;
-    color += GOLD_BACK * reflected * 0.25;
-  }
-  return color;
-}
-
-// ----------------------------------------------------------------------------
-// Recipe 0: stereo_lenticular — parallax-barrier slit grating + two interlaced
-// scenes baked into view_a / view_b textures. The sign of the projected view
-// vector on the slit-normal axis picks which scene is visible through the
-// slits. Switch half-angle ≈ arctan(p/2·t).
-// ----------------------------------------------------------------------------
-vec3 runStereoLenticular(vec3 viewTangent, vec3 lightTangent) {
-  vec2 shift = parallax_offset(viewTangent, uThicknessUm, uN, uExtentUm);
-
-  // EMERGENT parallax barrier. A front comb (opaque bars, slit open half of each
-  // period) sits over a BACK layer carrying the two scenes interlaced column by
-  // column at a half-period offset (view A in one half of each period, view B in
-  // the other). The substrate parallax slides the interlace under the fixed
-  // front comb, so the slit uncovers view-A columns at one tilt and view-B
-  // columns at the other — the stereo switch FALLS OUT of which column the slit
-  // reveals, not a view-projection blend. Supersampled across the pixel footprint
-  // so the ~Λ_slit comb + interlace average honestly at any zoom.
-  vec2 slitNormal = vec2(cos(uSlitOrientation), sin(uSlitOrientation));
-  vec2 pF = vUv * uExtentUm;
-  vec2 pB = (vUv - shift) * uExtentUm;
-  vec2 duvx = dFdx(vUv); vec2 duvy = dFdy(vUv);
-  vec2 dFx = dFdx(pF);   vec2 dFy = dFdy(pF);
-  vec2 dBx = dFdx(pB);   vec2 dBy = dFdy(pB);
-  float period = max(1.0, uSlitPeriodUm);
-
-  float sceneAcc = 0.0;   // scene light through the slits
-  float barrierAcc = 0.0; // opaque-bar coverage (visible gold barrier)
-  for (int i = 0; i < 3; i++) {
-    for (int j = 0; j < 3; j++) {
-      float ox = (float(i) - 1.0) * 0.3333333;
-      float oy = (float(j) - 1.0) * 0.3333333;
-      vec2 sUv = vUv + duvx * ox + duvy * oy;
-      vec2 sUvB = sUv - shift;
-      float uFrontC = dot(pF + dFx * ox + dFy * oy, slitNormal) / period;
-      float uBackC  = dot(pB + dBx * ox + dBy * oy, slitNormal) / period;
-      float slitOpen = step(fract(uFrontC), 0.5);             // front comb slit
-      float pickB    = step(0.5, fract(uBackC));              // interlace column
-      float scene = mix(texture2D(uViewA, sUvB).r,
-                        texture2D(uViewB, sUvB).r, pickB);
-      sceneAcc   += scene * slitOpen;
-      barrierAcc += (1.0 - slitOpen);
-    }
-  }
-  float sceneVis  = sceneAcc / 9.0;   // interlaced scene seen through the slits
-  float frontGold = barrierAcc / 9.0; // barrier bars (gold)
-  float transmission = sceneVis;
-
-  vec3 color;
-  if (uIllumination == 0) {
-    vec3 sceneGold = GOLD * transmission * (0.35 + 0.7 * max(0.0, lightTangent.z));
-    vec3 barrier = GOLD * frontGold * (0.2 + 0.5 * max(0.0, lightTangent.z)) * 0.6;
-    color = sceneGold + barrier;
-  } else if (uIllumination == 1) {
-    color = uLaserColor * transmission * (0.5 + 0.5 * max(0.0, lightTangent.z));
-    color += GOLD * 0.08 * frontGold;
-  } else {
-    color = uBacklightColor * transmission * 0.9;
-    color += GOLD_BACK * frontGold * 0.18;
-  }
-  return color;
-}
-
-// (Recipe 2, phase_shift_overlay, was RETIRED and its runPhaseShiftOverlay
-// function deleted: a front-layer image can never vanish under parallax
-// because the front mask does not move with tilt. Its former users are now
-// stereo_lenticular barriers or moire_interactive single-layer art.)
-
-// ----------------------------------------------------------------------------
-// Recipe 3: foliage_moire — box-first moiré carrier.
+// foliage_moire — box-first moiré carrier (the procedural path).
 //   uFront = foliage silhouette mask (whole face, art shape).
 //   uBack  = uniform carrier-window mask (whole exposed face rectangle).
 // Both gratings are generated procedurally here so nothing is baked into the
@@ -544,15 +394,15 @@ float gratingCoverage(vec2 pUm, float angle, float periodUm, float duty) {
 // single layer. The helpers were removed with it.
 
 // Region thresholds on the graylevel masks (see plates.py). The frame band
-// carries angle-bucket levels up to 166/255 ≈ 0.651; the reserved diffraction
-// accent level is 200/255 ≈ 0.784; ART_LEVEL = 255/255 = 1.0. We carve three
-// windows so the accent level classifies as neither frame nor art:
-//   FRAME   : (FRAME_MIN, RAINBOW_MIN)   frame band / carrier window
-//   RAINBOW : [RAINBOW_MIN, ART_MIN)     diffraction accent zone
-//   ART     : [ART_MIN, 1.0]             centerpiece silhouette
-// Keep these in sync with plates.py FRAME_BUCKET*/RAINBOW_LEVEL/ART_LEVEL.
+// carries angle-bucket levels up to 166/255 ≈ 0.651; ART_LEVEL = 255/255 = 1.0.
+// Two windows:
+//   FRAME   : (FRAME_MIN, ART_MIN)   frame band / carrier window
+//   ART     : [ART_MIN, 1.0]         centerpiece silhouette
+// Keep these in sync with plates.py FRAME_BUCKET* / ART_LEVEL. The third window
+// the accent level used to need (RAINBOW_MIN, 200/255) is gone with the
+// procedural accent: such a pixel now reads as frame band, which is a band motif
+// drawn without its sub-grating rather than a hole in the band.
 const float FRAME_MIN = 0.2;    // r above this = frame/window (band tops at ~0.651)
-const float RAINBOW_MIN = 0.72; // r in [this, ART_MIN) = diffraction accent (0.784)
 const float ART_MIN = 0.86;     // r above this = centerpiece art silhouette (1.0)
 
 // Angle-dependent spectral sheen for a diffraction-accent pixel — the PREVIEW
@@ -561,12 +411,10 @@ const float ART_MIN = 0.86;     // r above this = centerpiece art silhouette (1.
 // hologram-foil sticker); a narrow travelling band keeps it a tasteful moving
 // highlight rather than a flat rainbow wash. Returns an ADDITIVE colour.
 //
-// `periodUm` is the FABRICATED grating pitch at this fragment: the single
-// uRainbowPeriodUm constant on the procedural path, or the per-pixel value
-// sampled out of uPeriodMap on the literal one. It was a direct uniform read
-// before the literal path needed it to vary. (The old `pUm` argument was never
-// used — the position dependence enters through viewTangent, which a
-// perspective camera varies per fragment.)
+// `periodUm` is the FABRICATED grating pitch at this fragment, sampled per pixel
+// out of uPeriodMap. It was a direct uniform read before the literal path needed
+// it to vary. (The old `pUm` argument was never used — the position dependence
+// enters through viewTangent, which a perspective camera varies per fragment.)
 vec3 diffractionSheen(vec3 viewTangent, vec3 lightTangent, float ndl, float periodUm) {
   // Grating vector g in the surface tangent frame, from the FABRICATED angle.
   vec2 g = vec2(cos(uRainbowAngleRad), sin(uRainbowAngleRad));
@@ -587,99 +435,6 @@ vec3 diffractionSheen(vec3 viewTangent, vec3 lightTangent, float ndl, float peri
   return spectral * (0.35 + 0.65 * ndl) * uDiffReady;
 }
 
-
-// --- FLOWING-CURRENT water ripple (capybara back face) ----------------------
-// A field of long, undulating STREAMLINES (ridges along the flow/x axis) whose
-// transverse undulation travels downstream by one wavelength across the N
-// animation frames. ``phaseStep`` (0..N) is walked by the substrate parallax,
-// so a hand rock sweeps the crests laterally in ONE consistent direction — the
-// water reads as a continuous DIRECTIONAL current, not stepping bands. A wake
-// opens around the half-submerged body: streamlines PART in y around it, a calm
-// elliptical patch sits under the belly, and the undulation is shoved downstream
-// behind it (a trailing tongue / V-wake). This is the analytic twin of the
-// Python builder's _flow_streamline_field / _flow_amplitude (capybara_
-// scanimation.py) — the two MUST stay in lock-step (same constants below).
-//
-// Works in NORMALIZED art-box coords (uvN in 0..1, y-DOWN) for the wake geometry
-// (body center, waterline) and converts the ripple wavelength from μm to
-// normalized via the face extent, so the crest spacing and wake match the baked
-// fab geometry regardless of plate size. `bodyCx/Cy` mirror the Python constants;
-// the waterline is the uWaterWaterlineY UNIFORM, because Python threads it through
-// as a parameter — a const here silently desynchronizes the preview from the mask.
-const float FLOW_DIR       = 1.0;   // +1: crests advance toward +x as phase grows
-const float FLOW_BODY_CX   = 0.46;  // body-center x (normalized, matches motif)
-const float FLOW_BODY_CY   = 0.60;
-const float FLOW_BAND_FRAC = 0.55;  // streamline spacing = wavelength * this
-const float FLOW_A1        = 0.42;  // primary transverse undulation amplitude
-const float FLOW_A2        = 0.14;  // second-harmonic amplitude
-const float FLOW_SHEAR     = 0.35;  // deeper streamlines lag → raked current
-const float FLOW_WAKE_INFL = 0.30;  // gaussian radius of body influence
-const float FLOW_WAKE_PART = 0.22;  // how far streamlines part (y) around body
-const float FLOW_WAKE_SHOVE= 0.22;  // downstream shove (trailing tongue)
-
-// tanh is not a built-in in GLSL ES 1.00 (this ShaderMaterial compiles at that
-// version — no glslVersion:GLSL3), so provide it explicitly. Clamp the argument
-// to avoid exp() overflow at large |x| (saturates to ±1 anyway).
-float tanhApprox(float x) {
-  float e = exp(2.0 * clamp(x, -10.0, 10.0));
-  return (e - 1.0) / (e + 1.0);
-}
-
-// Scalar field whose near-integer iso-lines are the flowing streamlines. wLenN
-// is the ripple wavelength in NORMALIZED units. Mirrors _flow_streamline_field.
-float flowStreamlineField(vec2 uvN, float wLenN, float nPhases, float phaseStep) {
-  float depth = clamp((uvN.y - uWaterWaterlineY) / max(1e-6, (1.0 - uWaterWaterlineY)), 0.0, 1.0);
-  float travel = wLenN * FLOW_DIR * (phaseStep / max(1.0, nPhases));
-  float shear = 6.2831853 * FLOW_SHEAR * depth;
-
-  float dx = uvN.x - FLOW_BODY_CX;
-  float dy = uvN.y - FLOW_BODY_CY;
-  float r = sqrt(dx * dx + dy * dy) + 1e-3;
-  float infl = exp(-((r / FLOW_WAKE_INFL) * (r / FLOW_WAKE_INFL)));
-  float yPart = FLOW_WAKE_PART * tanhApprox(dy / 0.10) * infl;
-  float downstream = 0.5 + 0.5 * tanhApprox(dx * FLOW_DIR / 0.10);
-  float centerline = exp(-((dy / 0.18) * (dy / 0.18)));
-  float xShove = FLOW_WAKE_SHOVE * downstream * centerline * infl * FLOW_DIR;
-
-  float phaseX = 6.2831853 * (uvN.x - travel - xShove) / max(1e-4, wLenN) + shear;
-  float undul = (FLOW_A1 * sin(phaseX) + FLOW_A2 * sin(2.0 * phaseX + 0.6)) * (1.0 - 0.3 * depth);
-
-  float bandGap = wLenN * FLOW_BAND_FRAC;
-  return (uvN.y + yPart) / max(1e-4, bandGap) - undul;
-}
-
-// Crest strength 0..1: strong open water, calm elliptical patch under the belly,
-// gently fading with depth. Mirrors _flow_amplitude.
-float flowAmplitude(vec2 uvN) {
-  float depth = clamp((uvN.y - uWaterWaterlineY) / max(1e-6, (1.0 - uWaterWaterlineY)), 0.0, 1.0);
-  float amp = 1.0 - 0.35 * depth;
-  float bx = FLOW_BODY_CX;
-  float by = FLOW_BODY_CY + 0.16;
-  float ex = (uvN.x - bx - 0.05 * FLOW_DIR) / 0.17;
-  float ey = (uvN.y - by) / 0.11;
-  float rb = sqrt(ex * ex + ey * ey);
-  float calm = clamp((rb - 0.55) / 0.9, 0.0, 1.0);
-  return clamp(amp * calm, 0.0, 1.0);
-}
-
-// Gold coverage of the streamline crests for one animation frame. uvN normalized
-// (0..1, y-down), wavelengthUm μm crest spacing, extentUm the face size (μm).
-float waterRippleCoverage(vec2 uvN, float wavelengthUm, float extentUm, float nPhases, float phaseStep) {
-  // Convert crest spacing μm → normalized so the wake geometry (in normalized
-  // coords) and the crest density stay consistent at any plate size.
-  float wLenN = clamp(wavelengthUm / max(1.0, extentUm), 0.04, 0.4);
-  float s = flowStreamlineField(uvN, wLenN, nPhases, phaseStep);
-  float amp = flowAmplitude(uvN);
-  float f = s - floor(s + 0.5);            // signed distance to nearest streamline
-  float d = abs(f);
-  // Preview crest half-width. Wider than the fab crest (which is floored to the
-  // 2 µm litho minimum in the backend builder, not here) so the flowing ridges
-  // read clearly through the 25%-open slit barrier at a resolvable zoom/scale.
-  float crestHalf = 0.30 * amp;            // crest half-width (calm → vanishes)
-  float aa = fwidth(s) + 1e-3;
-  float crest = 1.0 - smoothstep(crestHalf, crestHalf + aa, d);
-  return clamp(crest * step(0.05, amp), 0.0, 1.0);
-}
 
 // Map a face uv into the centerpiece ART-BOX (0..1, y-DOWN, matching the Python
 // flow field). The art box is a (CENTERPIECE_FILL·aperture)-side square centered
@@ -757,42 +512,36 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
   float duty = clamp(uGratingDuty, 0.05, 0.95);
   bool isBack = uLayer > 0.5;
 
-  // Pattern Scale: applied to the magnified-preview family only (frame carrier,
-  // frame louvre, capybara body shimmer), on BOTH planes so their moiré geometry
-  // stays self-consistent. The centerpiece pitch is EXCLUDED — see uPatternScale:
+  // Pattern Scale: applied to the magnified-preview family only (frame carrier
+  // and frame louvre), on BOTH planes so their moiré geometry stays
+  // self-consistent. The centerpiece pitch is EXCLUDED — see uPatternScale:
   // the T/n gap does not scale, so scaling p would scale the switch tilt angle and
   // the preview would answer the "does it swap at a hand tilt?" question wrong by
   // exactly the scale factor.
   float scale = max(uPatternScale, 0.01);
   float carrierP = uCarrierPeriodUm * scale;   // frame back carrier
   float slitP    = uSlitPeriodUm    * scale;   // frame front louvre
-  float centerP  = uCenterPeriodUm;            // switch / water-comb / barrier pitch (exact fab)
-  // Capybara body shimmer: its own fab period, magnified like the frame pair.
-  float bodyP = (uWaterBodyPeriodUm > 0.0) ? (uWaterBodyPeriodUm * scale) : carrierP;
+  float centerP  = uCenterPeriodUm;            // barrier pitch (exact fab)
 
-  // Shared region windows (see FRAME_MIN / RAINBOW_MIN / ART_MIN).
-  float rainbowOn = step(0.0, uRainbowLevel);
-  float rainbowHere = rainbowOn * step(RAINBOW_MIN, mR) * (1.0 - step(ART_MIN, mR));
-  float band = step(FRAME_MIN, mR) * (1.0 - step(RAINBOW_MIN, mR)); // frame / carrier win
-  band = max(band, rainbowHere);
+  // Shared region windows (see FRAME_MIN / ART_MIN). A mask pixel at the old
+  // reserved accent level now simply reads as frame band: the procedural accent
+  // interleave is gone, and leaving its level unclassified would punch a hole in
+  // the band rather than draw one fewer effect.
+  float band = step(FRAME_MIN, mR) * (1.0 - step(ART_MIN, mR));     // frame / carrier win
   float art = step(ART_MIN, mR);                                    // centerpiece silhouette
   float artOther = step(ART_MIN, oR);                               // the switch's other image
 
-  bool isWater = uWaterScanN > 0.5;
   bool isInterlace = uSwitchInterlace > 0.5;
 
   float cov = 0.0;
   // Shading buckets that decouple DISPLAY brightness from occlusion (alpha).
-  // The water slit-barrier keeps a high alpha so it still occludes the inner
-  // ripple lanes (the scanimation mechanism), but is DISPLAYED as a dim recessed
-  // barrier so the bright water behind reads as the subject. The inner water
-  // crests are DISPLAYED extra-bright (the flowing water) even though the inner
-  // plane is otherwise the dim recessed layer.
+  // The interlace barrier keeps a high alpha so it still occludes the inner
+  // lanes (that occlusion IS the switch), but is DISPLAYED as a dim recessed
+  // barrier so the revealed image reads as the subject; the revealed lane is
+  // DISPLAYED extra-bright even though the inner plane is otherwise the dim
+  // recessed layer.
   float dimCov = 0.0;   // rendered as a dim/recessed barrier
-  float hotCov = 0.0;   // rendered extra-bright (flowing water)
-  // Fraction of this fragment sitting in the accent's DIFFRACTION band; only
-  // that share returns a spectrum (the other band is a plain moire louvre).
-  float accentDiffFrac = 0.0;
+  float hotCov = 0.0;   // rendered extra-bright (the revealed image)
   if (!isBack) {
     // OUTER plane: per-motif foliage louvre in the frame band …
     float bucket = 0.0;
@@ -803,44 +552,10 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
     float frameAngle = uSlitAngle
       + (bucket - 0.5 * (uFrameBucketCount - 1.0)) * uFrameAngleSpan;
     float louvre = gratingCoverage(pUm, frameAngle, slitP, duty);
-    // The accent is NOT frame band: it carries its own interleaved pair at the
-    // accent axis. Draw the frame louvre only where the frame actually is.
-    float frameOnly = band * (1.0 - rainbowHere);
-    cov = frameOnly * louvre;
-    if (rainbowHere > 0.0) {
-      // Which interleave band is this fragment in? Bands are perpendicular to
-      // the accent axis, so the selector is the same projection the gratings use.
-      vec2 ag = vec2(cos(uRainbowAngleRad), sin(uRainbowAngleRad));
-      float bandCoord = dot(pUm, ag) / max(1.0, uAccentBandPitchUm);
-      float inDiff = boxPulse(bandCoord, 0.5, fwidth(bandCoord));
-      float diffCov = gratingCoverage(pUm, uRainbowAngleRad, uRainbowPeriodUm, duty);
-      float moireCov = gratingCoverage(pUm, uRainbowAngleRad, uAccentMoirePeriodUm, duty);
-      cov += rainbowHere * mix(moireCov, diffCov, inDiff);
-      // Only the diffraction band diffracts; the sheen is weighted by how much
-      // of this fragment's footprint that band actually occupies.
-      accentDiffFrac = rainbowHere * inDiff;
-    }
+    cov = band * louvre;
 
     // … plus the centerpiece front-layer geometry.
-    if (isWater) {
-      // Capybara: the dry body (above the waterline) shimmers with a fine
-      // carrier; the water band (below) carries the SLIT BARRIER comb (60 µm
-      // pitch, 15 µm open slot = 1/N, 45 µm bar). The animated flow FALLS OUT of
-      // this comb occluding the inner ripple lanes as the box tilts.
-      vec2 uvArt = artBoxUV(vUv);
-      float body  = art * step(uvArt.y, uWaterWaterlineY);
-      float water = art * step(uWaterWaterlineY, uvArt.y);
-      float shimmer = gratingCoverage(pUm, uSwitchAxis, bodyP, duty);
-      // Water comb: the fab bake anchors this lattice on the water band, not on
-      // the face centre, and publishes no phase for it — so it stays anchored with
-      // its own inner ripple lanes below (both on raw face-uv µm), which is what
-      // the scanimation mechanism needs. Absolute phase only picks which ripple
-      // frame shows head-on.
-      float comb = slitBarCoverage(pUm, centerP, 1.0 / uWaterScanN, 0.0);
-      float combCov = water * comb;
-      cov += body * shimmer + combCov;
-      dimCov += combCov;   // barrier occludes (alpha) but displays recessed
-    } else if (isInterlace) {
+    if (isInterlace) {
       // Barrier-interlace switch: neutral slit barrier (open duty 0.5) over the
       // FULL centerpiece art box (artBoxInside — NEVER the A∪B union). Exactly one
       // lane class shows per slot. The barrier stays opaque (occludes) but displays
@@ -851,7 +566,9 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
       cov += combCov;
       dimCov += combCov;
     } else {
-      // Legacy 2-phase switch: front silhouette filled with the switch carrier.
+      // Single-image centerpiece (the two-ply monogram exemplar): the front
+      // silhouette filled with the switch carrier, which beats against the inner
+      // plane's anti-phase copy across the real T/n gap.
       float front = gratingCoveragePhase(pUm, uSwitchAxis, centerP, duty, 0.0);
       cov += art * front;
     }
@@ -861,37 +578,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
     cov = band * carrier;
 
     // … plus the centerpiece back-layer geometry.
-    if (isWater) {
-      // N interleaved ripple frames: slot k (a 1/N-wide lane of every comb
-      // period) carries ripple phase k. The travelling current EMERGES when the
-      // outer comb reveals successive slots with tilt.
-      vec2 uvArt = artBoxUV(vUv);
-      float artWidthUm = uExtentUm.x * (2.0 * ((uArtBoxHalfUv.x > 0.0) ? uArtBoxHalfUv.x : 0.5));
-      float coord = pUm.x / max(1.0, centerP);
-      // BAND-LIMITED slot mix (renderer-audit item 1, sibling of the interlace
-      // lane fix above). The old path hard-picked ONE phase slot with floor()
-      // and faded to the phase-0 pattern via the same retired smoothstep window
-      // — under-filtered lattice beating into rings, and the w→∞ limit was the
-      // WRONG pattern (phase 0, not the phase average). Slot k occupies
-      // fract(coord) ∈ [k/N, (k+1)/N), so its pixel-footprint occupancy is
-      // boxPulse(coord - k/N, 1/N, w); the occupancies partition the footprint
-      // (they sum to 1), so weighting each phase's crest field by its occupancy
-      // is the exact box-filtered selector. Fixed 4-iteration loop with a step()
-      // gate (N is 1..4; GLSL ES 1.00 wants constant bounds).
-      float wSlot = fwidth(coord);
-      float nPh = max(1.0, uWaterScanN);
-      float laneCrest = 0.0;
-      for (int k = 0; k < 4; k++) {
-        float fk = float(k);
-        float valid = step(fk + 0.5, nPh);
-        float occ = valid * boxPulse(coord - fk / nPh, 1.0 / nPh, wSlot);
-        laneCrest += occ * waterRippleCoverage(uvArt, uWaterRippleWavelengthUm, artWidthUm,
-                                               uWaterScanN, fk);
-      }
-      float crestCov = art * laneCrest;
-      cov += crestCov;
-      hotCov += crestCov;   // flowing water — display bright even though inner
-    } else if (isInterlace) {
+    if (isInterlace) {
       // A in even lanes, B in odd (lane pitch = half the barrier pitch), on the
       // SAME registered lattice as the outer comb (barrierPUm) — that shared
       // lattice IS the registration: lane 0 starts at an open-slit centre, so head-on
@@ -920,7 +607,7 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
       cov += ic;
       hotCov += ic;   // the revealed image reads bright even on the inner plane
     } else {
-      // Legacy 2-phase switch: back silhouette at half-period phase.
+      // Single-image centerpiece: back silhouette at half-period phase.
       float back = gratingCoveragePhase(pUm, uSwitchAxis, centerP, duty, 0.5);
       cov += art * back;
     }
@@ -929,7 +616,9 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
   // `buried` = false: the procedural path models the legacy single-plate stack,
   // whose outer gold is deposited on the AIR-side face. Unchanged — the @effects
   // suite pins these pixels.
-  return shadeCoverage(cov, dimCov, hotCov, accentDiffFrac, uRainbowPeriodUm,
+  // accentDiffFrac = 0 and no sheen pitch: the procedural path carries no
+  // sub-grating map, so nothing on it diffracts (see diffractionSheen).
+  return shadeCoverage(cov, dimCov, hotCov, 0.0, 0.0,
                        isBack, false, viewTangent, lightTangent, envUp);
 }
 
@@ -938,10 +627,9 @@ vec4 runFoliageMoireLayer(vec3 viewTangent, vec3 lightTangent, float envUp) {
 // and LITERAL paths, so both walls are the same physical gold under the same
 // lighting and only the GEOMETRY differs between them. Lifted verbatim out of
 // runFoliageMoireLayer when the literal path arrived; every constant, term and
-// order of operations is unchanged (the two edits are mechanical: `pUm` left
-// diffractionSheen's signature, which never read it, and the sheen's gate moved
-// from `rainbowHere > 0.0` to `accentDiffFrac > 0.0` — the added term is
-// multiplied by accentDiffFrac, so the two gates differ only where it is zero).
+// order of operations is unchanged. Only the LITERAL path passes a non-zero
+// accentDiffFrac now — the procedural path's accent zone is retired — so the
+// diffraction terms below are reached from the period map alone.
 //
 //   cov            total metal coverage of this fragment (0..1)
 //   dimCov/hotCov  shares of `cov` DISPLAYED recessed / extra-bright without
@@ -1292,27 +980,16 @@ void main() {
   // is needed — the surround is a sky/ground hemisphere gradient.
   float envUp = reflect(-viewDirWorld, normalWorld).y;
 
-  // ITEM 2c — SINGLE exit point so every recipe runs the colour pipeline. The three
-  // chunks below operate on `gl_FragColor` BY NAME, so the old recipe-3 early
-  // `return` would have skipped them; hence the if/else-if/else shape rather than an
-  // early-out. Recipe 3 (foliage_moire = every box face) is the TWO-PLANE geometric
-  // path and returns its own alpha so the two real surfaces composite in the scene;
-  // the legacy single-plane recipes (standalone-pattern previews) stay opaque.
-  // (uRecipe == 2 no longer exists — phase_shift_overlay is retired.)
-  if (uRecipe == 3) {
-    // Both are recipe 3 and both are the two-plane geometric renderer; uLiteral
-    // only says whether this face's geometry ARRIVES as a fabricated raster or
-    // is synthesized from a level-coded mask. Faces without literal rasters keep
-    // the procedural path unchanged (the @effects suite still has its subject).
-    gl_FragColor = (uLiteral > 0.5)
-      ? runLiteralLayer(viewTangent, lightTangent, envUp)
-      : runFoliageMoireLayer(viewTangent, lightTangent, envUp);
-  } else if (uRecipe == 0) {
-    gl_FragColor = vec4(runStereoLenticular(viewTangent, lightTangent), 1.0);
-  } else {
-    // Default + uRecipe == 1: moire_interactive.
-    gl_FragColor = vec4(runMoireInteractive(viewTangent, lightTangent), 1.0);
-  }
+  // ITEM 2c — SINGLE exit point so the colour pipeline always runs. The two
+  // chunks below operate on `gl_FragColor` BY NAME, so an early `return` here
+  // would skip them. Both paths are the TWO-PLANE geometric renderer and both
+  // return their own alpha so the real surfaces composite in the scene;
+  // uLiteral only says whether this face's geometry ARRIVES as a fabricated
+  // raster or is synthesized from a level-coded mask (the two-ply exemplars,
+  // which is what the @effects suite has as its procedural subject).
+  gl_FragColor = (uLiteral > 0.5)
+    ? runLiteralLayer(viewTangent, lightTangent, envUp)
+    : runFoliageMoireLayer(viewTangent, lightTangent, envUp);
 
   // makePlateShader builds a ShaderMaterial (NOT RawShaderMaterial), so three's full
   // fragment prefix — toneMapping(), toneMappingExposure, linearToOutputTexel() — is

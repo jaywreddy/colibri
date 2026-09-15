@@ -719,10 +719,11 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       // else), so that is also the pre-bind default: with the blank mask it yields
       // zero gold coverage → invisible planes until a manifest binds, instead of the
       // banned single-plane model rendering opaque dark plates for a few frames.
+      // Not read by plate.frag (it implements exactly one recipe now) — this
+      // records WHICH recipe the bind path accepted for this face, which is what
+      // the @effects suite asserts on and what makes a refused manifest visible
+      // in a dump.
       uRecipe: { value: RECIPE_IDS.foliage_moire },
-      uViewA: { value: blank },
-      uViewB: { value: blank },
-      uSlitOrientation: { value: 0.0 },
       uSlitPeriodUm: { value: 40.0 },
       uSwitchAxis: { value: 0.0 },
       uCarrierPeriodUm: { value: 20.0 },
@@ -730,19 +731,9 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       uSlitAngle: { value: 0.0 },
       uGratingDuty: { value: 0.5 },
       uCenterPeriodUm: { value: 220.0 },
-      // Water scanimation (foliage_moire, capybara back face). N=0 disables the
-      // travelling-ripple branch so every other face keeps its 2-phase switch.
-      uWaterScanN: { value: 0.0 },
-      uWaterRippleWavelengthUm: { value: 900.0 },
-      // Dry-body shimmer period (µm, preview-magnified). <= 0 → the shader falls
-      // back to the frame carrier, which is what it wrongly reused before the
-      // backend published the body's own 24 µm fab period.
-      uWaterBodyPeriodUm: { value: 0.0 },
-      // Effective waterline in art-box v. Default = capybara_scanimation.WATERLINE_Y.
-      uWaterWaterlineY: { value: 0.66 },
-      // Centerpiece art-box uv rect: registers the capybara flow wake AND gates the
-      // barrier-interlace comb (the comb spans the whole box). (0,0) → shader falls
-      // back to treating the whole face as the art box; the bind path logs it.
+      // Centerpiece art-box uv rect: gates the barrier-interlace comb (the comb
+      // spans the whole box). (0,0) → shader falls back to treating the whole
+      // face as the art box; the bind path logs it.
       uArtBoxHalfUv: { value: new THREE.Vector2(0.0, 0.0) },
       uArtBoxCenterUv: { value: new THREE.Vector2(0.5, 0.5) },
       // Per-motif frame-band angle bucket encoding (foliage_moire).
@@ -753,10 +744,6 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       // this, but a default that disagrees with the producer is a trap for any
       // face that renders before its manifest lands.
       uFrameAngleSpan: { value: (3.5 * Math.PI) / 180.0 },
-      // Diffraction rainbow accent: normalized graylevel of the reserved accent
-      // level, or < 0 to disable (default off so pre-accent manifests are
-      // unchanged). Bound from recipe_data.rainbow_level when present.
-      uRainbowLevel: { value: -1.0 },
       // 0 = OUTER plane (front layer), 1 = INNER plane (back layer).
       uLayer: { value: layer },
       // Litho-metal conductor response (renderer-audit item 5). Defaults are
@@ -776,17 +763,14 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       uDiffLut: { value: blank },
       uDiffUMax: { value: 10.0 },
       uDiffReady: { value: 0.0 },
-      uRainbowPeriodUm: { value: 4.4 },
       uRainbowAngleRad: { value: Math.PI / 4 },
       uRainbowZeroOrder: { value: 0.25 },
-      uAccentBandPitchUm: { value: 48.0 },
-      uAccentMoirePeriodUm: { value: 23.98 },
       uSkyColor: { value: new THREE.Color().setRGB(...ENV_SKY, THREE.LinearSRGBColorSpace) },
       uGroundColor: { value: new THREE.Color().setRGB(...ENV_GROUND, THREE.LinearSRGBColorSpace) },
       // Pattern Scale (Task 1b): multiplies the preview-MAGNIFIED period family
-      // (frame carrier + louvre, capybara body shimmer) on both planes. The
-      // centerpiece barrier/comb pitch is excluded — scaling it would scale the
-      // switch tilt angle, since the T/n plane gap does not scale with it.
+      // (frame carrier + louvre) on both planes. The centerpiece barrier pitch is
+      // excluded — scaling it would scale the switch tilt angle, since the T/n
+      // plane gap does not scale with it.
       uPatternScale: { value: 1.0 },
       // Barrier-interlace tilt switch (Task 3): 1 on globe-duo / gear-quill /
       // colibri-flap, plus the SOLVED lattice phase the backend publishes.
@@ -2397,10 +2381,6 @@ export default function BoxScene() {
               u.uRecipe.value = RECIPE_IDS.foliage_moire;
               // THE switch: sample the fabricated raster, draw no gratings.
               u.uLiteral.value = 1.0;
-              // Legacy stereo_lenticular samplers — never read on this path, but
-              // left pointing at a real texture so none dangles.
-              u.uViewA.value = front ?? ctx.blank;
-              u.uViewB.value = front ?? ctx.blank;
             };
             applyShared(rt.shader.uniforms);
             applyShared(rt.shaderBack.uniforms);
@@ -2474,7 +2454,6 @@ export default function BoxScene() {
               // The @effects suite reads this event as proof a new mask landed;
               // `literal` says WHICH geometry source it was.
               literal: true,
-              stereo_views: false,
             });
             clearFaceFailed(fid);
           })
@@ -2552,9 +2531,9 @@ export default function BoxScene() {
         continue;
       }
       // recipe_data keys whose absence changes the GEOMETRY rather than a shade:
-      // the art-box rect gates the barrier comb and registers the capybara wake (a
-      // (0,0) fallback stretches both to the whole face), the preview periods carry
-      // the grating pitch, and the barrier phase carries the switch registration.
+      // the art-box rect gates the barrier comb (a (0,0) fallback stretches it to
+      // the whole face), the preview periods carry the grating pitch, and the
+      // barrier phase carries the switch registration.
       // Degrade loudly — the fallbacks below still keep the face renderable.
       const missing = [
         'water_art_half_uv',
@@ -2562,9 +2541,6 @@ export default function BoxScene() {
         'preview_slit_period_um',
         'fab_center_period_um',
         ...(rd.switch_interlace ? ['switch_barrier_phase_um'] : []),
-        ...(Number(rd.water_scan_n ?? 0) > 0
-          ? ['water_body_carrier_preview_um', 'water_waterline_y']
-          : []),
       ].filter((k) => rd[k] == null);
       if (missing.length > 0) {
         log('face_recipe_data_incomplete', {
@@ -2646,15 +2622,10 @@ export default function BoxScene() {
               // perspective across the real gap.
               u.uBackCoverageReady.value = 0.0;
               u.uBackCoverage.value = ctx.blank;
-              // uViewA/uViewB belong to the legacy stereo_lenticular path (recipe 0),
-              // which a composed plate can never be — the guard above refused
-              // anything but foliage_moire. Point them at a real texture anyway so no
-              // sampler is left dangling.
-              u.uViewA.value = front;
-              u.uViewB.value = front;
               // Two-plane geometric renderer. The FRONT (outer) plane draws the
-              // foliage louvre (slit period/angle) + colibrí carrier; the BACK
-              // (inner) plane draws the uniform carrier + globe/water. The leaf
+              // foliage louvre (slit period/angle) + the centerpiece's front
+              // geometry; the BACK (inner) plane draws the uniform carrier + the
+              // centerpiece's back geometry. The leaf
               // moiré and the switch EMERGE from the two real planes — NOT from a
               // single-plane beat formula. Preview periods must resolve at
               // >=2-3 px/period at default zoom or the real planes alias (the old
@@ -2690,7 +2661,7 @@ export default function BoxScene() {
                 Number(rd.preview_slit_period_um ??
                   (Number(rd.fab_front_period_um ?? 22.0 * 1.09) || 22.0 * 1.09) * 5.0) ||
                 110.0 * 1.09;
-              // Centerpiece switch / water-comb / barrier pitch: the fab 60 µm value
+              // Centerpiece barrier pitch: the fab 60 µm value
               // → ~5° crossing at the T/n air gap. On a barrier-interlace face the
               // canonical field is switch_interlace_period_um (comb AND lanes share
               // that ONE period by construction); fab_center_period_um is the same
@@ -2709,19 +2680,6 @@ export default function BoxScene() {
               // Live Pattern Scale (Task 1b) — the store may have changed it
               // before this manifest bound; keep the freshly-bound uniforms in sync.
               u.uPatternScale.value = useStore.getState().patternScale;
-              u.uWaterScanN.value = Number(rd.water_scan_n ?? 0) || 0;
-              u.uWaterRippleWavelengthUm.value =
-                Number(rd.water_ripple_wavelength_um ?? 900.0) || 900.0;
-              // Capybara dry-body shimmer: the body's OWN fab period (24 µm),
-              // preview-magnified. 0 → the shader falls back to the frame carrier.
-              u.uWaterBodyPeriodUm.value = Number(rd.water_body_carrier_preview_um ?? 0) || 0;
-              // Effective waterline. The backend does not publish one yet, so this
-              // falls back to capybara_scanimation.WATERLINE_Y — the value the plate
-              // compositor hardcodes when it bakes the masks, which is what the
-              // preview must agree with. Do NOT wire this to the pattern's
-              // `waterline` param: the composed-plate masks ignore that param, so
-              // following it here would desynchronize the shader from the mask.
-              u.uWaterWaterlineY.value = Number(rd.water_waterline_y ?? 0.66) || 0.66;
               {
                 const half = (rd.water_art_half_uv ?? [0, 0]) as number[];
                 const ctr = (rd.water_art_center_uv ?? [0.5, 0.5]) as number[];
@@ -2734,18 +2692,15 @@ export default function BoxScene() {
                   Number(ctr[1]) || 0.5
                 );
               }
-              u.uRainbowLevel.value =
-                rd.rainbow_level != null ? (Number(rd.rainbow_level) || 0) / 255 : -1.0;
-              // The FABRICATED accent grating, straight from recipe_data (which
-              // reads the same constants the mask is baked with). Fallbacks are
-              // the shipping values, so a manifest cached before these keys
-              // existed still renders the right grating.
-              u.uRainbowPeriodUm.value = Number(rd.rainbow_period_um ?? 4.4) || 4.4;
+              // The FABRICATED accent grating's orientation + zeroth-order share,
+              // straight from recipe_data (which reads the same constants the mask
+              // is baked with). Fallbacks are the shipping values, so a manifest
+              // cached before these keys existed still sheens at the right angle.
+              // The accent's PITCH is per-pixel now and rides the period map on the
+              // literal path; the procedural path draws no accent at all.
               u.uRainbowAngleRad.value =
                 ((Number(rd.rainbow_angle_deg ?? 45) || 45) * Math.PI) / 180;
               u.uRainbowZeroOrder.value = Number(rd.rainbow_zero_order ?? 0.25) || 0.25;
-              u.uAccentBandPitchUm.value = Number(rd.accent_interleave_pitch_um ?? 48) || 48;
-              u.uAccentMoirePeriodUm.value = Number(rd.accent_moire_period_um ?? 23.98) || 23.98;
             };
             applyShared(rt.shader.uniforms);
             applyShared(rt.shaderBack.uniforms);
@@ -2767,9 +2722,6 @@ export default function BoxScene() {
               face: fid,
               slug: fm.spec.pattern_slug,
               recipe: 'foliage_moire',
-              // Always false: a composed plate is never stereo_lenticular. Kept so the
-              // @effects metric field stays present.
-              stereo_views: false,
             });
             clearFaceFailed(fid);
           })
@@ -3101,10 +3053,6 @@ export default function BoxScene() {
       const alias = pp > 0 ? tiltForShift(pp) : null;
       if (swap != null) lines.push(`A↔B swap peaks at ±${swap.toFixed(1)}°`);
       if (alias != null) lines.push(`replays every ~${alias.toFixed(1)}°`);
-    } else if (num('water_scan_n') > 0) {
-      const pp = num('fab_center_period_um');
-      const step = pp > 0 ? tiltForShift(pp / Math.max(1, num('water_scan_n'))) : null;
-      if (step != null) lines.push(`ripple advances one frame per ~${step.toFixed(1)}°`);
     } else {
       const pp = num('carrier_period_um');
       const peak = pp > 0 ? tiltForShift(pp / 2) : null;

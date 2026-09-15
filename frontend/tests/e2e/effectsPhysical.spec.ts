@@ -17,8 +17,7 @@
  *     paraxial T/n, not merely be nonzero (moire-parallax-physics).
  *   - TEXTURE-DRIVEN: swapping only the bound mask at a fixed camera and gap
  *     must change the plate pixels, and every plane's bound image must be the
- *     PNG its own face manifest declares (carrier-reveal-tilt +
- *     moire-fringe-flow).
+ *     raster its own face manifest declares (moire-fringe-flow).
  *   - ALL SIX FACES run the two-plane foliage_moire recipe on both planes with
  *     real masks, and no face was refused (moire-fringe-flow).
  *
@@ -157,13 +156,11 @@ async function azimuthSweep(
 
 test.describe('@effects physical honesty of renderer effects', () => {
   /**
-   * Pre-warm the two non-default pattern variants this suite assigns
-   * (TEST_PATTERNS.stereo, TEST_PATTERNS.reveal), one at a time, BEFORE any
-   * page exists. Both assignments used to pay a cold pattern generate inside a
-   * test, hidden behind assignFacePattern's 90 s wait, and nothing else in the
-   * run reused it. Materializing the default variant here (GET
-   * /{slug}/default, the same variant the specs assign) leaves the in-test wait
-   * covering only the plate compose + texture bind.
+   * Pre-warm the dev exemplar this suite assigns (TEST_PATTERNS.interlace),
+   * BEFORE any page exists. The assignment used to pay a cold pattern generate
+   * inside a test, hidden behind assignFacePattern's 90 s wait. Materializing
+   * the default variant here (GET /{slug}/default, the same variant the spec
+   * assigns) leaves the in-test wait covering only the plate compose + bind.
    *
    * Strictly sequential and strictly before the first `goto`, so this never
    * runs beside a box regen (CLAUDE.md's single-heavy-compute rule). beforeAll
@@ -171,11 +168,11 @@ test.describe('@effects physical honesty of renderer effects', () => {
    * against the project's own baseURL (vite proxies /patterns to the backend).
    */
   test.beforeAll(async ({ playwright }, testInfo) => {
-    test.setTimeout(300_000); // two cold pattern generates, sequential
+    test.setTimeout(300_000); // one cold pattern generate
     const baseURL = (testInfo.project.use.baseURL as string | undefined) ?? '';
     const api = await playwright.request.newContext(baseURL ? { baseURL } : {});
     try {
-      for (const slug of [TEST_PATTERNS.stereo, TEST_PATTERNS.reveal]) {
+      for (const slug of [TEST_PATTERNS.interlace]) {
         const t0 = Date.now();
         const r = await api.get(`/patterns/${slug}/default`, { timeout: 140_000 });
         // A pre-warm failure is not a test failure: the in-test assignment
@@ -487,47 +484,48 @@ test.describe('@effects physical honesty of renderer effects', () => {
     expect(failures, failures.join('; ')).toHaveLength(0);
   });
 
-  test('@effects stereo lenticular flips views across the slit axis', async ({ page }) => {
+  /**
+   * The one scenario that cannot run on a production wall: every wall is
+   * single-ply, and a barrier interlace needs a SECOND written ply (both images
+   * interlaced in the back layer under a neutral slit comb in front — CLAUDE.md's
+   * image-switch rule). globe-duo-phase stays registered as a hidden dev exemplar
+   * exactly so this branch of plate.frag keeps a subject.
+   *
+   * Descended from the retired 'stereo lenticular flips views across the slit
+   * axis' test, whose construction this always was post-merge: the plate binds
+   * foliage_moire like every other composed plate, and the swap runs in its
+   * centerpiece region off recipe_data (barrier period/axis) and the real
+   * two-plane gap. The companion 'carrier reveal' test went with its pattern —
+   * the physics it pinned (a cross-layer effect that tracks the REAL plane gap)
+   * is what 'moire parallax obeys substrate physics' measures on the shipping box.
+   */
+  test('@effects barrier interlace swaps A<->B across the barrier axis', async ({ page }) => {
     test.setTimeout(150_000);
-    const outDir = path.join(OUT_ROOT, 'stereo-lenticular-flip');
+    const outDir = path.join(OUT_ROOT, 'barrier-interlace-swap');
     await fs.mkdir(outDir, { recursive: true });
 
-    // Post-merge the plate always binds as foliage_moire (id 3); the
-    // barrier switch runs procedurally in its centerpiece region, driven by
-    // the pattern's recipe_data (slit period/axis) and the two-plane gap.
-    await assignFacePattern(page, 'front', TEST_PATTERNS.stereo, 'foliage_moire');
+    await assignFacePattern(page, 'front', TEST_PATTERNS.interlace, 'foliage_moire');
     await settle(page, 400);
     expect(await faceRecipeId(page, 'front')).toBe(3);
 
-    // Texture-driven axiom under foliage_moire: the plate binds the REAL
-    // front/back litho masks per plane (stereo view textures only bind for
-    // the legacy recipe-0 path, so stereo_views is informational now).
-    const stereoViews = await page.evaluate(() => {
-      const buf = ((window as unknown as { __log?: any[] }).__log ?? []) as any[];
-      const ev = buf
-        .filter((e) => e.type === 'face_texture_bound' && e.face === 'front')
-        .pop();
-      return ev?.stereo_views ?? false;
-    });
-
-    // Tilt across the slit axis. Under foliage_moire the recipe-0
-    // uSlitOrientation uniform is never bound for composed plates (it sits at
-    // its material-creation default), so read the axis from the manifest the
-    // pattern actually shipped — the same source plates.py drives the
-    // composed-plate barrier from — mirroring how the carrier-reveal test
-    // reads its period. Tangent +X maps to camera azimuth for the front face.
-    const axisResp = await page.request.get(`/patterns/${TEST_PATTERNS.stereo}/default`);
-    expect(axisResp.ok(), `GET /patterns/${TEST_PATTERNS.stereo}/default failed`).toBeTruthy();
-    const axisRd = ((await axisResp.json()) as { recipe_data?: Record<string, unknown> })
-      .recipe_data ?? {};
-    const slitAxisDeg =
-      typeof axisRd.slit_axis_deg === 'number'
-        ? (axisRd.slit_axis_deg as number)
-        : typeof axisRd.switch_axis_deg === 'number'
-          ? (axisRd.switch_axis_deg as number)
+    // Tilt across the barrier axis. Read it from the manifest the pattern
+    // actually shipped — the same source plates.py drives the composed-plate
+    // barrier from. Tangent +X maps to camera azimuth for the front face.
+    const axisResp = await page.request.get(`/patterns/${TEST_PATTERNS.interlace}/default`);
+    expect(
+      axisResp.ok(),
+      `GET /patterns/${TEST_PATTERNS.interlace}/default failed`
+    ).toBeTruthy();
+    const axisRd =
+      ((await axisResp.json()) as { recipe_data?: Record<string, unknown> }).recipe_data ?? {};
+    const axisDeg =
+      typeof axisRd.switch_axis_deg === 'number'
+        ? (axisRd.switch_axis_deg as number)
+        : typeof axisRd.slit_axis_deg === 'number'
+          ? (axisRd.slit_axis_deg as number)
           : 0;
-    const slitRad = (slitAxisDeg * Math.PI) / 180;
-    const alongAzimuth = Math.abs(Math.cos(slitRad)) >= 0.5;
+    const axisRad = (axisDeg * Math.PI) / 180;
+    const alongAzimuth = Math.abs(Math.cos(axisRad)) >= 0.5;
     const TILT = 14;
     const view = async (t: number) => {
       if (alongAzimuth) await setCameraAzEl(page, t, 4);
@@ -550,8 +548,8 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const dAB = diffFrames(fA, fB);
     const dAC = diffFrames(fA, fC);
     const dBC = diffFrames(fB, fC);
-    const metrics = { AB: rd(dAB), AC: rd(dAC), BC: rd(dBC), stereoViews, slitRad };
-    console.log('[effects] stereo-lenticular-flip', JSON.stringify(metrics));
+    const metrics = { AB: rd(dAB), AC: rd(dAC), BC: rd(dBC), axisRad };
+    console.log('[effects] barrier-interlace-swap', JSON.stringify(metrics));
 
     const failures: string[] = [];
     if (dAB.changedFrac < 0.06) {
@@ -562,190 +560,10 @@ test.describe('@effects physical honesty of renderer effects', () => {
     // head-on plate into left/right A|B viewing zones (real barrier
     // behavior), so head-on is a spatial mix, not a uniform blend, and both
     // mad- and corr-based intermediacy assertions are invalid. First-zone
-    // switch quality is quantified headlessly in
-    // backend/tests/test_pattern_types.py::switch_metrics instead; the
-    // head-on capture stays in the sequence for the vision grader.
-    await writeMeta('stereo-lenticular-flip', outDir, [pA, pC, pB], metrics, failures);
-    expect(failures, failures.join('; ')).toHaveLength(0);
-  });
-
-  test('@effects carrier reveal appears at the half-period tilt and is substrate-driven', async ({
-    page,
-  }) => {
-    // This slot used to exercise phase_shift_overlay (recipe 2). That recipe
-    // was retired: its two-image front/back phase split can never switch
-    // under honest parallax (the front layer does not move with tilt), and
-    // its on-screen flip was an explicit view-sign bias. The honest
-    // replacement is the T5 carrier reveal — figure halftone AND carrier in
-    // FRONT, uniform image-free carrier in BACK — rendered by plain
-    // moire_interactive mask sampling. Same four-axiom structure as before:
-    // view-dependent (contrast appears with tilt), time-invariant (covered
-    // by the time-invariance scenario), texture-driven (real masks bound),
-    // parameterized (the reveal tilt is DERIVED from the manifest's carrier
-    // period + substrate via theta(p/2) = asin(n*sin(atan(p/(2t))))).
-    test.setTimeout(150_000);
-    const outDir = path.join(OUT_ROOT, 'carrier-reveal-tilt');
-    await fs.mkdir(outDir, { recursive: true });
-
-    // --- TEXTURE-DRIVEN AXIOM (axiom 3), natively asserted -------------------
-    // Every other metric in this suite is a delta under a CAMERA or GEOMETRY
-    // change, which any procedural view-keyed shader also produces. This one
-    // holds camera and geometry fixed and changes only the BOUND MASK: capture
-    // the head-on ROI with the default front pattern (globe-duo-phase), assign
-    // a visually unrelated slug (the monogram carrier reveal), and capture the
-    // SAME ROI at the SAME camera. Nothing but the mask content differs, so a
-    // shader drawing procedural fringes instead of sampling the litho masks
-    // renders the two identically and fails here.
-    const slugBefore = await page.evaluate(
-      () => (window as any).__studio.store.getState().boxSpec.faces.front.pattern_slug as string
-    );
-    expect(
-      slugBefore,
-      'texture-driven check needs the front face to start on a DIFFERENT slug'
-    ).not.toBe(TEST_PATTERNS.reveal);
-    await faceFrontOn(page, 0, 4); // exactly the camera view(0) uses below
-    // Computed once and reused for every capture in this test: the plate
-    // geometry does not move when only the pattern slug changes, and identical
-    // ROIs are what makes the frames diffable.
-    const roi = await frontROI(page);
-    const fSlugBefore = await captureGray(page, roi);
-    const pSlugBefore = await dumpFramePng(page, outDir, 'mask-before-assign');
-
-    // Post-merge the plate binds as foliage_moire (id 3): the carrier-reveal
-    // masks ride the two real planes (front mask on the outer plane, back
-    // anti-phase carrier on the inner plane at the T/n gap).
-    await assignFacePattern(page, 'front', TEST_PATTERNS.reveal, 'foliage_moire');
-    await settle(page, 400);
-    expect(await faceRecipeId(page, 'front')).toBe(3);
-    // Structural half of the same axiom: the newly bound masks are the PNGs
-    // this face's manifest declares, for BOTH layers, at real resolution.
-    //
-    // "Both layers", not "both planes": a literal face composites its two layers
-    // in one pass on the outer plane (the eye integrates their PRODUCT — see
-    // plate.frag::runLiteralLayer), so its inner plane is hidden and the back
-    // raster rides uBackCoverage on the outer material. allFaceRenderState reads
-    // maskBackW / maskBackMatchesManifest from whichever slot the renderer
-    // actually samples, so the axiom is unchanged on either path. A single-ply
-    // face genuinely has no back layer.
-    const frontState = (await allFaceRenderState(page)).find((s) => s.face === 'front');
-    expect(frontState, 'no render state for the front face').toBeTruthy();
-    const wantBack = !frontState!.singlePly;
-    expect(
-      frontState!.maskW > 1 && (!wantBack || frontState!.maskBackW > 1),
-      `front layers still on the placeholder mask (${frontState!.maskW}/${frontState!.maskBackW} px)`
-    ).toBeTruthy();
-    expect(
-      frontState!.maskMatchesManifest && (!wantBack || frontState!.maskBackMatchesManifest),
-      'front layers are not bound to the manifest front/back PNGs'
-    ).toBeTruthy();
-
-    // First-zone calibration: the reveal completes when the Snell-refracted
-    // back shift equals HALF the carrier period, and zones repeat every full
-    // period of shift — a hardcoded ±14° (84 um ≈ 1-4 periods) can land
-    // right back at registration where the figure vanishes. So read p and
-    // the substrate from the manifest the pattern actually shipped.
-    const mResp = await page.request.get(`/patterns/${TEST_PATTERNS.reveal}/default`);
-    expect(mResp.ok(), `GET /patterns/${TEST_PATTERNS.reveal}/default failed`).toBeTruthy();
-    const manifest = (await mResp.json()) as {
-      recipe_data?: Record<string, unknown>;
-      substrate?: { thickness_um?: number; n?: number };
-    };
-    const rdata = manifest.recipe_data ?? {};
-    const periodUm =
-      typeof rdata.carrier_period_um === 'number' ? (rdata.carrier_period_um as number) : 40;
-    const tUm = manifest.substrate?.thickness_um ?? 500;
-    const nSub = manifest.substrate?.n ?? 1.46;
-    const tiltDeg =
-      (Math.asin(Math.min(1, nSub * Math.sin(Math.atan(periodUm / (2 * tUm))))) * 180) /
-      Math.PI; // 3.35 deg at p=40, t=500, n=1.46
-
-    // Carrier stripes are vertical (switch axis +x) in every carrier/barrier
-    // generator in this repo, so the reveal tilt is a camera-azimuth move.
-    const view = async (t: number) => {
-      await setCameraAzEl(page, t, 4);
-      await waitForStableFrame(page, 350);
-    };
-
-    await view(0);
-    const f0 = await captureGray(page, roi);
-    const p0 = await dumpFramePng(page, outDir, 'head-on');
-    // Same camera, same gap, same ROI as fSlugBefore — only the mask changed.
-    const dMaskSwap = diffFrames(fSlugBefore, f0);
-    await view(-tiltDeg);
-    const fNeg = await captureGray(page, roi);
-    const pNeg = await dumpFramePng(page, outDir, 'tilt-neg');
-    await view(tiltDeg);
-    const fPos = await captureGray(page, roi);
-    const pPos = await dumpFramePng(page, outDir, 'tilt-pos');
-
-    const d0P = diffFrames(f0, fPos);
-    const d0N = diffFrames(f0, fNeg);
-    const dPN = diffFrames(fPos, fNeg);
-    const metrics = {
-      headOnVsPos: rd(d0P),
-      headOnVsNeg: rd(d0N),
-      posVsNeg: rd(dPN),
-      maskSwap: rd(dMaskSwap),
-      maskSwapSlugs: [slugBefore, TEST_PATTERNS.reveal],
-      // Kept out of `frames` on purpose: it shows a DIFFERENT pattern, so the
-      // vision grader must not read it as part of the tilt sequence.
-      maskSwapFrame: path.basename(pSlugBefore),
-      periodUm,
-      tiltDeg: Number(tiltDeg.toFixed(3)),
-    };
-    console.log('[effects] carrier-reveal-tilt', JSON.stringify(metrics));
-
-    const failures: string[] = [];
-    // (0) Texture-driven: swapping ONLY the bound mask (camera + gap fixed)
-    // must change the plate pixels. Thresholds sit far above the suite's
-    // same-state noise floor (the parallax scenario pins identical-state
-    // recapture at mad <= 0.5) and far below what two unrelated centerpieces
-    // produce, so this fails on mask-independent rendering without being a
-    // sensitivity knob.
-    if (dMaskSwap.changedFrac < 0.03 || dMaskSwap.mad < 1.5) {
-      failures.push(
-        `plate pixels do not follow the bound mask: swapping ${slugBefore} -> ` +
-          `${TEST_PATTERNS.reveal} at a fixed camera/gap moved almost nothing ` +
-          `(changedFrac ${dMaskSwap.changedFrac.toFixed(4)}, mad ${dMaskSwap.mad.toFixed(2)}) — ` +
-          `procedural, mask-independent shading?`
-      );
-    }
-    // (a) The reveal happens: at ±theta(p/2) the figure contrast appears, so
-    // both tilted frames must differ substantially from head-on.
-    if (d0P.changedFrac < 0.03 || d0N.changedFrac < 0.03) {
-      failures.push(
-        `no contrast change at the half-period tilt ±${tiltDeg.toFixed(2)}° ` +
-          `(changedFrac +${d0P.changedFrac.toFixed(4)} / -${d0N.changedFrac.toFixed(4)}) — parallax not applied?`
-      );
-    }
-    // (b) Substrate anti-cheat: with the camera parked at +theta(p/2),
-    // collapsing the geometric two-plane gap registers the layers, so the
-    // revealed figure must snap back toward registration. A view-sign bias
-    // (the retired recipe-2 cheat) would ignore the gap and sail through
-    // unchanged. GAP_COLLAPSE_FACTOR (not 0) keeps the two plane meshes from
-    // becoming coplanar — see its docstring.
-    // Zoomed pair for the collapse metric: at the default view the true-pitch
-    // carrier is sub-pixel (the shader no longer magnifies it), so the gap
-    // response averages away. Zoom preserves the parked tilt angle; the
-    // comparison frames are BOTH taken zoomed so they stay comparable.
-    const unzoomReveal = await zoomForMicroPatterns(page);
-    await waitForStableFrame(page, 400);
-    const roiZoom = await frontROI(page);
-    const fPosZoom = await captureGray(page, roiZoom);
-    await scaleBackPlaneGap(page, 'front', GAP_COLLAPSE_FACTOR);
-    await settle(page, 150);
-    const fZeroGap = await captureGray(page, roiZoom);
-    await scaleBackPlaneGap(page, 'front', 1);
-    await unzoomReveal();
-    const dGap = diffFrames(fPosZoom, fZeroGap);
-    (metrics as Record<string, unknown>).gapCollapse = rd(dGap);
-    console.log('[effects] carrier-reveal gapCollapse', JSON.stringify(rd(dGap)));
-    if (dGap.changedFrac < 0.03) {
-      failures.push(
-        `reveal ignores the two-plane gap (collapse changedFrac ${dGap.changedFrac.toFixed(4)}) — not parallax-driven`
-      );
-    }
-    await writeMeta('carrier-reveal-tilt', outDir, [pNeg, p0, pPos], metrics, failures);
+    // switch quality is quantified headlessly in the backend's own switch
+    // metrics instead; the head-on capture stays in the sequence for the
+    // vision grader.
+    await writeMeta('barrier-interlace-swap', outDir, [pA, pC, pB], metrics, failures);
     expect(failures, failures.join('; ')).toHaveLength(0);
   });
 

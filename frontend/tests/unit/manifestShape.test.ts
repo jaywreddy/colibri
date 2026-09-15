@@ -88,7 +88,7 @@ describe('PatternManifest shape', () => {
   it('accepts a manifest with render_recipe + recipe_data', () => {
     const withRecipe: unknown = {
       ...SAMPLE,
-      render_recipe: 'moire_interactive' as RenderRecipe,
+      render_recipe: 'foliage_moire' as RenderRecipe,
       recipe_data: { carrier_period_um: 20.0 },
     };
     expect(isManifest(withRecipe)).toBe(true);
@@ -209,34 +209,31 @@ describe('BoxManifest v2 shape', () => {
 });
 
 // ----------------------------------------------------------------------------
-// RECIPE_IDS numeric mapping must match the uRecipe switch order in
-// plate.frag. Pin the values so the shader and the TS never drift apart.
+// RECIPE_IDS — the manifest's recipe vocabulary. plate.frag no longer switches
+// on it (one recipe is implemented), but the backend's RECIPE_NAMES is a
+// POSITIONAL list, so the id must stay 3 and the retired names must stay out.
 // ----------------------------------------------------------------------------
 describe('RECIPE_IDS', () => {
-  it('maps each recipe name to the plate.frag switch constant', () => {
-    expect(RECIPE_IDS.stereo_lenticular).toBe(0);
-    expect(RECIPE_IDS.moire_interactive).toBe(1);
+  it('maps foliage_moire to the backend id 3', () => {
     expect(RECIPE_IDS.foliage_moire).toBe(3);
+    expect(Object.keys(RECIPE_IDS)).toEqual(['foliage_moire']);
   });
 
-  it('covers every RenderRecipe name and has no stale entries', () => {
-    const names: RenderRecipe[] = [
+  it('never resurrects a retired recipe name', () => {
+    // 0 stereo_lenticular and 1 moire_interactive previewed standalone
+    // patterns on a single plane; 2 phase_shift_overlay is the banned
+    // two-image phase split. Their ids are burnt, not free.
+    for (const retired of [
       'stereo_lenticular',
       'moire_interactive',
-      'foliage_moire',
-    ];
-    for (const n of names) {
-      expect(typeof RECIPE_IDS[n]).toBe('number');
+      'phase_shift_overlay',
+      'iridescent_grating',
+      'near_field_carpet',
+      'far_field_hologram',
+      'stylized_amplitude',
+    ]) {
+      expect(retired in RECIPE_IDS).toBe(false);
     }
-    expect('iridescent_grating' in RECIPE_IDS).toBe(false);
-    expect('near_field_carpet' in RECIPE_IDS).toBe(false);
-    expect('far_field_hologram' in RECIPE_IDS).toBe(false);
-    expect('stylized_amplitude' in RECIPE_IDS).toBe(false);
-    // phase_shift_overlay (id 2) is RETIRED and must never silently return.
-    expect('phase_shift_overlay' in RECIPE_IDS).toBe(false);
-    // The HOLE at 2 is the important pin: it proves 0/1/3 never renumbered
-    // when the retired recipe was deleted.
-    const ids = Object.values(RECIPE_IDS).sort();
-    expect(ids).toEqual([0, 1, 3]);
+    expect(Object.values(RECIPE_IDS)).toEqual([3]);
   });
 });
