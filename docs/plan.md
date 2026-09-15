@@ -1,8 +1,16 @@
 # Production Plate Plan — the box's own plies on the 5″ witness
 
+> Renamed from `production-plate-plan.md` in the 2026-09-15 tools+docs
+> cleanup (content unchanged below this note). This is the current,
+> single-ply decision record for the box; the physics whitepaper it
+> summarizes has been archived in full to `docs/archived/witness-physics-plan.md`
+> (superseded by the single-ply pivot of decision 10 below), with the still-
+> current physics extracted to `docs/physics-appendix.md` and the decision
+> table + BOM numbers extracted to `docs/decisions.md`.
+
 Status: **BUILT**, 2026-09-10 (second rebuild), on **2.25 mm fused quartz** (n = 1.4585). The plate is
 `backend/data/witness/witness-5in.{gds,oas}` (60.8 MB / 3.3 MB, 23 cells, 115.3 of 117.9 mm); the physics argument and the
-as-built numbers are in `witness-physics-plan.md` (§4.7 for the dies). This file
+as-built numbers are in `archived/witness-physics-plan.md` (§4.7 for the dies). This file
 records the decisions and how they were validated. The 2026-09-10 rebuild
 follows a three-part review (faces, renderer, mechanics) — §6 lists what it
 found and what changed.

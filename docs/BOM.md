@@ -7,7 +7,7 @@
 > OUTER ply of each face is written; the mask carries 11 dies in a **dicing
 > grid** (`app.export_witness`, `DICING.md`) and is cut on a saw — the first
 > plate was hand-cleaved and broke. Copper foil is **3/8″** (decision 7 of
-> `docs/production-plate-plan.md`): the 6.75 mm three-ply stepped edge leaves
+> `docs/decisions.md`, decision 7 — extracted from `docs/plan.md`): the 6.75 mm three-ply stepped edge leaves
 > 1/4″ tape with no fold. Two blanks per box: one written, one bare.
 
 Target build (original plan): ~30.5 × 30.5 × 33.6 mm upright box, six faces, each a BONDED PAIR
