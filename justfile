@@ -35,15 +35,15 @@ seed:
 # Backend pytest (Layer 1) — 5 sequential memory-safe chunks
 test-backend flags="":
     cd backend; uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_export_gds_stub.py tests/test_theme_metadata.py tests/test_variant_hash.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_sim_numerics.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_sim2d.py tests/test_pattern_types.py tests/test_showcase_patterns.py tests/test_bitmap_halftone.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_param_validation.py tests/test_sim_bounds.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_readability.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_collage.py tests/test_api_collage.py tests/test_shimmer_moire.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_imageprep.py tests/test_colourzone.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py tests/test_witness.py tests/test_export_blank.py tests/test_export_svg_rects.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_cache_integrity.py tests/test_export_jobs.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py tests/test_witness.py tests/test_ply_cuts.py tests/test_export_svg_rects.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_cache_integrity.py -q {{flags}}
 
 # Frontend vitest (Layer 2)
 test-unit:
@@ -93,15 +93,41 @@ test-ci: (test-backend "--maxfail=1")
     cd frontend; pnpm test:unit --reporter=verbose
     cd frontend; $env:CI='1'; pnpm test:e2e --reporter=dot
 
-# Pack all 6 box plates onto a 4-inch wafer GDS (writes backend/data/wafer/).
-# HEAVY — materializes all six plates and writes fine-pitch GDS; run alone,
-# never alongside another compute process (see CLAUDE.md).
-export-wafer:
-    cd backend; uv run python -m app.export_wafer --out data/wafer/wafer.gds
-
 # (`test-pitch` retired with the Grating-pitch UI section: the box-level pitch
 # is a code constant now — boxes.PRODUCTION_CARRIER_UM — so there is no
 # preset -> /boxes/generate -> shader-rebind chain left to probe.)
+
+# Fab export: write the witness plate (dicing-grid mask carrying every box
+# face as a die) as GDS + OASIS, the map SVG and the manifest. CLI-only — the
+# UI's per-face export_job path is gone with the wafer/blank flows. HEAVY
+# (~8 min full rebuild); run alone, never alongside another compute process
+# (see CLAUDE.md).
+plate:
+    cd backend; uv run python -m app.export_witness --out data/witness/witness-5in
+
+# Regenerate tools/fixtures/assembly_golden.json from the backend assembly
+# math (app/assembly.py) — the fixture both test-backend's
+# test_assembly.py and test-unit's assemblyGolden.test.ts pin their
+# implementation to. Regenerate ONLY when the assembly contract itself
+# intentionally changes, then re-run both suites.
+gen-golden:
+    cd backend; uv run python ../tools/dev/gen_assembly_golden.py
+
+# In-silico production gates on the written plate (docs/plan.md §4.A): A1
+# photo tone, A2 region gratings as written, A3 near-field fringe survival.
+# `which` is photo|regions|nearfield|all. One heavy process at a time.
+validate-dies outdir="data/witness/validate" which="all":
+    cd backend; uv run python ../tools/dev/validate_dies.py {{outdir}} {{which}}
+
+# GDS sanity on a written plate: per-die unclipped clear DRC (width/space at
+# the 2 um floor), zero-area shapes, vertex counts, data extent.
+probe-gds gds="data/witness/witness-5in.gds":
+    cd backend; uv run python ../tools/dev/probe_gds_sanity.py {{gds}}
+
+# Stamp (or refresh) the saw-lane marks onto an already-written plate,
+# without repeating the full `just plate` rebuild.
+dice-marks stem="data/witness/witness-5in":
+    cd backend; uv run python ../tools/dev/add_dice_marks.py {{stem}}
 
 # Wipe generated pattern cache (regenerate via `just seed`)
 clean:

@@ -75,16 +75,14 @@ type State = {
   patchFoil: (patch: Partial<FoilSpec>) => void;
   patchHinge: (patch: Partial<HingeSpec>) => void;
   setBoxManifest: (m: BoxManifest | null) => void;
-  patchFace: (faceId: FaceId, patch: Partial<PlateSpec>) => void;
-  patchFaceFrame: (faceId: FaceId, patch: Partial<PlateSpec['frame']>) => void;
   /**
-   * Copy one face's design (pattern slug + params + frame dials) onto all
-   * six faces, PRESERVING each face's own frame seed so the faces stay
-   * individual variations of the same design.
+   * Patch one face's plate spec. The visualizer writes only `pattern_slug`
+   * and `pattern_params` through here (the picker and the photo choice); the
+   * frame dials, seed and ply policy are authored in code and arrive stamped
+   * by defaultBoxSpec. The e2e specs also use it to drop a dev exemplar onto
+   * a face, which is the only way those two-ply constructions are reachable.
    */
-  applyFaceToAll: (sourceFaceId: FaceId) => void;
-  /** Randomize one face's frame seed. */
-  shuffleFaceSeed: (faceId: FaceId) => void;
+  patchFace: (faceId: FaceId, patch: Partial<PlateSpec>) => void;
 
   // --- studio UI state ---
   selectedFaceId: FaceId;
@@ -257,53 +255,6 @@ export const useStore = create<State>((set, get) => ({
         boxSpec: {
           ...s.boxSpec,
           faces: { ...s.boxSpec.faces, [faceId]: { ...cur, ...patch } },
-        },
-      };
-    }),
-  patchFaceFrame: (faceId, patch) =>
-    set((s) => {
-      const cur = s.boxSpec.faces[faceId];
-      if (!cur) return s;
-      return {
-        boxSpec: {
-          ...s.boxSpec,
-          faces: {
-            ...s.boxSpec.faces,
-            [faceId]: { ...cur, frame: { ...cur.frame, ...patch } },
-          },
-        },
-      };
-    }),
-  applyFaceToAll: (sourceFaceId) =>
-    set((s) => {
-      const src = s.boxSpec.faces[sourceFaceId];
-      if (!src) return s;
-      const faces: Partial<Record<FaceId, PlateSpec>> = {};
-      for (const fid of FACE_IDS) {
-        const cur = s.boxSpec.faces[fid];
-        if (!cur) continue;
-        faces[fid] = {
-          ...cur,
-          pattern_slug: src.pattern_slug,
-          pattern_params: { ...src.pattern_params },
-          // Copy the frame dials but KEEP this face's own seed.
-          frame: { ...src.frame, seed: cur.frame.seed },
-        };
-      }
-      return { boxSpec: { ...s.boxSpec, faces } };
-    }),
-  shuffleFaceSeed: (faceId) =>
-    set((s) => {
-      const cur = s.boxSpec.faces[faceId];
-      if (!cur) return s;
-      const seed = Math.floor(Math.random() * 0x7fffffff);
-      return {
-        boxSpec: {
-          ...s.boxSpec,
-          faces: {
-            ...s.boxSpec.faces,
-            [faceId]: { ...cur, frame: { ...cur.frame, seed } },
-          },
         },
       };
     }),

@@ -19,23 +19,23 @@ afterEach(() => {
 
 describe('api', () => {
   it('listPatterns GETs /patterns', async () => {
-    const spy = mockFetchOk([{ slug: 'wayuu-kanasu-moire' }]);
+    const spy = mockFetchOk([{ slug: 'photo-halftone' }]);
     vi.stubGlobal('fetch', spy);
     const out = await api.listPatterns();
     expect(spy).toHaveBeenCalledWith('/patterns');
-    expect(out).toEqual([{ slug: 'wayuu-kanasu-moire' }]);
+    expect(out).toEqual([{ slug: 'photo-halftone' }]);
   });
 
   it('generatePattern POSTs slug+params as JSON', async () => {
     const spy = mockFetchOk({ slug: 'x', variant: 'v' });
     vi.stubGlobal('fetch', spy);
-    await api.generatePattern('wayuu-kanasu-moire', { period_um: 4.0 });
+    await api.generatePattern('photo-halftone', { period_um: 4.0 });
     const [url, opts] = spy.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/patterns/generate');
     expect(opts.method).toBe('POST');
     expect((opts.headers as Record<string, string>)['Content-Type']).toBe('application/json');
     expect(JSON.parse(opts.body as string)).toEqual({
-      slug: 'wayuu-kanasu-moire',
+      slug: 'photo-halftone',
       params: { period_um: 4.0 },
     });
   });
@@ -103,10 +103,10 @@ describe('defaultBoxSpec (contract defaults)', () => {
   });
 
   it('applies the production six-face plan with per-face frame seeds', () => {
-    // Production plan: top = J+P monogram, front = colibri<->globe duo switch,
-    // left/right = the two halftone photos on SINGLE-PLY walls, back + bottom =
-    // bare glass. Per-face frame profiles stay seeded 100..105 in profile order,
-    // now at the production motif scale.
+    // Production plan: top = J+P monogram, front = the Atlantic globe,
+    // left/right/back = three halftone photographs, bottom = solid gold. Every
+    // wall is SINGLE-PLY. Per-face frame profiles stay seeded 100..105 in
+    // profile order, at the production motif scale.
     const s = api.defaultBoxSpec();
     const expectedSeed: Record<string, number> = {
       front: 100, back: 101, top: 102, bottom: 103, left: 104, right: 105,
@@ -131,6 +131,7 @@ describe('defaultBoxSpec (contract defaults)', () => {
     expect(s.faces.right!.pattern_slug).toBe('photo-halftone');
     expect(s.faces.left!.pattern_params).toEqual({ image: 'beach', colour_mode: 'authored' });
     expect(s.faces.right!.pattern_params).toEqual({ image: 'sunset', colour_mode: 'authored' });
+    expect(s.faces.back!.pattern_params).toEqual({ image: 'paris', colour_mode: 'authored' });
     api.FACE_IDS.forEach((fid) => {
       const f = s.faces[fid]!;
       expect(f.frame.seed).toBe(expectedSeed[fid]);
@@ -156,5 +157,36 @@ describe('defaultBoxSpec (contract defaults)', () => {
       expect(f.weld_margin_um).toBe(3637.5);
       expect(f.back_margin_um).toBe(3637.5);
     });
+  });
+});
+
+describe('PICKER_SLUGS (what the face picker may offer)', () => {
+  it('is exactly the five constructions the production box is built from', () => {
+    // The visualizer shows ONE box. A slug that is not one of its own
+    // constructions must not be assignable to a wall, whatever a stale backend
+    // still registers — so this is a whitelist, and it is pinned here.
+    expect(api.PICKER_SLUGS).toEqual([
+      'monogram-jp',
+      'globe-atlantic',
+      'photo-halftone',
+      'solid-gold',
+      'blank',
+    ]);
+  });
+
+  it('covers every slug the default box actually uses', () => {
+    const s = api.defaultBoxSpec();
+    for (const fid of api.FACE_IDS) {
+      expect(api.PICKER_SLUGS).toContain(s.faces[fid]!.pattern_slug);
+    }
+  });
+
+  it('keeps the two-ply exemplars OUT of the picker', () => {
+    // globe-duo-phase stays registered so the renderer's barrier-interlace
+    // path (and the @effects suite) has a subject — but no production wall is
+    // two-ply, so it is reachable only by setting the slug directly.
+    for (const slug of api.DEV_EXEMPLAR_SLUGS) {
+      expect(api.PICKER_SLUGS).not.toContain(slug);
+    }
   });
 });

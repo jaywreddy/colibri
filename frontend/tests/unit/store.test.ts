@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore } from '../../src/store';
-import { FACE_IDS, defaultBoxSpec } from '../../src/api';
+import { defaultBoxSpec } from '../../src/api';
 
 beforeEach(() => {
   useStore.setState({
@@ -76,18 +76,25 @@ describe('store (Ring Box Studio v2)', () => {
   });
 
   it('patchFace merges one face without dropping the others', () => {
-    useStore.getState().patchFace('top', { pattern_slug: 'emerald-facet-moire' });
+    useStore.getState().patchFace('top', { pattern_slug: 'solid-gold' });
     const s = useStore.getState().boxSpec;
-    expect(s.faces.top!.pattern_slug).toBe('emerald-facet-moire');
+    expect(s.faces.top!.pattern_slug).toBe('solid-gold');
     expect(s.faces.front!.pattern_slug).toBe('globe-atlantic');
   });
 
-  it('patchFaceFrame merges frame fields', () => {
-    useStore.getState().patchFaceFrame('front', { seed: 42, density: 1.5 });
-    const f = useStore.getState().boxSpec.faces.front!.frame;
-    expect(f.seed).toBe(42);
-    expect(f.density).toBe(1.5);
-    expect(f.bloom).toBe(0.6); // untouched
+  it('patchFace writes the photo choice without touching the frame dials', () => {
+    // What ui/PhotoChoice.tsx does — the ONE design edit the visualizer still
+    // makes. The frame dials, seed and ply policy are authored in code, so a
+    // photo swap must leave them exactly as defaultBoxSpec stamped them.
+    const before = useStore.getState().boxSpec.faces.left!;
+    useStore.getState().patchFace('left', {
+      pattern_params: { ...before.pattern_params, image: 'garden', colour_mode: 'authored' },
+    });
+    const after = useStore.getState().boxSpec.faces.left!;
+    expect(after.pattern_params).toEqual({ image: 'garden', colour_mode: 'authored' });
+    expect(after.frame).toEqual(before.frame);
+    expect(after.single_ply).toBe(true);
+    expect(after.carrier_pitch_um).toBe(before.carrier_pitch_um);
   });
 
   it('setLidTargetDeg clamps to [0, 120]', () => {
@@ -112,65 +119,6 @@ describe('store (Ring Box Studio v2)', () => {
     expect(useStore.getState().autoRotate).toBe(true);
     useStore.getState().setAutoRotate(false);
     expect(useStore.getState().autoRotate).toBe(false);
-  });
-});
-
-describe('applyFaceToAll', () => {
-  it('copies slug + params + frame dials to all faces, preserving each seed', () => {
-    const st = useStore.getState();
-    st.patchFace('top', {
-      pattern_slug: 'emerald-facet-moire',
-      pattern_params: { period_um: 7.5 },
-    });
-    st.patchFaceFrame('top', { density: 1.4, bloom: 0.9, foliage: 0.2, band_um: 2200 });
-    const seedsBefore = FACE_IDS.map(
-      (fid) => useStore.getState().boxSpec.faces[fid]!.frame.seed
-    );
-
-    useStore.getState().applyFaceToAll('top');
-
-    const s = useStore.getState().boxSpec;
-    FACE_IDS.forEach((fid, i) => {
-      const f = s.faces[fid]!;
-      expect(f.pattern_slug).toBe('emerald-facet-moire');
-      expect(f.pattern_params).toEqual({ period_um: 7.5 });
-      expect(f.frame.density).toBe(1.4);
-      expect(f.frame.bloom).toBe(0.9);
-      expect(f.frame.foliage).toBe(0.2);
-      expect(f.frame.band_um).toBe(2200);
-      // Seeds stay individual — faces remain distinct variations.
-      expect(f.frame.seed).toBe(seedsBefore[i]);
-    });
-  });
-
-  it('copies params by value — later edits to the source do not leak', () => {
-    const st = useStore.getState();
-    st.patchFace('front', { pattern_params: { duty: 0.4 } });
-    st.applyFaceToAll('front');
-    st.patchFace('front', { pattern_params: { duty: 0.9 } });
-    expect(useStore.getState().boxSpec.faces.back!.pattern_params).toEqual({ duty: 0.4 });
-  });
-});
-
-describe('shuffleFaceSeed', () => {
-  it('randomizes only the chosen face seed (31-bit non-negative int)', () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0.5);
-    const beforeBack = useStore.getState().boxSpec.faces.back!.frame.seed;
-    useStore.getState().shuffleFaceSeed('front');
-    const s = useStore.getState().boxSpec;
-    expect(s.faces.front!.frame.seed).toBe(Math.floor(0.5 * 0x7fffffff));
-    expect(s.faces.back!.frame.seed).toBe(beforeBack); // untouched
-  });
-
-  it('leaves the other frame dials alone', () => {
-    vi.spyOn(Math, 'random').mockReturnValue(0.123);
-    const before = useStore.getState().boxSpec.faces.front!.frame;
-    useStore.getState().shuffleFaceSeed('front');
-    const after = useStore.getState().boxSpec.faces.front!.frame;
-    expect(after.density).toBe(before.density);
-    expect(after.bloom).toBe(before.bloom);
-    expect(after.foliage).toBe(before.foliage);
-    expect(after.band_um).toBe(before.band_um);
   });
 });
 

@@ -70,14 +70,9 @@ export const EVENT_TYPES = [
   // --- design edits (these are the ones that dirty the fab masks) ---------
   'face_clicked',
   'face_pattern_changed',
-  'face_param_changed',
-  'face_apply_all',
-  'face_seed_shuffled',
-  /** Per-face ply policy toggled (chrome on the outer ply only). */
-  'face_single_ply_changed',
-  'frame_param_changed',
+  /** Which prepared photograph a photo wall carries (ui/PhotoChoice.tsx). */
+  'face_photo_changed',
   'foil_tape_changed',
-  'grating_pitch_changed',
 
   // --- preview-only controls (no backend regen, no fab effect) ------------
   'pattern_scale_changed',

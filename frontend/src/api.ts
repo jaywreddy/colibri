@@ -466,6 +466,41 @@ export const BOTTOM_PATTERN_SLUG = SOLID_PATTERN_SLUG; // a solid gold base plat
 export const BACK_PATTERN_SLUG = 'photo-halftone'; // a third photograph (2026-09-15)
 export const LEFT_PATTERN_SLUG = PHOTO_PATTERN_SLUG;
 export const RIGHT_PATTERN_SLUG = PHOTO_PATTERN_SLUG;
+
+/**
+ * The slugs the face picker offers, in picker order.
+ *
+ * The visualizer shows ONE box — the six faces backend `boxes.default_box_spec`
+ * composes — so this is a whitelist, not a catalogue listing: whatever
+ * GET /patterns happens to return (a dev exemplar, a slug a stale backend
+ * still registers) is filtered against it, and a pattern that is not one of
+ * the box's own constructions can never be assigned to a wall from the UI.
+ */
+export const PICKER_SLUGS: string[] = [
+  LID_PATTERN_SLUG,
+  DEFAULT_PATTERN_SLUG,
+  PHOTO_PATTERN_SLUG,
+  SOLID_PATTERN_SLUG,
+  BLANK_PATTERN_SLUG,
+];
+
+/**
+ * Registered but kept OUT of the picker: the two-ply exemplars that exist so
+ * the renderer's barrier-interlace and shading-moiré paths (and the @effects
+ * suite that pins them) still have a subject. They are not faces of this box —
+ * every production wall is single-ply — so they are reachable only by setting
+ * the slug directly (store.patchFace, which is what the e2e specs do).
+ */
+export const DEV_EXEMPLAR_SLUGS: string[] = ['globe-duo-phase'];
+
+/** Pattern param that names which prepared photograph a photo face carries. */
+export const PHOTO_PARAM = 'image';
+/**
+ * Every prepared photograph ships an `<image>.colour.json` authored plan
+ * (backend app/assets/photos), and the box is designed around those plans, so
+ * the one photo knob the UI exposes never has to offer a colour mode.
+ */
+export const PHOTO_COLOUR_MODE = 'authored';
 /**
  * The PRODUCTION six-face plan — mirrors backend boxes._FACE_PATTERN_SLUG /
  * _FACE_PATTERN_PARAMS / _FACE_SINGLE_PLY, so the live-preview POST is the

@@ -1,24 +1,30 @@
 import { useEffect, useState } from 'react';
+import { PICKER_SLUGS } from '../api';
 import { useStore } from '../store';
 import { log } from '../logger';
-import FrameControls from './FrameControls';
-import ParameterPanel from './ParameterPanel';
+import PhotoChoice from './PhotoChoice';
 import { FACE_LABELS } from './FacesPanel';
-import { Button, CheckRow, FailedTile, KIT, Section, Shimmer } from './kit';
+import { Button, FailedTile, KIT, Section, Shimmer } from './kit';
 
 /**
- * Editor for the selected face: visual pattern picker (thumbnail cards) +
- * apply-to-all / shuffle-seed actions + the central pattern's params
- * (ParameterPanel) + frame dials (FrameControls). Parameter changes write to
- * the store; App debounces the box regeneration.
+ * Editor for the selected face: the pattern picker restricted to the box's own
+ * five constructions, plus the photo choice on a photo wall.
+ *
+ * What is NOT here any more, and why: the frame dials (density, bloom,
+ * foliage, band, seed, motif scale), "Apply to all faces", the seed shuffle
+ * and the per-face single-ply toggle. Each of those re-bakes a fabricated
+ * mask, and the design they belong to is settled in code — backend
+ * `boxes.default_box_spec`, mirrored by api.ts::defaultBoxSpec — so exposing
+ * them here only invited a preview that no longer describes the part being
+ * made. The spec fields all survive; they are simply authored where the
+ * decision is made.
  *
  * Pattern thumbnails are fetched lazily whenever the picker opens (GET
- * /patterns/{slug}/default materializes server-side in ~2 s, then caches).
- * The store skips slugs that already loaded or are in flight, so repeat
- * calls are free — Section's onOpen fires on EVERY open (and the catalog
- * effect covers the boot race), which is what retries slugs that failed
- * earlier. Slugs still in the failed set render as retry tiles, never as an
- * endless shimmer, and there is an explicit retry button as well.
+ * /patterns/{slug}/thumbnail is read-only: it serves the cached PNG or 404s,
+ * never a generate). The store skips slugs that already loaded or are in
+ * flight, so repeat calls are free — Section's onOpen fires on EVERY open,
+ * which is what retries slugs that failed earlier. Failed slugs render as
+ * retry tiles, never as an endless shimmer.
  */
 export default function FaceEditor() {
   const selectedFaceId = useStore((s) => s.selectedFaceId);
@@ -29,8 +35,6 @@ export default function FaceEditor() {
   const thumbnailErrors = useStore((s) => s.thumbnailErrors);
   const loadThumbnails = useStore((s) => s.loadThumbnails);
   const patchFace = useStore((s) => s.patchFace);
-  const applyFaceToAll = useStore((s) => s.applyFaceToAll);
-  const shuffleFaceSeed = useStore((s) => s.shuffleFaceSeed);
 
   // True once the picker has been opened at least once this session. Covers
   // the boot race: picker opened before GET /patterns populated the catalog
@@ -44,12 +48,16 @@ export default function FaceEditor() {
     return <div style={{ padding: 12, opacity: 0.6 }}>No face selected.</div>;
   }
 
+  // The picker offers the box's own constructions in PICKER_SLUGS order, not
+  // whatever the catalog happens to list: a dev exemplar (or a slug a stale
+  // backend still registers) must not be assignable to a wall from here.
+  const offered = PICKER_SLUGS.map((slug) => catalog.find((c) => c.slug === slug)).filter(
+    (c): c is NonNullable<typeof c> => c !== undefined
+  );
   const descriptor = catalog.find((c) => c.slug === face.pattern_slug);
-  // Boot on a cold backend/data cache materializes all 16 previews at ~2 s
-  // each, so the grid is shimmer for a long while — count it out loud.
-  const ready = catalog.filter((c) => typeof thumbnails[c.slug] === 'string').length;
-  const pending = catalog.filter((c) => thumbnails[c.slug] === null).length;
-  const failed = catalog.filter((c) => thumbnailErrors[c.slug] !== undefined);
+  const ready = offered.filter((c) => typeof thumbnails[c.slug] === 'string').length;
+  const pending = offered.filter((c) => thumbnails[c.slug] === null).length;
+  const failed = offered.filter((c) => thumbnailErrors[c.slug] !== undefined);
 
   return (
     <div data-testid="face-editor">
@@ -64,13 +72,8 @@ export default function FaceEditor() {
         EDITING: {FACE_LABELS[selectedFaceId].toUpperCase()}
       </div>
 
-      {/* "Face pattern", not "Pattern": this picker assigns the CENTERPIECE of
-          the one face named in the EDITING banner above, which the bare word
-          left ambiguous against the box-wide "4 · Grating pitch" section in the
-          Build rail (whose own testId is still `section-pattern`) and against
-          the Pattern Lab. testId and persistId are UNCHANGED — `pattern-picker`
-          is what the e2e specs target, and `persistId` keys the remembered
-          open/closed state, so retitling must not touch either. */}
+      {/* testId and persistId are UNCHANGED — `pattern-picker` is what the e2e
+          specs target, and persistId keys the remembered open/closed state. */}
       <Section
         title="Face pattern"
         testId="pattern-picker"
@@ -86,7 +89,7 @@ export default function FaceEditor() {
             data-testid="thumbnail-progress"
             style={{ fontSize: 11, opacity: 0.6, marginBottom: 8 }}
           >
-            Rendering previews… {ready}/{catalog.length}
+            Rendering previews… {ready}/{offered.length}
           </div>
         )}
         <div
@@ -97,7 +100,7 @@ export default function FaceEditor() {
             gap: 8,
           }}
         >
-          {catalog.map((c) => {
+          {offered.map((c) => {
             const active = c.slug === face.pattern_slug;
             // Tint the catalog chip to the box's litho metal. The store's
             // map records AVAILABILITY (the read-only route 404s a cold slug);
@@ -186,58 +189,9 @@ export default function FaceEditor() {
             </Button>
           </div>
         )}
-
-        <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-          <Button
-            testId="apply-all-faces"
-            title="Copy this face's pattern + dials to all 6 faces (each keeps its own seed)"
-            onClick={() => {
-              log('face_apply_all', { from: selectedFaceId });
-              applyFaceToAll(selectedFaceId);
-            }}
-            style={{ flex: 1 }}
-          >
-            Apply to all faces
-          </Button>
-          <Button
-            testId="shuffle-seed"
-            title="Randomize this face's frame seed"
-            onClick={() => {
-              shuffleFaceSeed(selectedFaceId);
-              log('face_seed_shuffled', {
-                faceId: selectedFaceId,
-                seed: useStore.getState().boxSpec.faces[selectedFaceId]?.frame.seed,
-              });
-            }}
-            style={{ flex: 1 }}
-          >
-            🎲 Shuffle seed
-          </Button>
-        </div>
-
-        {/* Per-face ply policy. On a single-ply face the chrome lands on the
-            OUTER ply only and the inner ply stays bare glass: the composed
-            plate publishes an empty back raster, so the renderer drops the
-            inner pattern plane (the glass slabs stay) and nothing on this wall
-            can beat against a second layer. That is what a continuous-tone
-            photo halftone wants — a back carrier under it only adds a moiré
-            the picture did not ask for. */}
-        <div style={{ marginTop: 10 }}>
-          <CheckRow
-            label="Single ply (bare inner glass)"
-            checked={!!face.single_ply}
-            onChange={(single_ply) => {
-              log('face_single_ply_changed', { faceId: selectedFaceId, single_ply });
-              patchFace(selectedFaceId, { single_ply });
-            }}
-            testId="face-single-ply"
-          />
-        </div>
       </Section>
 
-      <ParameterPanel faceId={selectedFaceId} />
-
-      <FrameControls faceId={selectedFaceId} />
+      <PhotoChoice faceId={selectedFaceId} />
     </div>
   );
 }

@@ -17,8 +17,9 @@
  *
  * Slug choices matter: a card click for the slug a face ALREADY carries changes
  * nothing (same spec -> no regen -> no bind), so every target slug below is
- * asserted to differ from the face's current one first, and each is a slug the
- * plate compositor has a real centerpiece for (plates.py::_centerpiece_masks).
+ * asserted to differ from the face's current one first, and each is one of the
+ * five slugs the picker offers (api.ts::PICKER_SLUGS) — i.e. a construction the
+ * plate compositor really builds for this box.
  */
 import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures';
@@ -61,8 +62,14 @@ async function faceParams(page: Page, faceId: string): Promise<Record<string, un
 type BoundMask = { src: string | null; wantSrc: string | null; slug: string };
 
 /**
- * What each of the six faces currently has bound to uFront, next to what the
- * held manifest says it should be. One round-trip; safe to poll.
+ * What each of the six faces currently has bound, next to what the held
+ * manifest says it should be. One round-trip; safe to poll.
+ *
+ * `boundFront` (the URL BoxScene recorded when it uploaded the texture) rather
+ * than the texture's own `image.src`: a LITERAL face — every production wall —
+ * uploads a DataTexture decoded from the fabricated-chrome raster, and a
+ * DataTexture has no src to compare. The manifest side follows the same
+ * precedence the bind path uses (files.literal_front, else front_png).
  */
 async function readBoundMasks(page: Page): Promise<Record<string, BoundMask>> {
   return (await page.evaluate(() => {
@@ -72,10 +79,9 @@ async function readBoundMasks(page: Page): Promise<Record<string, BoundMask>> {
     if (!m?.faces) return out;
     for (const fid of Object.keys(m.faces)) {
       const fm = m.faces[fid];
-      const img = s.faces[fid]?.shader?.uniforms?.uFront?.value?.image;
       out[fid] = {
-        src: img?.currentSrc || img?.src || null,
-        wantSrc: fm?.files?.front_png ?? null,
+        src: s.faces[fid]?.boundFront ?? null,
+        wantSrc: fm?.files?.literal_front ?? fm?.files?.front_png ?? null,
         slug: fm?.spec?.pattern_slug ?? '',
       };
     }
@@ -83,7 +89,7 @@ async function readBoundMasks(page: Page): Promise<Record<string, BoundMask>> {
   })) as Record<string, BoundMask>;
 }
 
-/** True once every face's bound uFront image IS the mask the manifest names. */
+/** True once every face's bound mask IS the one the manifest names. */
 function allMasksMatchManifest(bound: Record<string, BoundMask>): boolean {
   const faces = Object.keys(bound);
   if (faces.length !== 6) return false;
@@ -165,7 +171,7 @@ test.describe('@faces per-face pattern assignment through the UI', () => {
 
     // The lid ships with monogram-jp, so assign something else first to prove
     // the click path really drives the top face...
-    await assignThroughUi(page, 'top', 'food-pair-chirp');
+    await assignThroughUi(page, 'top', 'globe-atlantic');
 
     // Let the five untouched faces finish rebinding (the bind effect loops all
     // six on every manifest change) so the stray check below sees the whole
@@ -184,11 +190,16 @@ test.describe('@faces per-face pattern assignment through the UI', () => {
       return buf
         .filter(
           (e) =>
-            e.type === 'face_texture_bound' && e.slug === 'food-pair-chirp' && e.face !== 'top'
+            e.type === 'face_texture_bound' && e.slug === 'globe-atlantic' && e.face !== 'top'
         )
         .map((e) => e.face);
     });
-    expect(strays, 'food-pair-chirp bound to a face other than the lid').toEqual([]);
+    // The FRONT wall also carries globe-atlantic, and every face rebinds on a
+    // manifest change, so it is the one legitimate second binder of this slug.
+    expect(
+      strays.filter((f) => f !== 'front'),
+      'globe-atlantic bound to a face other than the lid and the front wall'
+    ).toEqual([]);
 
     // ...then put the engagement-box monogram back, through the same UI.
     await assignThroughUi(page, 'top', 'monogram-jp');
@@ -199,7 +210,7 @@ test.describe('@faces per-face pattern assignment through the UI', () => {
   }) => {
     test.setTimeout(600_000);
 
-    await assignThroughUi(page, 'right', 'colibri-flap-phase');
+    await assignThroughUi(page, 'right', 'solid-gold');
 
     // Every face must end up bound to the mask the CURRENT manifest names for
     // it. The five untouched faces rebind too (the bind effect loops all six on
@@ -229,7 +240,7 @@ test.describe('@faces per-face pattern assignment through the UI', () => {
     const srcs = Object.values(bound).map((b) => b.src);
     expect(new Set(srcs).size, `bound mask sources: ${JSON.stringify(bound, null, 2)}`).toBe(6);
     // And the right wall really is the pattern we clicked.
-    expect(bound.right.slug).toBe('colibri-flap-phase');
+    expect(bound.right.slug).toBe('solid-gold');
     expect(bound.top.slug).toBe('monogram-jp');
   });
 });
