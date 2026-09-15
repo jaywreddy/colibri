@@ -1,9 +1,18 @@
 # Ring Box — Bill of Materials (bonded-pair build)
 
-Target build: ~30.5 × 30.5 × 33.6 mm upright box, six faces, each a BONDED PAIR
+> **Current build (2026-09-15), superseding the numbers below where they
+> differ:** 32 × 32 × 35 mm box, six faces, each a bonded pair of **2.25 mm
+> fused-quartz** plies (4.5 mm walls; 5″ × 0.090″ chrome + resist mask blank,
+> the same stock for the written outer ply and the bare inner ply). Only the
+> OUTER ply of each face is written; the mask carries 11 dies in a **dicing
+> grid** (`app.export_witness`, `DICING.md`) and is cut on a saw — the first
+> plate was hand-cleaved and broke. Copper foil is **3/8″** (decision 7 of
+> `docs/production-plate-plan.md`): the 6.75 mm three-ply stepped edge leaves
+> 1/4″ tape with no fold. Two blanks per box: one written, one bare.
+
+Target build (original plan): ~30.5 × 30.5 × 33.6 mm upright box, six faces, each a BONDED PAIR
 of 1.5 mm soda-lime plies (3 mm walls, nested-shell bevel-step corners —
-`assembly.bonded_cut_list`). All 12 sub-plates panelize onto ONE 5″ blank
-(`python -m app.export_blank`). Copper-foil/solder assembly, brass tube-and-rod
+`assembly.bonded_cut_list`). Copper-foil/solder assembly, brass tube-and-rod
 hinge, UV-cure optical bond.
 
 Prices/links verified live 2026-08-29 (background research run); everything
@@ -11,8 +20,8 @@ listed ships in days, US. Re-verify at order time.
 
 ## 1 · Substrate (the litho consumable)
 
-The panelizer assumes a 5″ × 5″ chrome (+ resist) coated blank, written on the
-maskless aligner, wet-etched, hand-cleaved into the 12 sub-plates.
+The plate assumes a 5″ × 5″ chrome (+ resist) coated blank, written on the
+maskless aligner, wet-etched, DICED into the plies (dicing saw, edge cuts).
 
 | Item | Vendor | Price | Lead | Notes |
 |---|---|---|---|---|
@@ -86,10 +95,11 @@ requirement.
 
 ## 5 · Already-planned consumables (unchanged)
 
-Copper foil tape 1/4″ (the bonded stepped edge consumes 3 plies = 4.5 mm of
-tape width; 1/4″ leaves a 925 µm fold — do NOT drop to 3/16″ on the bonded
-build), solder + flux, Cr etchant (CR-7/ceric ammonium nitrate), resist
-developer.
+Copper foil tape **3/8″** (9.525 mm; the 2.25 mm bonded stepped edge consumes
+3 plies = 6.75 mm of tape width and leaves a 1.39 mm fold per face — 1/4″ tape
+is 0.4 mm short of the edge and `validate_bonded_assembly` rejects it), solder
++ flux, Cr etchant (Cr etch 1020 / CR-7), AZ 400K developer (CMU recipe: dose
+125 on the MLA 150, AZ 400K:DI 1:4 80 s, Cr etch 80 s, Nanostrip 60 °C 20 min).
 
 ## Order-now shortlist (~$120 + blanks)
 

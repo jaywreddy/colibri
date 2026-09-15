@@ -63,12 +63,16 @@ tools/     visual verification harness (visual_verifier.py + tools/dev/)
 seam/hinge layout, validation). Any change to one MUST be mirrored in the other;
 both sides must produce identical numbers for the same spec.
 
-**Default box:** the six-face default plan (`backend/app/boxes.py`) is
-front = `globe-duo-phase` (California/Colombia globe switch),
-right = `gear-quill-switch`, back = `capybara-scanimation`,
-left = `jamon-tray`, top = `monogram-jp`, bottom = `inscription-line`.
-The catalog registers 17 patterns (16 artistic showpieces + the
-bitmap-halftone photo pipeline).
+**Default box (2026-09-15):** the six-face production plan
+(`backend/app/boxes.default_box_spec`) is all SINGLE-PLY, one written 2.25 mm
+fused-quartz ply per face over a bare inner ply: top = `monogram-jp` (the J and
+the P as two grating periods), front = `globe-atlantic` (one orthographic view
+holding the US, Colombia and Europe, colour by region), left = `photo-halftone`
+beach, right = `photo-halftone` sunset, back = `photo-halftone` Paris (each with
+its authored colour plan), bottom = `solid-gold`. Every effect is single-layer
+diffraction; the two-ply moiré and two-way switch constructions are kept only
+as hidden exemplars. The 5″ mask that carries the plies is laid out as a
+dicing grid by `app.export_witness` (see `docs/production-plate-plan.md`).
 
 **Lazy caches:** nothing materializes at startup. Pattern variants, composed
 plates, and boxes are generated on first request and cached on disk under

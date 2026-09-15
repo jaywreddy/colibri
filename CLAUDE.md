@@ -61,6 +61,12 @@
   WebGL buffer by scaling the actual plane gap
   (`effectsHelpers.ts::scaleBackPlaneGap`) — keep it green when touching
   shaders or BoxScene.
+- **the box is single-ply (2026-09-15):** every production face is ONE written
+  ply with single-layer diffraction effects (`region_art` centrepieces,
+  per-family leaf gratings, photo colour zones); no face carries a carrier, a
+  beat or a switch. The two-ply moiré and two-way switch code paths are kept
+  only as hidden exemplars. Design and face selection live in code
+  (`boxes.default_box_spec`); the frontend is a visualizer.
 - **image-switch patterns are parallax barriers:** BOTH images interlaced in
   the BACK layer, slit/phase mask in FRONT. A front-layer image can never
   vanish under parallax (the front mask does not move with tilt) — the old
