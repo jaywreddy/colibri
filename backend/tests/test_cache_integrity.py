@@ -13,8 +13,9 @@ OLDER build — or by a build that died mid-publish — never exists for them.
      rename must read as a MISS (regenerate over it), never as a permanently
      poisoned slot that raises for every later request.
   3. **Wiped plate cache.** ``data/`` is disposable, so ``just clean`` between a
-     box generate and its fab export must not make a saved box un-exportable —
-     fab.zip is the artifact that goes to the mask shop.
+     box generate and the next read must not make a saved box unrecoverable:
+     every face recomposes from the box's own saved spec, back into the slot
+     the manifest already points at.
   4. **Rename-based publishing.** No ``*.tmp`` staging file may survive a
      completed materialize.
 
@@ -28,10 +29,8 @@ generates in threads, for the same reason.
 """
 from __future__ import annotations
 
-import io
 import json
 import shutil
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -75,7 +74,7 @@ def _cheap_box_spec():
     """A 16 mm cube — near the smallest that clears the default 3.425 mm foil
     keep-out plus the 3 mm minimum aperture (assembly.validate_assembly) — with
     ONE face populated. Cache integrity is per-slot, and six faces would be six
-    plate composes plus six fab-mask builds for no extra coverage.
+    plate composes for no extra coverage.
     """
     from app.boxes import BoxSpec
     from app.plates import FrameSpec, PlateSpec
@@ -96,7 +95,7 @@ def _cheap_box_spec():
 
 @pytest.fixture
 def app_client(isolated_data) -> TestClient:
-    """The full app (plates/boxes/export routers) on the isolated cache roots."""
+    """The full app (patterns/plates/boxes routers) on the isolated cache roots."""
     from app.main import create_app
 
     return TestClient(create_app())
@@ -237,33 +236,30 @@ def test_truncated_plate_manifest_is_a_miss_not_a_500(app_client: TestClient, is
     _assert_no_tmp(P.PLATES_ROOT / pid)
 
 
-# ----- 3. fab export survives a wiped plate cache -----------------------------
+# ----- 3. a wiped plate cache recomposes into the same slots -------------------
 
 
-def test_box_fab_export_rebuilds_a_wiped_plate_cache(app_client: TestClient, isolated_data):
+def test_box_faces_recompose_after_a_wiped_plate_cache(isolated_data):
     from app import plates as P
     from app.boxes import BOXES_ROOT, materialize_box
 
-    box = materialize_box(_cheap_box_spec(), box_id="cache-wipe-1")
+    spec = _cheap_box_spec()
+    box = materialize_box(spec, box_id="cache-wipe-1")
     pid = box["faces"]["front"]["id"]
     assert (P.PLATES_ROOT / pid / "manifest.json").exists()
 
-    # `just clean`, or any cache eviction, between generate and export.
+    # `just clean`, or any cache eviction, after the box was saved.
     shutil.rmtree(P.PLATES_ROOT)
     assert not P.PLATES_ROOT.exists()
 
-    r = app_client.get("/export/box/cache-wipe-1/fab.zip")
-    assert r.status_code == 200, r.content[:400]
-    zf = zipfile.ZipFile(io.BytesIO(r.content))
-    names = set(zf.namelist())
-    assert {"box.json", "CUTLIST.csv", "ASSEMBLY.md", "FINE_MASKS.json"} <= names
-    for member in ("front/manifest.json", "front/front.png", "front/front.svg"):
-        assert member in names, f"rebuilt face is missing {member} from the archive"
-
     # The rebuild recomposes from the face's own saved spec, whose hash IS the
     # plate id — so it lands back in the slot box.json already points at.
+    again = materialize_box(spec, box_id="cache-wipe-1")
+    assert again["faces"]["front"]["id"] == pid
     assert (P.PLATES_ROOT / pid / "manifest.json").exists()
-    assert json.loads(zf.read("box.json"))["faces"]["front"]["id"] == pid
+    assert json.loads((BOXES_ROOT / "cache-wipe-1" / "box.json").read_text())[
+        "faces"
+    ]["front"]["id"] == pid
     _assert_no_tmp(P.PLATES_ROOT, BOXES_ROOT)
 
 

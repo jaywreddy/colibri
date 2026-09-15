@@ -139,11 +139,11 @@ def test_the_area_budget_matches_the_plan():
 
 
 def test_the_production_dies_are_the_panelized_box_plies():
-    """A die on this plate must be interchangeable with one from the full
-    ``export_blank`` panel: same solve, same cut dims, ONE ply per face (the
-    inner plies are bare glass off the second blank). Spares are the same die
-    again; the rotated front spare is the front's dims swapped."""
-    from app import export_blank as eb
+    """A die on this plate must be cut to the box's own ply dimensions
+    (``ply_cuts.pair_rects``), ONE ply per face (the inner plies are bare
+    glass). Spares are the same die again; the rotated front spare is the
+    front's dims swapped."""
+    from app import ply_cuts as pc
     from app.witness_dies import (SIDE_PHOTOS, SPARE_FACES, SPARE_SIDES, blank_plan, die_dims,
                                   production_cells)
 
@@ -169,7 +169,7 @@ def test_the_production_dies_are_the_panelized_box_plies():
     for _, _, cid, _ in SIDE_PHOTOS:
         assert (cells[cid].w_um, cells[cid].h_um) == (d["f_w"], d["f_h"])
     panel = {r.face: (r.width_um, r.height_um)
-             for r in eb.pair_rects(w_um, d_um, h_um, PLY_UM)}
+             for r in pc.pair_rects(w_um, d_um, h_um, PLY_UM)}
     assert panel["top:F"] == (cells["DIE-TOP"].w_um, cells["DIE-TOP"].h_um)
     assert panel["left:F"] == (cells["DIE-LEFT"].w_um, cells["DIE-LEFT"].h_um)
 

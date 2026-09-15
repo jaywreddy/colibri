@@ -57,13 +57,11 @@ def isolated_data(
     so reads land where service.materialize writes.
     """
     from app import boxes, plates, service
-    from app.api import export as export_api
 
     monkeypatch.setattr(service, "DATA_ROOT", shared_pattern_cache)
     monkeypatch.setattr(plates, "DATA_ROOT", shared_pattern_cache)
     monkeypatch.setattr(plates, "PLATES_ROOT", tmp_path / "plates")
     monkeypatch.setattr(boxes, "BOXES_ROOT", tmp_path / "boxes")
-    monkeypatch.setattr(export_api, "PLATES_ROOT", tmp_path / "plates")
     return tmp_path
 
 

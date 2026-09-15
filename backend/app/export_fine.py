@@ -1,65 +1,39 @@
-"""Fine-pitch wafer GDS writer — TRUE optical periods, per-face dispatch, BSA marks.
+"""Fine-pitch mask geometry — TRUE optical periods, per-face dispatch.
 
-The coarse SVG/GDS path (``plates.ensure_plate_svg`` + ``export_wafer``) rasters
-every layer at a *budget pitch* (72-82 µm on a mini plate) and, when the ideal
-4-samples/period pitch would blow the 400k-cell cap, RESCALES the grating periods
-13-15× to fit (see F2 in the audit). That kills the physics: the centerpiece
-switch period jumps 60 µm → ~800 µm (a dead ~65° switch), the leaf carrier and
-rainbow accent alias into noise.
+The raster path (``plates.materialize_plate`` + ``ensure_plate_svg``) rasters
+every layer at a *budget pitch* and, when the ideal 4-samples/period pitch would
+blow the 400k-cell cap, RESCALES the grating periods to fit. That is fine for a
+screen preview and fatal for a mask: a 4.4 µm colour sub-grating aliases into
+noise long before the cap is reached.
 
-This module is the fab-grade alternative. It writes the wafer's gold layers as
-TRUE geometry at the design periods —
+This module is the fab-grade alternative, and the only geometry that reaches the
+plate. It writes a face's gold as TRUE vector geometry at the design periods, by
+generating each grating as RECTANGLES in its own grating-local frame (where lines
+are axis-aligned and one line is ONE full-span rectangle, so the polygon count
+scales with LINE count, not pixel count), clipping each line to its zone by a
+numpy row-span pass against a freshly-regenerated SOURCE mask, and rotating the
+whole set to placement as polygons only when the grating is angled.
 
-    * back leaf carrier      22.000 µm      (BACK_CARRIER_PERIOD_UM)
-    * front leaf grating      23.980 µm     (22 × 1.09) at +3.0° offset
-    * centerpiece switch      60.000 µm     front/back EXACTLY 30 µm (½-period) out of phase
-    * scanimation slit         60.000 µm    open slot 15 µm / bar 45 µm, N=4 interleave
-    * rainbow accent           4.400 µm     (2.2 µm line + 2.2 µm gap) at 45°
-
-— by generating each grating as RECTANGLES in its own grating-local frame
-(where lines are axis-aligned and one line is ONE full-span rectangle, so the
-polygon count scales with LINE count, not pixel count), clipping each line to
-its zone by a numpy row-span pass against a freshly-regenerated SOURCE mask, and
-rotating the whole set to placement as polygons only when the grating is angled.
-
-Only the zone *boundaries* (which pixels are frame / centerpiece / water / accent)
-are quantized to the source-mask raster (~20-30 µm silhouette-edge steps, which
-are unavoidable and visually irrelevant); the PERIODS inside every zone are exact
+Only the zone *boundaries* (which pixels are frame / centrepiece / art) are
+quantized to the source-mask raster (~20-30 µm silhouette-edge steps, which are
+unavoidable and visually irrelevant); the PERIODS inside every zone are exact
 vector geometry.
 
-Per-face dispatch reads the real six-face plan from ``boxes.default_box_spec``
-(front colibrí-globe, back capybara-scanimation, left food-pair, right
-gear-quill, top monogram-jp, bottom inscription) — one source of truth, no
-duplicated slug table. The plate footprints come from the same packer
-``export_wafer.solve_max_scale`` uses, minus keep-out around the two BSA marks.
+Per-face dispatch reads the six-face plan from ``boxes.default_box_spec`` — one
+source of truth, no duplicated slug table.
 
-BSA fiducials (F4, user constraint, EXACT): one pair on the wafer horizontal
-centerline, centers at (-30.000, 0.0) mm and (+30.000, 0.0) mm — 60.000 mm
-apart. Front layer (10,0) gets a SOLID cross in a clear field; back layer (20,0)
-gets the COMPLEMENTARY window target (open cross slot in a solid pad) so the
-aligner overlays cross-in-slot. A dedicated fiducial datalayer (60,0)/(61,0)
-carries copies so the marks are findable independent of pattern gold, and a
-small vernier pair sits beside each mark on both layers.
-
-CLI (writes the WHOLE wafer — do NOT run casually; one compute process at a
-time on the 13.7 GB host):
-
-    uv run python -m app.export_fine --out data/wafer/wafer_fine.gds
-
-Validate cheaply with the built-in test cell (one grating of each type in a
-5×5 mm cell, written + read back + measured):
-
-    uv run python -m app.export_fine --test-cell --out data/wafer/testcell.gds
+:func:`build_plate_fine` is the entry point. Its caller is
+``witness_dies.build_face_die``, which inverts the result to the clear-field
+polarity the plate is written in; the deliverable itself is written by
+``app.export_witness`` (``uv run python -m app.export_witness``).
 
 All lengths µm unless a ``_mm`` suffix says otherwise.
 """
 from __future__ import annotations
 
-import argparse
 import logging
 import math
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import numpy as np
@@ -67,44 +41,6 @@ import numpy as np
 from .patterns.effects.gratings import band_select
 
 _log = logging.getLogger("optics.export_fine")
-
-# --- GDS layer map (layer, datatype) ---------------------------------------
-# Pattern gold matches export_wafer's map so the two exports overlay.
-LAYER_FRONT = (10, 0)      # front-face gold (viewer side)
-LAYER_BACK = (20, 0)       # back-face gold (far side)
-LAYER_OUTLINE = (1, 0)     # plate outlines + dicing streets
-LAYER_WAFER = (99, 0)      # wafer usable-region outline
-LAYER_LABEL = (3, 0)       # text
-# Dedicated fiducial datalayers — a copy of each BSA mark lives here so the
-# aligner/QA can find the marks independent of pattern gold.
-LAYER_FIDUCIAL_FRONT = (60, 0)
-LAYER_FIDUCIAL_BACK = (61, 0)
-
-# --- BSA fiducial geometry (F4 — EXACT, do not tune) ------------------------
-# User constraint: one pair on the wafer horizontal centerline, EXACTLY 60 mm
-# apart → centers at (∓30.000 mm, 0.0).
-FIDUCIAL_CENTERS_UM: tuple[tuple[float, float], tuple[float, float]] = (
-    (-30_000.0, 0.0),
-    (+30_000.0, 0.0),
-)
-FIDUCIAL_KEEPOUT_R_UM = 2_500.0     # r = 2.5 mm packer keep-out disc per mark
-# Front mark: solid cross, 400 µm arm length (half-arm 200 µm from center),
-# 20 µm arm width, inside a clear field.
-FID_CROSS_ARM_UM = 400.0
-FID_CROSS_WIDTH_UM = 20.0
-# Back mark: complementary WINDOW target — a 500×500 µm solid pad with an open
-# cross slot 30 µm wide cut through it (the front solid cross seats in the slot).
-FID_PAD_UM = 500.0
-FID_SLOT_WIDTH_UM = 30.0
-# Vernier pair beside each mark (rotation / registration readout): two short
-# rulings whose pitch differs by the vernier step so a sub-pitch offset shows up
-# as a coincidence line shift.
-FID_VERNIER_PITCH_A_UM = 20.0
-FID_VERNIER_PITCH_B_UM = 25.0       # 5 µm pitch difference (the scale)
-FID_VERNIER_N = 10                  # rulings per comb
-FID_VERNIER_LEN_UM = 120.0
-FID_VERNIER_LINE_UM = 4.0
-FID_VERNIER_OFFSET_UM = 400.0       # comb center offset from the fiducial center
 
 # --- litho floor ------------------------------------------------------------
 LITHO_FLOOR_UM = 2.0   # 2 µm line / 2 µm gap, HARD
@@ -1836,7 +1772,7 @@ def _angled_grating_local_rects(
     cell staircase this emits per line depends on WHICH cells project into the
     line's stripe, so an analytic rotate-the-bbox clip would move rect edges by up
     to a cell and change the boundary lines' x extents (the fine GDS is cached
-    under ``api.export.FINE_GDS_VERSION``, so that is a version-bumping change,
+    into the plate's cached fine geometry, so that is a version-bumping change,
     not a free one).
     """
     h_px, w_px = zone.shape

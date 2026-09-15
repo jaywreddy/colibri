@@ -10,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .api import boxes as boxes_api
-from .api import export as export_api
 from .api import patterns as patterns_api
 from .api import plates as plates_api
 from .api import sim as sim_api
@@ -92,7 +91,6 @@ def create_app() -> FastAPI:
     app.include_router(sim_api.router)
     app.include_router(plates_api.router)
     app.include_router(boxes_api.router)
-    app.include_router(export_api.router)
 
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     app.mount("/data", StaticFiles(directory=str(DATA_ROOT)), name="data")

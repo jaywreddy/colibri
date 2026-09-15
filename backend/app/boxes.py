@@ -197,8 +197,8 @@ SCRATCH_BOX_ID = "__scratch"
 _BOX_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 # Internal slots: same charset behind the reserved leading underscore. Only
-# READ paths accept these — the scratch box has to stay addressable because the
-# live-preview export link is /export/box/<manifest id>/fab.zip.
+# READ paths accept these — the scratch box the live preview regenerates into
+# has to stay addressable by id.
 _INTERNAL_BOX_ID_RE = re.compile(r"_[A-Za-z0-9_][A-Za-z0-9._-]{0,62}")
 
 

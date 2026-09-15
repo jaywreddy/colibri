@@ -10,8 +10,6 @@ sides comfortably above ~10 mm — we use 20-30 mm boxes throughout.
 """
 from __future__ import annotations
 
-import io
-import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -828,51 +826,6 @@ def test_http_box_validation_error_is_actionable(app_client):
     r = app_client.post("/boxes/generate", json=body)
     assert r.status_code == 400
     assert "keep-out" in r.json()["detail"]
-
-
-def test_http_box_fab_export_has_cutlist_and_assembly(app_client):
-    # One face keeps the export fast; the cut list always covers all six.
-    body = _http_box_body(box_id="export-1")
-    body["faces"] = {"front": body["faces"]["front"]}
-    r = app_client.post("/boxes/generate", json=body)
-    assert r.status_code == 200, r.text
-
-    rz = app_client.get("/export/box/export-1/fab.zip")
-    assert rz.status_code == 200
-    zf = zipfile.ZipFile(io.BytesIO(rz.content))
-    names = set(zf.namelist())
-    assert "box.json" in names
-    assert "CUTLIST.csv" in names
-    assert "ASSEMBLY.md" in names
-    assert "front/front.svg" in names
-    assert "front/manifest.json" in names
-    # The frame-scene sidecar is a live-preview artifact, not fab data.
-    assert "front/scene.json" not in names
-
-    csv_text = zf.read("CUTLIST.csv").decode()
-    lines = csv_text.strip().splitlines()
-    # The `ply` column is empty for single-plate construction and carries
-    # outer/inner for bonded boxes (12 rows there).
-    assert lines[0] == "face,ply,width_mm,height_mm,thickness_mm,width_um,height_um"
-    assert len(lines) == 7  # header + 6 plates
-    assert any(line.startswith("bottom,,24.0,24.0,0.5") for line in lines)
-    assert any(line.startswith("left,,23.0,23.0,0.5") for line in lines)
-
-    md = zf.read("ASSEMBLY.md").decode()
-    # Real numbers: keep-out, foil width, hinge segment length, rod length.
-    assert "3.425 mm" in md
-    assert "6.350 mm copper foil" in md
-    # Hinge: run = 0.8*24000 = 19200; seg = (19200-1600)/5 = 3520; rod = 22400.
-    assert "3.52 mm" in md
-    assert "22.4 mm" in md
-
-    # Embedded face manifests stay lean inside the archive too.
-    import json as _json
-    embedded = _json.loads(zf.read("front/manifest.json").decode())
-    assert "frame_scene" not in embedded.get("recipe_data", {})
-    box_json = _json.loads(zf.read("box.json").decode())
-    for face in box_json["faces"].values():
-        assert "frame_scene" not in face.get("recipe_data", {})
 
 
 def test_plate_svg_central_scaled_to_aperture(isolated_data):
