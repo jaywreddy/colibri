@@ -6,7 +6,7 @@ periods, never from a formula alone:
   photo    A1  the LEFT die's real front metal (export_fine.build_plate_fine),
                integrated exactly to the 87 um eye cell, compared against the
                builder's own intended per-pixel coverage (photo.photo_coverage).
-  switch   A2  sim2d.switch_metrics on the FRONT die's real front/back metal
+  regions  A2  the lid's and front's region gratings as written: metal fraction and pitch per region
                at the plate's glass and comb; then a registration
                sweep (back ply offset 0 / 8 / 20 / 40 um) -> the bench tolerance.
   nearfield A3 angular-spectrum propagation across the 1.5 mm ply for the
@@ -15,7 +15,7 @@ periods, never from a formula alone:
                incoherent source (11 angles x 3 wavelengths), box-averaged to
                the eye cell: the fringe contrast that survives the gap.
 
-    uv run --directory backend python ../tools/dev/validate_dies.py OUTDIR [photo|switch|nearfield|all]
+    uv run --directory backend python ../tools/dev/validate_dies.py OUTDIR [photo|regions|nearfield|all]
 
 One heavy process at a time; each check stays under ~1 GB.
 """
@@ -235,99 +235,86 @@ def check_photo(out: Path) -> dict:
     return res
 
 
-# --- A2 switch -----------------------------------------------------------------
+# --- A2 regions ----------------------------------------------------------------
 
 
-def check_switch(out: Path) -> dict:
-    d = wd.die_dims("front")
-    t0 = time.perf_counter()
-    art = wd.build_face_die("front", 0.0, 0.0, d["f_w"], d["f_h"], METAL)
-    per = art.stats["periods"]
-    p = float(per["center_switch_um"])
-    # centerpiece window: the art box (0.86 x aperture) -- take a central square
+def check_regions(out: Path) -> dict:
+    """The single-layer diffraction centrepieces (lid, front) as WRITTEN: for
+    every region of the motif's map, the metal fraction of the die's own
+    front geometry inside that region's cells and the stripe pitch measured
+    from the run lengths along x. A grating region should come out at its
+    duty and its period; a solid one near 1.0. Heavy (two die builds, one
+    at a time); replaces the bonded design's A2 switch gate."""
     from app import plates as P
-    _, spec = wd.blank_plan()
-    side = P.CENTERPIECE_FILL * P._aperture(spec.faces["front"])
-    px = 4.0
-    n = int(round(side / px))
-    x0, y1 = -side / 2, side / 2
-    front = raster_polys(art.polys, x0, y1, px, n, n, raster_rects(art.front, x0, y1, px, n, n))
-    back = raster_polys(art.back_polys, x0, y1, px, n, n, raster_rects(art.back, x0, y1, px, n, n))
-    # drop the dice ticks / marks: they are outside the art box anyway
-    res: dict = {"comb_um": p, "raster_px_um": px, "window_um": side,
-                 "front_metal_frac": float(front.mean()), "back_metal_frac": float(back.mean()),
-                 "swap_deg": math.degrees(math.asin(math.sin(math.atan((p / 4) / (wd.PLY_UM / wd.GLASS_N))) * wd.GLASS_N)) if False else None}
-    # swap angle from the parallax formula: shift = t tan(asin(sin th / n)) = p/4
-    shift = p / 4.0
-    th_in = math.atan(shift / wd.PLY_UM)
-    res["swap_deg"] = math.degrees(math.asin(math.sin(th_in) * wd.GLASS_N))
-    # switch_metrics splits the back into lanes by (x mod p) from the raster's
-    # left edge; the die's lattice is phased to the FACE centre and mirrored,
-    # so first find the raster offset that puts a lane boundary at column 0 —
-    # the same thing the bench does with the vernier. Straddle geometry: the
-    # swap is read at a back shift of p/4, not p/2.
-    ff, bb = front.astype(np.float32), back.astype(np.float32)
-    best, best_k = None, 0
-    for k in range(0, int(round(p / px))):
-        m = sim2d.switch_metrics(np.roll(ff, -k, axis=1), np.roll(bb, -k, axis=1), px, p, shift_um=p / 4)
-        if best is None or m["separation"] > best["separation"]:
-            best, best_k = m, k
-    ff, bb = np.roll(ff, -best_k, axis=1), np.roll(bb, -best_k, axis=1)
-    res["lane_phase_offset_um"] = best_k * px
-    res["sim2d_at_zero_error"] = {kk: float(v) for kk, v in best.items() if isinstance(v, (int, float))}
-    # Registration sweep against the DESIGN lanes. sim2d relabels channels from
-    # the raster columns, so a shifted back is re-split and scores the same at
-    # every error; here the A/B lane masks are fixed at zero error and travel
-    # with the back ply, which is what a misbonded pair does.
-    w = bb.shape[1]
-    phase = np.mod(np.arange(w) * px, p)
-    in_a = (phase < p / 2.0)[None, :]
-    lane_a, lane_b = bb * in_a, bb * ~in_a
-    open_front = 1.0 - ff
-    s_px = int(round((p / 4) / px))
-    sweep = []
-    # absolute bench numbers (8, 20 um) plus points on the comb's own scale:
-    # p/8, 3p/16, p/4 (the blend) and 5p/16 (inverted)
-    errs = sorted({0.0, 8.0, 20.0, round(p / 8), round(3 * p / 16), round(p / 4), round(5 * p / 16)})
-    for err_um in errs:
-        k = int(round(err_um / px))
-        a_e = np.roll(lane_a, k, axis=1) if k else lane_a
-        b_e = np.roll(lane_b, k, axis=1) if k else lane_b
-        row = {"reg_err_um": err_um}
-        for lab, sgn in (("plus", 1), ("minus", -1)):
-            va = float((open_front * np.roll(a_e, sgn * s_px, axis=1)).sum() / max(1e-9, a_e.sum()))
-            vb = float((open_front * np.roll(b_e, sgn * s_px, axis=1)).sum() / max(1e-9, b_e.sum()))
-            row[f"vis_a_{lab}"], row[f"vis_b_{lab}"] = va, vb
-        row["separation"] = float(min((max(row["vis_a_plus"], row["vis_b_plus"]) + 1e-3) / (min(row["vis_a_plus"], row["vis_b_plus"]) + 1e-3),
-                                      (max(row["vis_a_minus"], row["vis_b_minus"]) + 1e-3) / (min(row["vis_a_minus"], row["vis_b_minus"]) + 1e-3)))
-        # which lane dominates at +p/4: a registration error past p/4 swaps them
-        row["shown_plus"] = "A" if row["vis_a_plus"] > row["vis_b_plus"] else "B"
-        sweep.append(row)
-    res["sweep"] = sweep
-    res["build_s"] = round(time.perf_counter() - t0, 1)
-    # figure: separation + visibilities vs registration error
-    W, H = 640, 300
-    im = Image.new("RGB", (W, H), BG)
-    dr = ImageDraw.Draw(im)
-    xs = [s["reg_err_um"] for s in sweep]
-    x_max = max(90.0, 5 * p / 16 + 5)
-    def X(v): return 50 + (W - 80) * v / x_max
-    def Y(v): return H - 50 - (H - 90) * v
-    dr.line([(X(0), Y(0)), (X(x_max), Y(0))], fill=(60, 70, 76))
-    dr.line([(X(0), Y(0)), (X(0), Y(1))], fill=(60, 70, 76))
-    for key, col, lab in (("vis_a_plus", OK, "shown lane at +p/4 (want 1)"), ("vis_b_plus", WARN, "hidden lane at +p/4 (want 0)")):
-        pts = [(X(s["reg_err_um"]), Y(min(1.0, s.get(key, 0.0)))) for s in sweep]
-        dr.line(pts, fill=col, width=2)
-        for q in pts:
-            dr.ellipse([q[0] - 3, q[1] - 3, q[0] + 3, q[1] + 3], fill=col)
-    dr.line([(X(p / 4), Y(0)), (X(p / 4), Y(1))], fill=(90, 100, 110))
-    dr.text((X(p / 4) + 4, Y(1)), f"p/4 = {p/4:.0f} um", fill=DIM, font=font(10))
-    for v in range(0, int(x_max) + 1, 20):
-        dr.text((X(v) - 8, Y(0) + 6), f"{v}", fill=DIM, font=font(10))
-    dr.text((X(x_max) - 160, Y(0) + 20), "back-ply registration error, um", fill=DIM, font=font(10))
-    dr.text((10, 8), f"DIE-FRONT globe switch, comb {p:.1f} um, swap at +-{res['swap_deg']:.2f} deg ({wd.PLY_UM/1000:g} mm {GLASS_MATERIAL})", fill=FG, font=font(12))
-    dr.text((10, 26), "design lanes fixed, back ply slid by the error: green = the lane shown at +p/4, orange = the lane that should vanish", fill=DIM, font=font(10))
-    im.save(out / "validate_switch.png")
+    from app import region_art as RA
+
+    res: dict = {}
+    for face in ("top", "front"):
+        _, spec = wd.blank_plan()
+        pspec = spec.faces[face]
+        if not RA.single_layer_centerpiece(pspec):
+            res[face] = {"skipped": f"{pspec.pattern_slug} has no region map"}
+            continue
+        d = wd.die_dims(face)
+        t0 = time.perf_counter()
+        art = wd.build_face_die(face, 0.0, 0.0, d["f_w"], d["f_h"], METAL)
+        side = P.CENTERPIECE_FILL * P._aperture(pspec)
+        px = 0.5                                  # resolve 4-6 um lines
+        n = int(round(side / px))
+        x0, y1 = -side / 2, side / 2
+        # the die is MIRRORED (x -> -x): un-mirror so the map's x matches
+        rects = np.asarray(art.front, dtype=np.float64).copy()
+        if rects.size:
+            rects[:, [0, 1]] = -rects[:, [1, 0]]
+        polys = [np.asarray(pv, dtype=np.float64) * np.array([-1.0, 1.0]) for pv in art.polys]
+        metal = raster_polys(polys, x0, y1, px, n, n, raster_rects(rects, x0, y1, px, n, n)) > 0.5
+        ra = RA.centerpiece_regions(pspec.pattern_slug, n, pspec.pattern_params)
+        per_region = {}
+        for rid, reg in sorted(ra.regions.items()):
+            zone = ra.labels == rid
+            if zone.sum() < 400:
+                continue
+            # interior of the zone (the emitter insets one 20 um cell at the seams)
+            k = max(1, int(round(RA.REGION_ZONE_PITCH_UM / px)))
+            inner = zone.copy()
+            for _ in range(k):
+                inner[1:] &= zone[:-1]; inner[:-1] &= zone[1:]
+                inner[:, 1:] &= zone[:, :-1]; inner[:, :-1] &= zone[:, 1:]
+            if not inner.any():
+                continue
+            frac = float(metal[inner].mean())
+            entry = {"period_um": reg.period_um, "duty": reg.duty, "cells": int(inner.sum()),
+                     "metal_frac": round(frac, 3)}
+            if reg.period_um > 0:
+                # stripe pitch: mean distance between rising edges along x inside the zone
+                rows = np.flatnonzero(inner.any(axis=1))[::7]
+                pitches = []
+                for r in rows:
+                    m = metal[r] & inner[r]
+                    rises = np.flatnonzero(np.diff(m.astype(np.int8)) == 1)
+                    if rises.size >= 4:
+                        pitches.append(np.median(np.diff(rises)) * px)
+                entry["measured_period_um"] = round(float(np.median(pitches)), 3) if pitches else None
+                entry["ok"] = bool(abs(frac - reg.duty) < 0.08 and pitches
+                                   and abs(np.median(pitches) - reg.period_um) < 0.3)
+            else:
+                entry["ok"] = bool(frac > 0.9)
+            per_region[reg.name] = entry
+        res[face] = {"slug": pspec.pattern_slug, "build_s": round(time.perf_counter() - t0, 1),
+                     "art_box_um": side, "regions": per_region,
+                     "all_ok": all(e.get("ok") for e in per_region.values())}
+        # a false-colour picture of the written art box: period -> hue, solid gold
+        lut = ra.period_lut()
+        per_map = lut[ra.labels]
+        img = np.zeros((n, n, 3), np.float32)
+        gold = np.array([0.83, 0.68, 0.21], np.float32)
+        hue_t = np.clip((per_map - 4.15) / (6.02 - 4.15), 0, 1)
+        col = np.stack([hue_t, 1 - np.abs(hue_t - 0.5) * 2, 1 - hue_t], axis=-1)
+        img[metal] = gold
+        colr = (per_map > 0) & metal
+        img[colr] = 0.35 * gold + 0.65 * col[colr]
+        Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8)).resize((900, 900), Image.BOX).save(
+            out / f"validate_regions_{face}.png")
     return res
 
 
@@ -430,8 +417,8 @@ def main():
     res = {}
     if which in ("photo", "all"):
         print("A1 photo ..."); res["photo"] = check_photo(out); print(json.dumps(res["photo"], indent=1))
-    if which in ("switch", "all"):
-        print("A2 switch ..."); res["switch"] = check_switch(out); print(json.dumps(res["switch"], indent=1))
+    if which in ("regions", "all"):
+        print("A2 regions ..."); res["regions"] = check_regions(out); print(json.dumps(res["regions"], indent=1))
     if which in ("nearfield", "all"):
         print("A3 near field ..."); res["nearfield"] = check_nearfield(out); print(json.dumps(res["nearfield"], indent=1))
     prev = {}

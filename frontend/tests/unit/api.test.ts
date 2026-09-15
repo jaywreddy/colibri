@@ -123,14 +123,14 @@ describe('defaultBoxSpec (contract defaults)', () => {
       left: [0.65, 1.0, 1.25, 1.15],
       right: [0.85, 0.8, 1.05, 0.95],
     };
-    expect(s.faces.front!.pattern_slug).toBe('globe-duo-phase');
+    expect(s.faces.front!.pattern_slug).toBe('globe-atlantic');
     expect(s.faces.top!.pattern_slug).toBe('monogram-jp');
-    expect(s.faces.back!.pattern_slug).toBe('blank');
-    expect(s.faces.bottom!.pattern_slug).toBe('blank');
+    expect(s.faces.back!.pattern_slug).toBe('photo-halftone');
+    expect(s.faces.bottom!.pattern_slug).toBe('solid-gold');
     expect(s.faces.left!.pattern_slug).toBe('photo-halftone');
     expect(s.faces.right!.pattern_slug).toBe('photo-halftone');
-    expect(s.faces.left!.pattern_params).toEqual({ image: 'beach', colour_mode: 'faces' });
-    expect(s.faces.right!.pattern_params).toEqual({ image: 'sunset', colour_mode: 'plain' });
+    expect(s.faces.left!.pattern_params).toEqual({ image: 'beach', colour_mode: 'authored' });
+    expect(s.faces.right!.pattern_params).toEqual({ image: 'sunset', colour_mode: 'authored' });
     api.FACE_IDS.forEach((fid) => {
       const f = s.faces[fid]!;
       expect(f.frame.seed).toBe(expectedSeed[fid]);
@@ -147,7 +147,7 @@ describe('defaultBoxSpec (contract defaults)', () => {
       expect(f.carrier_scale_mode).toBe('fixed');
       expect(f.carrier_pitch_um).toBe(65.5);
       // Only the two photo walls leave their inner ply bare.
-      expect(f.single_ply).toBe(fid === 'left' || fid === 'right');
+      expect(f.single_ply).toBe(true);
       // Stamped front-art rim (bondedArtKeepoutUm). The bonded 2.25 mm plies
       // make the 3/8" (9525 um) tape wrap a stepped edge that consumes 3p =
       // 6750 um, leaving a 1387.5 um fold; the foil rim is 1887.5 but the art

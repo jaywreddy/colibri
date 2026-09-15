@@ -149,7 +149,13 @@ heavy_compute_gate = threading.BoundedSemaphore(1)
 #     ``photo-halftone``'s metadata on the box path and the manifest shape grows
 #     the ``art_solid`` recipe_data key, so a warm ``backend/data`` must
 #     re-derive rather than serve variants written before either existed.
-PATTERN_GEN_VERSION = 9
+# v10: ``monogram-jp`` rebuilt as a SINGLE-LAYER DIFFRACTION mapping — the lid
+#      is one written ply, so the shading moiré (front silhouette on a carrier,
+#      back carrier at a mismatched pitch) is gone and the centrepiece is a map
+#      of two regions, one grating period per initial. Params, geometry, both
+#      layers, min_feature_um, render_recipe and recipe_data all move, and the
+#      motif gained a region map every plate writer now dispatches through.
+PATTERN_GEN_VERSION = 10
 
 
 def _params_hash(params: dict[str, Any]) -> str:

@@ -115,59 +115,143 @@ def _written_mm2(c) -> float:
 
 
 def test_the_area_budget_matches_the_plan():
-    """docs/production-plate-plan.md section 2: the four production dies are
-    about a third of the field, moiré is the largest EXPERIMENT block, there
-    are no portrait cells (the colour sides are the portraits), and the
-    experiments that need a bond stay a minority so a failed bond still
-    returns most of the numbers."""
+    """docs/production-plate-plan.md decision 10: the plate is the box's
+    plies plus spares — the production dies are most of the field — and what
+    is left carries the single-layer bench cells for THIS process. No cell on
+    the plate is two-layer any more."""
     placed, _ = layout(doe_cells())
     area: dict[str, float] = {}
     for p in placed:
         area[p.cell.block] = area.get(p.cell.block, 0.0) + _written_mm2(p.cell)
     usable = (USABLE_UM / MM) ** 2
-    # 2026-09-10: eight production plies (lid + front pairs, six photo sides)
-    # are the plate; the experiments are the bench essentials for this box.
-    assert 0.55 < area["production"] / usable < 0.72, area
+    assert 0.65 < area["production"] / usable < 0.80, area
     exp = {k: v for k, v in area.items() if k != "production"}
-    assert sum(exp.values()) / usable < 0.30, exp
-    assert not [p.cell.cid for p in placed if p.cell.cid.startswith(("PORT", "SZ"))]
+    assert sum(exp.values()) / usable < 0.12, exp
+    assert not [p.cell.cid for p in placed if p.cell.two_layer], "one ply per cell"
     cids = {p.cell.cid for p in placed}
-    from app.witness_dies import SIDE_PHOTOS
+    from app.witness_dies import SIDE_PHOTOS, SPARE_FACES, SPARE_SIDES
     assert {cid for _, _, cid, _ in SIDE_PHOTOS} <= cids
-    bench = {"M-POL", "M-CD-dense", "M-CD-iso", "M-DUTY10", "M-DUTY5", "D-PER", "WEDGE44",
-             "H-ACU", "M-VERN", "P-RULE", "B-MOVE", "NF20", "NF64", "SWAP173", "SWAP270.5"}
+    assert {cid for _, cid, _ in SPARE_FACES} <= cids
+    assert {cid for _, cid, _ in SPARE_SIDES} <= cids
+    bench = {"M-POL", "M-CD-dense", "M-CD-iso", "M-DUTY10", "M-DUTY5", "D-PER", "WEDGE44", "H-ACU"}
     assert bench <= cids, bench - cids
     assert len(placed) <= 24, "the experiment set stays cut down"
 
 
 def test_the_production_dies_are_the_panelized_box_plies():
     """A die on this plate must be interchangeable with one from the full
-    ``export_blank`` panel: same solve, same cut dims, F and B for the two
-    bonded faces, F only for the colour sides."""
+    ``export_blank`` panel: same solve, same cut dims, ONE ply per face (the
+    inner plies are bare glass off the second blank). Spares are the same die
+    again; the rotated front spare is the front's dims swapped."""
     from app import export_blank as eb
-    from app.witness_dies import blank_plan, die_dims, production_cells
+    from app.witness_dies import (SIDE_PHOTOS, SPARE_FACES, SPARE_SIDES, blank_plan, die_dims,
+                                  production_cells)
 
     (w_um, d_um, h_um), spec = blank_plan()
     assert spec.glass.thickness_um == PLY_UM
     assert (w_um, d_um, h_um) == (spec.width_um, spec.depth_um, spec.height_um)
+    assert all(spec.faces[f].single_ply for f in spec.faces), "every face is one written ply"
     cells = {c.cid: c for c in production_cells()}
-    from app.witness_dies import SIDE_PHOTOS
-    assert set(cells) == {"DIE-TOP", "DIE-FRONT"} | {cid for _, _, cid, _ in SIDE_PHOTOS}
-    assert len(SIDE_PHOTOS) == 6, "every prepared photograph rides the plate"
-    for face in ("top", "front"):
-        c, d = cells[f"DIE-{face.upper()}"], die_dims(face)
-        assert c.two_layer and c.takes_polarity
-        assert (c.w_um, c.h_um) == (d["f_w"], d["f_h"])
-        assert c.back_dims == (d["b_w"], d["b_h"])
-        assert d["b_w"] == pytest.approx(d["f_w"] - 2 * PLY_UM), "inner ply inset one ply per edge"
-    for face in ("left", "right"):
-        c = cells[f"DIE-{face.upper()}"]
-        assert not c.two_layer and c.takes_polarity
+    want = ({"DIE-TOP", "DIE-FRONT", "DIE-BACK", "DIE-BOTTOM"} | {cid for _, cid, _ in SPARE_FACES}
+            | {cid for _, _, cid, _ in SIDE_PHOTOS} | {cid for _, cid, _ in SPARE_SIDES})
+    assert set(cells) == want
+    assert len(SIDE_PHOTOS) >= 6, "every prepared photograph rides the plate"
+    for c in cells.values():
+        assert not c.two_layer and c.takes_polarity and c.block == "production"
         assert c.back_dims == (c.w_um, c.h_um)
+    for face in ("top", "front", "back", "bottom"):
+        c, d = cells[f"DIE-{face.upper()}"], die_dims(face)
+        assert (c.w_um, c.h_um) == (d["f_w"], d["f_h"])
+    for face, cid, rot in SPARE_FACES:
+        c, d = cells[cid], die_dims(face)
+        assert (c.w_um, c.h_um) == ((d["f_h"], d["f_w"]) if rot else (d["f_w"], d["f_h"]))
+    d = die_dims("left")
+    for _, _, cid, _ in SIDE_PHOTOS:
+        assert (cells[cid].w_um, cells[cid].h_um) == (d["f_w"], d["f_h"])
     panel = {r.face: (r.width_um, r.height_um)
              for r in eb.pair_rects(w_um, d_um, h_um, PLY_UM)}
     assert panel["top:F"] == (cells["DIE-TOP"].w_um, cells["DIE-TOP"].h_um)
     assert panel["left:F"] == (cells["DIE-LEFT"].w_um, cells["DIE-LEFT"].h_um)
+
+
+def _cut_crosses(x0, x1, y0, y1, cut_axis, cut_v, lo, hi) -> bool:
+    """Does a cut line at ``cut_v`` along ``cut_axis`` between ``lo..hi`` pass
+    through the box?"""
+    if cut_axis == "x":
+        return x0 < cut_v < x1 and not (hi <= y0 or lo >= y1)
+    return y0 < cut_v < y1 and not (hi <= x0 or lo >= x1)
+
+
+def test_the_layout_is_a_dicing_grid():
+    """Straight streets: every horizontal cut spans the plate between two
+    rows and crosses no die; every vertical cut spans its strip and crosses
+    no die; the cuts are exactly the streets between neighbours, so every die
+    is freed by the protocol (rows, then strips, then column pieces)."""
+    placed, lay = layout(doe_cells())
+    dc = lay["dicing"]
+    boxes = {}
+    for p in placed:
+        c = p.cell
+        boxes[c.cid] = (p.cx - c.w_um / 2, p.cx + c.w_um / 2, p.cy - c.h_um / 2, p.cy + c.h_um / 2)
+    half = USABLE_UM / 2
+    for y in dc["y_cuts_mm"]:
+        for cid, (x0, x1, y0, y1) in boxes.items():
+            assert not _cut_crosses(x0, x1, y0, y1, "y", y * MM, -half, half), (cid, y)
+    strips = dc["strips"]
+    assert [s["row"] for s in strips] == list(range(1, len(strips) + 1))
+    for s in strips:
+        yt, yb = s["y_top_mm"] * MM, s["y_bot_mm"] * MM
+        for cid in s["cells"]:
+            x0, x1, y0, y1 = boxes[cid]
+            assert y1 <= yt + 1e-6 and y0 >= yb - 1e-6, (cid, "outside its strip")
+        for x in s["x_cuts_mm"]:
+            for cid, (x0, x1, y0, y1) in boxes.items():
+                assert not _cut_crosses(x0, x1, y0, y1, "x", x * MM, yb, yt), (cid, x)
+        # neighbours in a strip are separated by exactly one street
+        xs = sorted((boxes[c][0], boxes[c][1]) for c in s["cells"])
+        gaps = [b[0] - a[1] for a, b in zip(xs, xs[1:])]
+        for g in gaps:
+            assert g >= GUTTER_UM - 1e-6, gaps
+        # every production die spans the full strip height (exact cut dims)
+        for cid in s["cells"]:
+            p = next(q for q in placed if q.cell.cid == cid)
+            if p.cell.block == "production":
+                assert p.cy + p.cell.h_um / 2 == pytest.approx(yt)
+                assert s["height_mm"] * MM == pytest.approx(p.cell.h_um + _label_h(p.cell.h_um))
+    # rows are stacked top-down with one street between them
+    for a, b in zip(strips, strips[1:]):
+        assert a["y_bot_mm"] - b["y_top_mm"] == pytest.approx(GUTTER_UM / MM)
+    # EDGE cuts: the top and the bottom edge of every strip's dies
+    assert len(dc["y_cuts_mm"]) == 2 * len(strips)
+    for s in strips:
+        assert s["die_top_mm"] in dc["y_cuts_mm"] and s["die_bot_mm"] in dc["y_cuts_mm"]
+        # and every die edge in the strip is a vertical cut
+        for cid in s["cells"]:
+            x0, x1, _, _ = boxes[cid]
+            assert round(x0 / MM, 3) in s["x_cuts_mm"] and round(x1 / MM, 3) in s["x_cuts_mm"], cid
+    # the saw-lane marks sit on the cut lines, outside every die
+    from app.export_witness import _dice_edge_marks
+    marks = _dice_edge_marks(lay)
+    for x0, x1, y0, y1 in marks:
+        for cid, (bx0, bx1, by0, by1) in boxes.items():
+            assert not (x0 < bx1 and bx0 < x1 and y0 < by1 and by0 < y1), (cid, "mark inside a die")
+
+
+def test_a_cell_with_no_row_budget_left_stacks_into_a_column():
+    """Columns are the fallback, not the plan: cells open their own rows while
+    height remains, and only stack beside a tall cell once it does not."""
+    def g(cx, cy, w, h):
+        return wc.build_grating_patch(cx, cy, w, h, period_um=10.0)
+    tall = Cell("TALL", "t", "X", 20000.0, 113000.0, g)
+    shorts = [Cell(f"S{i}", "t", "X", 30000.0, 4000.0, g) for i in range(3)]
+    placed, lay = layout([[tall], shorts])
+    assert lay["fits"], lay
+    assert len(lay["rows"]) == 1
+    col = lay["dicing"]["strips"][0]["columns"]
+    assert len(col) == 1 and col[0]["cells"] == ["S0", "S1", "S2"]
+    assert len(col[0]["y_cuts_mm"]) == 6, "top and bottom edge of each of the three cells"
+    ys = sorted({round(p.cy) for p in placed if p.cell.cid.startswith("S")})
+    assert len(ys) == 3
 
 
 def test_the_die_inversion_is_the_exact_complement_of_its_metal():
@@ -215,19 +299,19 @@ def test_a_two_layer_cell_may_have_a_smaller_back_die():
     assert pm[:, 0].min() == pytest.approx(p.pair_cx - 1200.0, abs=1.0)
 
 
-def test_short_cells_stack_beside_tall_ones_instead_of_costing_the_row():
-    """Pockets and columns: a 4 mm cell placed after a 28 mm one must not add
-    28 mm of row height. Four 4 mm cells beside one tall cell fit in the tall
-    cell's own row."""
+def test_short_cells_open_their_own_row_not_a_pocket():
+    """A dicing grid: a 4 mm cell after a 28 mm one opens a 4 mm ROW under it
+    (one more full-width cut) instead of nesting in the tall row's leftover,
+    so every cell is freed by straight cuts."""
     def g(cx, cy, w, h):
         return wc.build_grating_patch(cx, cy, w, h, period_um=10.0)
     tall = Cell("TALL", "t", "X", 20000.0, 28000.0, g)
-    shorts = [Cell(f"S{i}", "t", "X", 30000.0, 4000.0, g) for i in range(4)]
+    shorts = [Cell(f"S{i}", "t", "X", 30000.0, 4000.0, g) for i in range(3)]
     placed, lay = layout([[tall], shorts])
-    assert len(lay["rows"]) == 1, lay["rows"]
-    assert lay["height_used_mm"] < 31.0
-    ys = sorted({round(p.cy) for p in placed if p.cell.cid.startswith("S")})
-    assert len(ys) >= 2, "the short cells stacked in a column or pocket"
+    assert len(lay["rows"]) == 2, lay["rows"]
+    assert lay["rows"][1]["cells"] == ["S0", "S1", "S2"]
+    ys = {round(p.cy) for p in placed if p.cell.cid.startswith("S")}
+    assert len(ys) == 1, "one row, one y"
 
 
 def test_every_ladder_is_one_cell_not_one_cell_per_rung():
@@ -555,6 +639,11 @@ def test_build_plate_places_geometry_where_the_manifest_says():
     plate = build_plate(cells, verbose=False, polarity=METAL)
     m = plate["manifest"][0]
     r = plate["front"]
+    # the cell's own geometry (the saw-lane marks ride ``front`` too, at the
+    # field's edge and on the cut lines; leave them out of this check)
+    from app.export_witness import DICE_MARK_LEN_UM, DICE_MARK_W_UM
+    is_mark = np.isclose(np.minimum(r[:, 1] - r[:, 0], r[:, 3] - r[:, 2]), DICE_MARK_W_UM) &         np.isclose(np.maximum(r[:, 1] - r[:, 0], r[:, 3] - r[:, 2]), DICE_MARK_LEN_UM)
+    r = r[~is_mark]
     assert r[:, 0].min() == pytest.approx(m["x_mm"] * MM - 1000.0, abs=12.0)
     assert r[:, 2].min() == pytest.approx(m["y_mm"] * MM - 1000.0, abs=1.0)
 

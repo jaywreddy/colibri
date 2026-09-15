@@ -204,12 +204,20 @@ def test_the_fill_tracks_the_per_face_carrier_angle():
 
 
 @pytest.mark.parametrize(
-    "slug", ["monogram-jp", "inscription-line", "jamon-tray", "food-pair-chirp"]
+    "slug", ["inscription-line", "jamon-tray", "food-pair-chirp"]
 )
 def test_every_shimmer_pattern_now_bakes_a_back_layer(slug):
     """Regression on the whole point: an empty back layer cannot produce a
     view-dependent effect at any angle, which is what made these four read as
-    dead in the tilt collage."""
+    dead in the tilt collage.
+
+    ``monogram-jp`` has LEFT this list (2026-09): the lid is one written ply
+    now, so it has no back plate to beat against and its centrepiece is a
+    single-layer DIFFRACTION mapping (one grating period per initial) instead
+    of a shading moiré. Its own construction is pinned in
+    test_showcase_patterns.py::test_monogram_jp_*; the two-ply plate carrier
+    logic above still covers it, because a two-ply monogram-jp face is still a
+    legal spec."""
     from app.patterns.base import registry
 
     g = registry[slug].generate()

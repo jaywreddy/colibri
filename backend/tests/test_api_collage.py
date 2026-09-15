@@ -15,7 +15,11 @@ def client():
 
 
 SLUG = "monogram-carrier-reveal"   # strong x-axis reveal
-SHIMMER = "monogram-jp"            # shading moire against the back carrier
+# Shading moire against the back carrier. Was monogram-jp until 2026-09, when
+# the lid became ONE written ply — a single-layer diffraction mapping has an
+# empty back layer by construction and is parallax-invariant, so it belongs in
+# the zero-effect column, not here.
+SHIMMER = "inscription-line"
 YAXIS = "bitmap-halftone"          # lines run horizontally -> effect is on y
 
 

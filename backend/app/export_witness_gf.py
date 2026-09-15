@@ -134,6 +134,11 @@ def write_mask_gf(
         tk.shapes(l_out).insert(kdb.Box(_i(x0), _i(y0), _i(x1), _i(y1)))
     for x0, x1, y0, y1 in np.asarray(plate["pair_marks"], dtype=np.float64):
         tk.shapes(l_pair).insert(kdb.Box(_i(x0), _i(y0), _i(x1), _i(y1)))
+    # the saw's street centrelines (annotation, never chrome) — see export_witness.LAYER_DICE
+    from .export_witness import LAYER_DICE
+    l_dice = ly.layer(*LAYER_DICE)
+    for x0, x1, y0, y1 in np.asarray(plate.get("dice_lines", np.empty((0, 4))), dtype=np.float64):
+        tk.shapes(l_dice).insert(kdb.Box(_i(x0), _i(y0), _i(x1), _i(y1)))
     half = PLATE_SIDE_UM / 2.0
     tk.shapes(l_out).insert(kdb.Box(_i(-half), _i(-half), _i(half), _i(half)))
 

@@ -18,8 +18,17 @@ from fastapi.testclient import TestClient
 # - "monogram-carrier-reveal" — the honest T5 carrier reveal (single image
 #   halftoned onto a carrier in FRONT, exact anti-phase carrier in BACK,
 #   moire_interactive).
-# - "food-pair-chirp", "jamon-tray", "inscription-line", "monogram-jp" are
-#   single-layer front-only shimmers (moire_interactive; empty back).
+# - "food-pair-chirp", "jamon-tray", "inscription-line" are single-layer
+#   front-only shimmers (moire_interactive; empty back).
+# - "monogram-jp" is a SINGLE-LAYER DIFFRACTION mapping (2026-09): the lid is
+#   one written ply, so each initial is a region of fine vertical grating whose
+#   PERIOD is its colour (foliage_moire, like the photo faces — a composed box
+#   face with no moiré to interact with).
+# - "globe-atlantic" is the FRONT face's single-layer diffraction globe (2026-09).
+#   It supersedes "globe-duo-phase" on the box: a barrier switch needs two planes
+#   and the box is now one written ply per face. The duo switch stays REGISTERED
+#   (it is still an honest two-ply part and the catalog's barrier fixture), it is
+#   simply no longer what the front face points at.
 EXPECTED_SLUGS = {
     # Original catalog
     "wayuu-kanasu-moire",
@@ -44,6 +53,10 @@ EXPECTED_SLUGS = {
     # Production box faces (2026-09): a photograph face and a bare-glass face
     "photo-halftone",
     "blank",
+    # Single-layer diffraction front face (2026-09)
+    "globe-atlantic",
+    # The solid gold base plate (2026-09-15)
+    "solid-gold",
 }
 
 
@@ -178,8 +191,9 @@ def test_thumbnail_endpoint_404s_for_unknown_slug(client: TestClient) -> None:
 # NOTE: phase_shift_overlay (recipe 2) is RETIRED with zero users — its
 # "switch" was a shader view-sign bias, not physics. The barrier rebuilds
 # (jp-monogram-phase, globe-duo-phase, gear-quill-switch, colibri-flap-phase)
-# and the single-layer retags (food-pair-chirp, jamon-tray, inscription-line,
-# monogram-jp → moire_interactive) removed every user; the name is deleted
+# and the single-layer retags (food-pair-chirp, jamon-tray, inscription-line
+# → moire_interactive; monogram-jp → foliage_moire once the lid became a
+# one-ply diffraction mapping) removed every user; the name is deleted
 # from base.RECIPE_NAMES and the frontend deleted shader id 2. Numeric ids
 # 0/1/3 are stable with a permanent hole at 2.
 _VALID_RECIPES = {

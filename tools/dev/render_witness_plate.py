@@ -49,13 +49,20 @@ def main() -> int:
     man = json.loads((root / "witness-5in.json").read_text(encoding="utf-8"))
     dies = {c["cid"]: c for c in man["cells"] if c["block"] == "production"}
     render(gds, out / "witness_plate.png", 1800, None)
-    # the top pair: F and B side by side
+    # the lid: one ply
     t = dies["DIE-TOP"]
     x0 = (t["x_mm"] - t["w_mm"] / 2) * 1000 - 800
-    x1 = (t["x_mm"] + t["w_mm"] / 2 + 1.0 + t["back_w_mm"]) * 1000 + 800
+    x1 = (t["x_mm"] + t["w_mm"] / 2) * 1000 + 800
     yc = t["y_mm"] * 1000
     half = max(t["h_mm"], (x1 - x0) / 1000) * 500 + 800
     render(gds, out / "witness_die_top.png", 1600, (x0, yc - half, x1, yc + half))
+    # the front: the Atlantic globe, one ply
+    f = dies["DIE-FRONT"]
+    fx0 = (f["x_mm"] - f["w_mm"] / 2) * 1000 - 800
+    fx1 = (f["x_mm"] + f["w_mm"] / 2) * 1000 + 800
+    fyc = f["y_mm"] * 1000
+    fhalf = max(f["h_mm"], (fx1 - fx0) / 1000) * 500 + 800
+    render(gds, out / "witness_die_front.png", 1600, (fx0, fyc - fhalf, fx1, fyc + fhalf))
     # a leaf of the lid's garland, 4 mm
     lx = (t["x_mm"] - t["w_mm"] / 2 + 2.5) * 1000
     ly_ = (t["y_mm"] + t["h_mm"] / 2 - 4.5) * 1000

@@ -29,14 +29,18 @@ RENDERERS = {
     "witness_variants.png": "render_witness_preview.py",
     "witness_plate.png": "render_witness_plate.py", "witness_die_top.png": "render_witness_plate.py",
     "witness_die_leaf.png": "render_witness_plate.py", "witness_die_portrait.png": "render_witness_plate.py",
+    "witness_die_front.png": "render_witness_plate.py",
     "witness_die_garland.png": "render_witness_plate.py",
-    "validate_photo.png": "validate_dies.py", "validate_switch.png": "validate_dies.py",
+    "validate_photo.png": "validate_dies.py", "validate_regions_top.png": "validate_dies.py",
+    "validate_regions_front.png": "validate_dies.py",
     "validate_nearfield.png": "validate_dies.py",
 }
 # Figures of experiment blocks that were cut from the plate on 2026-09-10 are
 # kept as the record of the first design; their renderer can no longer draw
 # them from the plate, so they are exempt from the staleness rule.
-ARCHIVED = {"witness_moire.png", "witness_moire_b.png", "witness_variants.png"}
+ARCHIVED = {"witness_moire.png", "witness_moire_b.png", "witness_variants.png",
+            # the near-field gate measured the bonded design's gap; kept as record
+            "validate_nearfield.png"}
 for name, r in RENDERERS.items():
     fig_path, r_path = f"{SP}/{name}", f"{ROOT}/tools/dev/{r}"
     if not os.path.exists(fig_path):
@@ -243,19 +247,23 @@ AFTER = {
     "4.6 Edge of envelope": diagram("fig_cell.svg", "Anatomy of a cell as written: the drawn geometry is the clear data; the label is chrome at the bottom-left and carries the value."),
     "4.7 Production dies": (
         fig("witness_plate.png", "the written GDS, whole plate",
-            "The plate as written, rendered from the GDS by klayout: light is data, i.e. where the chrome comes off. Top row: TOP F, TOP B, FRONT F, FRONT B; second row: LEFT F and RIGHT F, with the metrology ladders stacked in the column beside them. The dies read as light because a box face is mostly bare glass; the chrome that stays is the gold.")
-        + fig("witness_die_top.png", "the lid pair, F and B",
-              "DIE-TOP: outer ply F (left) with the foliage garland and the J+P monogram as chrome gratings in a clear field, inner ply B (right) with the uniform carrier. Both mirrored for the chrome-down stack; the 80 / 88 µm vernier combs and the tick-code ID sit in the fold band at identical stack coordinates.")
+            "The plate as written, rendered from the GDS by klayout: light is data, i.e. where the chrome comes off. A dicing grid: the 32 mm row (lid, lid spare, the front spare on its side), two 30.5 mm rows (front, then the seven photo sides), and the two bench rows; every street is a straight saw cut (DICING.md). The dies read as light because a box face is mostly bare glass; the chrome that stays is the gold.")
+        + fig("witness_die_top.png", "the lid, one ply",
+              "DIE-TOP: the foliage garland and the J+P monogram as chrome gratings in a clear field — the monogram a single-layer diffraction mapping, each letter its own grating period so the two flash different colours under a lamp. Mirrored for the chrome-down stack; the tick-code ID sits in the fold band.")
+        + fig("witness_die_front.png", "the front, one ply",
+              "DIE-FRONT: the Atlantic globe as a diffraction mapping by region — land, the United States, Colombia and Europe each at their own period, graticule, limb and the two stars solid gold, the ocean bare glass — inside the garland.")
         + fig("witness_die_leaf.png", "4 mm of the lid's garland",
-              f"Four millimetres of the lid's garland: each leaf is a chrome grating at its own angle (the carrier × 1.09), which beats against the B ply's carrier across {PLY_UM/1000:g} mm of glass. The gaps between leaves are clear — on the box, bare glass.")
+              "Four millimetres of the lid's garland: each motif family is a fine vertical grating at its own period from the 4.15–6.02 µm ladder, so under a lamp the families light in different colours at one tilt. The gaps between leaves are clear — on the box, bare glass.")
         + fig("witness_die_portrait.png", "3 mm of the beach side's line screen",
               "Three millimetres of DIE-LEFT: the 44 µm line screen with the 4.15–6.0 µm colour sub-gratings inside the coloured bands. The die is mirrored, so the picture reads correctly through the glass once it is the box's outer ply.")
-        + fig("witness_die_garland.png", "3 mm of the beach side's garland: 6 µm per-family diffractive leaf gratings on bare glass",
-              "The garland at the same scale: each motif family is filled with a 6 µm, 50% grating at its own angle, fanned over the half-turn — flat gold at normal incidence, spectral colour at the family's diffraction angle under a lamp. There is no carrier on this ply; the picture itself has dissolved to bare glass, so the whole side is single-layer and needs no bond.")
+        + fig("witness_die_garland.png", "3 mm of the beach side's garland: per-family diffractive leaf gratings on bare glass",
+              "The garland at the same scale: each motif family is filled with a vertical 50% grating at its own period (4.15–6.02 µm) — flat gold at normal incidence, its own spectral colour under a lamp. There is no carrier on this ply; the picture itself has dissolved to bare glass, so the whole side is single-layer and needs no bond.")
         + fig("validate_nearfield.png", "near-field simulation across 2.25 mm",
               f"A3, the gate: angular-spectrum propagation through {PLY_UM/1000:g} mm of glass under an incoherent source, eye-cell integrated. Left: a garland at the 500 µm design pitch of 22 / 24 µm; middle: the garland as built at this glass's carrier; right: the monogram pair. The surviving fraction of the zero-gap fringe contrast is printed under each. Predicted by §2.2's Fresnel number, and the number that decided the garland pitch and cut the capybara.")
-        + fig("validate_switch.png", "registration tolerance of the globe switch",
-              f"A2: DIE-FRONT's own front and back metal through sim2d at t = {PLY_UM/1000:g} mm at this glass's comb. The design lanes are fixed and the back ply slid; at p/4 the two globes are a 50/50 blend at every tilt and beyond it they trade places. The verniers read to about 1 µm; the table in §4.7 has the separation at each error.")
+        + fig("validate_regions_top.png", "the lid's regions as written",
+              "A2: the lid's own written polygons rastered at 0.5 µm and painted by the period each region was mapped to (blue 4.15 µm … red 6.02 µm; solid gold where no grating). The gate measures the metal fraction and the stripe pitch inside every region against the map's duty and period.")
+        + fig("validate_regions_front.png", "the front's regions as written",
+              "A2, the front: land, the United States, Colombia and Europe at their own periods, graticule and limb solid, the ocean glass.")
         + fig("validate_photo.png", "tone check of the beach side",
               "A1: the emitted metal of DIE-LEFT accumulated exactly per 87 µm eye cell against the coverage the builder intends. Mean error 0.8 of 22 levels; the coloured bands, holding tone with a 50% sub-grating, print about 2.7 levels lighter than the photograph inside the zones — the cost of holding tone, measured on the real geometry.")
     ),

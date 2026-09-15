@@ -294,6 +294,12 @@ class ZoneMasks:
     # ``build_plate_fine`` cannot be built at two different waterlines. None on a
     # non-scanimation plate.
     waterline_y: float | None = None
+    # SINGLE-LAYER DIFFRACTION centrepiece (region_art): int32 label raster on
+    # the plate grid (0 = glass) and the Region each label is written as. When
+    # set, ``front_art`` / ``back_art`` are EMPTY — the regions ARE the
+    # centrepiece and no carrier, comb or switch is emitted for it.
+    art_regions: np.ndarray | None = None
+    region_specs: dict[int, Any] | None = None
 
 
 def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
@@ -321,9 +327,12 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     back_art = np.zeros((fh, fw), dtype=bool)
     front_accent = np.zeros((fh, fw), dtype=bool)
     art_box = np.zeros((fh, fw), dtype=bool)
+    art_regions: np.ndarray | None = None
+    region_specs: dict[int, Any] | None = None
 
-    if spec.pattern_slug == P.BLANK_SLUG:
-        # BARE GLASS: every zone stays empty, so every ``.any()`` gate in
+    if spec.pattern_slug in (P.BLANK_SLUG, P.SOLID_SLUG):
+        # BARE GLASS (and SOLID GOLD, whose one rectangle build_plate_fine adds
+        # itself): every zone stays empty, so every ``.any()`` gate in
         # ``build_plate_fine`` falls through and the plate emits no geometry at
         # all. Returning here rather than special-casing each emitter means any
         # OTHER caller of the zone masks (the single-ply carrier block below,
@@ -391,7 +400,28 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         ay0 = max(0, fh // 2 - side_px // 2)
         art_box[ay0 : min(fh, ay0 + side_px), ax0 : min(fw, ax0 + side_px)] = True
         _mask_rim(art_box, spec.weld_margin_um, pitch_um)
-        masks = P._centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
+        from . import region_art as RA
+
+        ra = (RA.centerpiece_regions(spec.pattern_slug, side_px, spec.pattern_params)
+              if RA.single_layer_centerpiece(spec) else None)
+        if ra is not None:
+            # SINGLE-LAYER DIFFRACTION centrepiece: the label map goes on the
+            # grid at the art box; the silhouette masks stay empty so nothing
+            # below fills them with a carrier.
+            lab = np.zeros((fh, fw), dtype=np.int32)
+            x0 = fw // 2 - side_px // 2
+            y0 = fh // 2 - side_px // 2
+            xa, ya = max(0, x0), max(0, y0)
+            xb, yb = min(fw, x0 + side_px), min(fh, y0 + side_px)
+            lab[ya:yb, xa:xb] = ra.labels[ya - y0 : yb - y0, xa - x0 : xb - x0]
+            rim = np.ones((fh, fw), dtype=bool)
+            _mask_rim(rim, spec.weld_margin_um, pitch_um)
+            lab[~rim] = 0
+            art_regions, region_specs = lab, dict(ra.regions)
+            masks = None
+        else:
+            art_regions, region_specs = None, None
+            masks = P._centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
         if masks is not None:
             def _place(art: np.ndarray) -> np.ndarray:
                 if art.shape[0] != side_px or art.shape[1] != side_px:
@@ -425,6 +455,8 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         back_art=back_art,
         front_accent=front_accent,
         art_box=art_box,
+        art_regions=art_regions,
+        region_specs=region_specs,
     )
 
     # --- SCANIMATION (capybara back face) ----------------------------------
@@ -980,6 +1012,22 @@ def _close_and_open_1d(mask: np.ndarray, min_run: int) -> np.ndarray:
     return m
 
 
+def _dilate_zone(mask: np.ndarray, cells: int = 1) -> np.ndarray:
+    """Grow a bool zone by ``cells`` grid cells (4-neighbour) — the complement
+    of :func:`_erode_zone`, used to cut a gutter into a NEIGHBOUR."""
+    if cells <= 0 or not mask.any():
+        return mask
+    m = mask
+    for _ in range(cells):
+        d = m.copy()
+        d[1:, :] |= m[:-1, :]
+        d[:-1, :] |= m[1:, :]
+        d[:, 1:] |= m[:, :-1]
+        d[:, :-1] |= m[:, 1:]
+        m = d
+    return m
+
+
 def _erode_zone(mask: np.ndarray, cells: int = 1) -> np.ndarray:
     """Erode a bool zone by ``cells`` grid cells (4-neighbour), fully vectorised.
 
@@ -1041,6 +1089,142 @@ class PlateFine:
     stats: dict[str, Any] = field(default_factory=dict)
 
 
+def zone_pitch_um(spec: Any, back_period_um: float | None = None) -> float:
+    """The zone-BOUNDARY raster pitch of a plate's fine bake: fine enough to
+    resolve the finest zone edge (a scanimation slot, the carrier), capped by
+    the lattice budget so a big plate keeps a small source raster. One
+    function, so ``build_plate_fine`` and :func:`single_layer_region_rects`
+    (the fab SVG's copy of the centrepiece) quantise the same boundaries."""
+    from . import plates as P
+    from .patterns._helpers import MAX_LATTICE_CELLS
+
+    if back_period_um is None:
+        back_period_um = float(P._carrier_recipe_data(spec)["fab_back_period_um"])
+    W, H = spec.width_um, spec.height_um
+    ideal = min(P.water_scan_fab_pitch_um(spec) / P.WATER_SCAN_N_PHASES, back_period_um) / 4.0
+    budget_pitch = math.sqrt(W * H / (0.9 * MAX_LATTICE_CELLS))
+    return max(ideal, budget_pitch)
+
+
+def _zone_solid_rects(zone: np.ndarray, pitch_um: float, extent_um: tuple[float, float]) -> np.ndarray:
+    """SOLID gold over a zone: one plate-frame rect per contiguous run of set
+    cells in each row (rows merge later in the metal heal). Plate-centred µm,
+    row 0 at the top, y up — the ``ZoneMasks`` convention."""
+    if not zone.any():
+        return np.empty((0, 4), dtype=np.float64)
+    h_px, w_px = zone.shape
+    W, H = extent_um
+    hx, hy = W / 2.0, H / 2.0
+    out: list[np.ndarray] = []
+    for r in np.flatnonzero(zone.any(axis=1)):
+        row = zone[r]
+        d = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
+        starts = np.flatnonzero(d == 1)
+        ends = np.flatnonzero(d == -1)
+        y1 = hy - r * pitch_um
+        y0 = y1 - pitch_um
+        out.append(np.stack([starts * pitch_um - hx, ends * pitch_um - hx,
+                             np.full(starts.size, y0), np.full(starts.size, y1)], axis=1))
+    return np.concatenate(out, axis=0) if out else np.empty((0, 4), dtype=np.float64)
+
+
+def check_region_periods(regions: dict[int, Any]) -> None:
+    """Every diffractive region must survive the litho floor AND the die
+    finish (the guard the single-ply leaf families pass): line = p·duty must
+    exceed 2 × the finish radius and both line and gap must clear the floor."""
+    from .witness_dies import FINISH_ART_UM, FINISH_FRAME_UM
+
+    finish_min_line = 2.0 * max(FINISH_ART_UM, FINISH_FRAME_UM)
+    for rid, r in regions.items():
+        if r.period_um <= 0:
+            continue
+        line = r.period_um * r.duty
+        gap = r.period_um - line
+        if line <= finish_min_line + 1e-9:
+            raise ValueError(
+                f"region {rid} {r.name!r}: {r.period_um} um at duty {r.duty} writes {line:.3f} um "
+                f"lines, which the {finish_min_line / 2:.2f} um die finish (open) erases")
+        if min(line, gap) < LITHO_FLOOR_UM - 1e-9:
+            raise ValueError(
+                f"region {rid} {r.name!r}: {r.period_um} um at duty {r.duty} breaks the "
+                f"{LITHO_FLOOR_UM} um litho floor (line {line:.3f}, gap {gap:.3f})")
+
+
+def _emit_region_art(spec: Any, rects_out: list[np.ndarray]) -> dict[str, Any]:
+    """Write a single-layer diffraction centrepiece: every region of the
+    motif's map as its own VERTICAL grating at its period (solid gold where the
+    period is 0), each inset one cell so no two gratings meet.
+
+    Rastered on its OWN grid over the art box at ``region_art.REGION_ZONE_PITCH_UM``,
+    not on the plate's zone grid: the plate grid is budget-capped at ~50 µm on
+    a 32 mm face, and a region edge (a letter's outline, a coastline) quantised
+    to 50 µm steps, with a 50 µm glass gutter between neighbouring regions, is
+    at the eye's limit at 300 mm. At 20 µm both are a quarter of it. The art
+    box is centred on the plate, so the rects need no shift.
+
+    Appends plate-frame rects to ``rects_out`` and returns the stats block."""
+    from . import plates as P
+    from . import region_art as RA
+
+    side = P.CENTERPIECE_FILL * P._aperture(spec)
+    if side <= 0:
+        return {"n_regions": 0, "cells": 0, "regions": {}, "pitch_um": 0.0}
+    n = int(round(side / RA.REGION_ZONE_PITCH_UM))
+    n = max(16, min(n, RA.REGION_ZONE_MAX_PX))
+    pitch = side / n
+    ra = RA.centerpiece_regions(spec.pattern_slug, n, spec.pattern_params)
+    if ra is None:
+        return {"n_regions": 0, "cells": 0, "regions": {}, "pitch_um": pitch}
+    check_region_periods(ra.regions)
+    extent = (side, side)
+    n_cells = 0
+    per_region: dict[str, Any] = {}
+    metal_all = ra.labels > 0
+    for rid, reg in sorted(ra.regions.items()):
+        zone = ra.labels == rid
+        if not zone.any():
+            continue
+        # Seam gutter between regions of different periods (and between a
+        # grating and solid gold): one cell of glass wherever this region
+        # touches ANOTHER metal region — never at its edge against bare glass,
+        # so a thin solid feature (a graticule line, a star) keeps its drawn
+        # width. A region that vanishes under the gutter was thinner than the
+        # zone pitch where it met its neighbour.
+        others = metal_all & ~zone
+        zone_in = zone & ~_dilate_zone(others, 1)
+        if not zone_in.any():
+            per_region[reg.name] = {"period_um": reg.period_um, "cells": 0,
+                                    "note": "thinner than one zone cell after the gutter; nothing written"}
+            continue
+        n_before = len(rects_out)
+        if reg.solid:
+            rects_out.append(_zone_solid_rects(zone_in, pitch, extent))
+        else:
+            _emit_grating(zone_in, pitch, extent, reg.period_um, reg.duty, 0.0, 0.0,
+                          rects_out, [])
+        n_new = sum(int(r.shape[0]) for r in rects_out[n_before:])
+        per_region[reg.name] = {"period_um": float(reg.period_um), "duty": float(reg.duty),
+                                "cells": int(zone_in.sum()), "rects": n_new}
+        n_cells += int(zone_in.sum())
+    return {"n_regions": len(per_region), "cells": n_cells, "regions": per_region,
+            "pitch_um": float(pitch), "art_box_um": float(side)}
+
+
+def single_layer_region_rects(spec: Any) -> np.ndarray:
+    """The EXACT front-layer rects of a single-layer diffraction centrepiece,
+    ``(N, 4)`` ``[x0, x1, y0, y1]`` µm plate-centred — the same geometry
+    ``build_plate_fine`` writes, for the fab SVG bake to concatenate (the
+    2-6 µm gratings are far below the SVG's raster pitch). Empty when the face
+    has no region centrepiece."""
+    from . import region_art as RA
+
+    if not RA.single_layer_centerpiece(spec):
+        return np.empty((0, 4), dtype=np.float64)
+    parts: list[np.ndarray] = []
+    _emit_region_art(spec, parts)
+    return _drc_rects(_concat_rects(parts))
+
+
 def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -> PlateFine:
     """Compose one plate's front+back fine geometry at native periods.
 
@@ -1084,11 +1268,7 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # periods are exact vector geometry regardless. Cap the grid so the source
     # masks stay small (well under the lattice budget). ~4 samples on the finest
     # slot, floored so a huge plate does not explode the source raster.
-    from .patterns._helpers import MAX_LATTICE_CELLS
-
-    ideal = min(P.water_scan_fab_pitch_um(spec) / P.WATER_SCAN_N_PHASES, back_period) / 4.0
-    budget_pitch = math.sqrt(W * H / (0.9 * MAX_LATTICE_CELLS))
-    pitch = max(ideal, budget_pitch)
+    pitch = zone_pitch_um(spec, back_period)
 
     zm = _build_zone_masks(spec, pitch)
     extent = (W, H)
@@ -1098,6 +1278,13 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     front_angled: list[tuple[np.ndarray, float]] = []
     back_angled: list[tuple[np.ndarray, float]] = []
     stats: dict[str, Any] = {"pitch_um": pitch}
+
+    if spec.pattern_slug == P.SOLID_SLUG:
+        # SOLID GOLD (the base plate): the whole outer ply, one rectangle, no
+        # rim — the gold runs under the foil. Every zone mask is empty, so
+        # nothing else below emits.
+        front_rects_parts.append(np.array([[-W / 2.0, W / 2.0, -H / 2.0, H / 2.0]], dtype=np.float64))
+        stats["solid"] = True
 
     # --- FRONT frame band: per-motif angle-bucket gratings (angled) --------
     # Each bucket b fills its cells with a grating rotated to
@@ -1203,7 +1390,13 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # (≫ 2 µm floor). Legacy phase-switch faces (front-only shimmer): the
     # FRONT silhouette filled with the phase-0 switch carrier. Both exclude
     # the accent zone (4.4 µm grating).
-    if is_photo:
+    if single_ply and zm.art_regions is not None:
+        # SINGLE-LAYER DIFFRACTION centrepiece (region_art): each region of the
+        # motif is its own vertical grating at its own period — colour by
+        # region, one ply, no carrier — or solid gold where the period is 0.
+        # Same guard the leaf families pass (finish + litho floor).
+        stats["single_layer_regions"] = _emit_region_art(spec, front_rects_parts)
+    elif is_photo:
         # LINE SCREEN, front layer only, at the face's art box. Exact vector
         # rectangles: the bands themselves plus, inside every coloured band, its
         # vertical diffraction sub-grating (``screenrects.stripe_plan``'s whole

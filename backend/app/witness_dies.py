@@ -1,45 +1,42 @@
 """Production dies on the witness plate: the box faces that come off as plies.
 
-The 5″ plate is the stock the bonded box is built from (``witness_geom.PLY_UM``
-of ``GLASS_MATERIAL``), so a rectangle of it written with a face's fine
-geometry IS that face's ply once it is diced. Eight dies (ten plies) ride along
-with the experiments:
+The 5″ plate is the stock the box is built from (``witness_geom.PLY_UM`` of
+``GLASS_MATERIAL``), so a rectangle of it written with a face's fine geometry
+IS that face's outer ply once it is diced. Every face is ONE written ply
+(2026-09-15: the bonded moiré pairs of the first plate read badly on glass and
+could not be cleaved; the inner plies are now bare quartz, cut from the second
+blank, and carry no plate area). The dies, in dicing rows:
 
-    top    F + B   monogram-jp centerpiece + foliage garland, bonded pair
-    front  F + B   globe-duo-phase barrier switch + garland, bonded pair
-    sides  F ×6    every prepared photograph (``SIDE_PHOTOS``: beach with its
-                   faces coloured, sunset, garden with dress and leaves coloured,
-                   Paris, night group, porch group) as a line screen dissolving
-                   to bare glass inside a garland — one ply each, own seed
+    32 mm row     DIE-TOP, DIE-TOP-S (spare)   monogram-jp as a single-layer
+                  diffraction mapping (region_art) + garland;
+                  DIE-BOTTOM   the solid gold base plate (no openings at all)
+    30.5 mm rows  DIE-FRONT (globe-atlantic) and DIE-BACK (the Paris photograph
+                  at the back's 32 x 30.5 mm), one per row, each followed by three candidate photographs
+                  (``SIDE_PHOTOS``) as sides, one ply each, own garland seed;
+                  ``SPARE_SIDES`` duplicates would fill any spot left over
 
 Every die is the face's own ``PlateSpec`` from ``boxes.default_box_spec`` (via
 ``blank_plan``; the sides through ``side_photo_spec``) put through
 ``export_fine.build_plate_fine`` — the same geometry the box's GDS bake writes —
-so nothing here is a second authoring path. The sides are single plies: a
-halftone is a single-layer effect, so they carry NO carrier (a same-ply carrier
-is a static union moiré that printed as bars); their leaves are fine
-diffractive gratings with one period per motif family
-(``plates.SINGLE_PLY_LEAF_FILL``), and the backing ply is bare glass that costs
-no plate area.
+so nothing here is a second authoring path.
 
 Polarity. The plate is a darkfield write with positive resist: the file holds
 the openings, chrome stays wherever the file is empty. A face's fine geometry is
 authored as METAL (gold where the rectangles are), so each die is inverted —
 ``die box − metal`` — and that inversion runs as a klayout Region boolean on the
-one die, never a GEOS union (the same C++ edge set the merged-DRC heal already
-builds for every face). Before and after the inversion the geometry is opened
-to the 2 µm floor (``clear_field``), decomposed to convex pieces so no polygon
-carries holes or more vertices than a mask shop will take, and then CHECKED —
-tiled, on those pieces — so the WRITTEN clear data, not just the authored
-metal, passes a shop's incoming width/space rule.
+one die, never a GEOS union. Before and after the inversion the geometry is
+opened to the 2 µm floor (``clear_field``), decomposed to convex pieces so no
+polygon carries a hole, and the written pieces are width/space checked tiled
+(``written_clear_drc``).
 
-Mirroring. Both plies of a face are written MIRRORED (x → −x about the die
-centre), exactly as ``export_blank`` does: the chrome faces the bond, the
-viewer looks through the glass, and the flip at assembly restores the design
-frame. The assembly verniers (80 µm on F, 88 µm on B) and the tick-code ID sit
-at identical stack coordinates on both plies of a pair, inside the interior
-foil-fold band, so the pair beats when stacked; the F-only sides carry the F
-comb so a bare backing ply can still be squared to them.
+Mirroring. A die is written MIRRORED (x → −x) because the box is assembled
+chrome-down: the gold faces the inner ply and the picture is seen through its
+own glass. A rotated die is mirrored first, then turned +90°.
+
+Marks. Each die carries a tick-code ID (``export_blank.id_tick_rects``) inside
+the interior foil-fold band, where the tape hides it, and L-shaped dicing ticks
+just outside its corners in the street. The vernier combs of the bonded design
+are gone with the pairs: a bare inner ply has nothing to read them against.
 
 Everything is in micrometres, plate-centred, y up — the ``CellArt`` contract
 of ``export_witness``.
@@ -107,16 +104,15 @@ def _fold_um() -> float:
 
 
 def bench_marks(face: str, ply: str, stack_w: float, stack_h: float) -> np.ndarray:
-    """Vernier combs + tick-code ID for one ply, stack-centred, METAL sense."""
+    """Tick-code ID for one ply (``face`` index + 1 bars, underlined on a B
+    ply), in the interior foil-fold band — stack-centred, METAL sense. The
+    vernier combs of the bonded design are not written: the plate carries
+    single plies and a bare inner ply has nothing to beat against."""
     from .assembly import FACE_IDS
 
-    pitch = eb.VERNIER_PITCH_F_UM if ply == "F" else eb.VERNIER_PITCH_B_UM
     fold = _fold_um()
-    return _cat(
-        eb.vernier_blocks(stack_w, stack_h, PLY_UM, fold, pitch),
-        eb.id_tick_rects(list(FACE_IDS).index(face), ply == "B",
-                         stack_w, stack_h, PLY_UM, fold),
-    )
+    return eb.id_tick_rects(list(FACE_IDS).index(face), ply == "B",
+                            stack_w, stack_h, PLY_UM, fold)
 
 
 def dice_ticks(w: float, h: float) -> np.ndarray:
@@ -556,90 +552,97 @@ def _ply_art(w: float, h: float, metal: list[np.ndarray], polarity: str,
                     drc_out=drc_out))
 
 
-# --- bonded faces: monogram lid, globe front ----------------------------------
+# --- the faces ------------------------------------------------------------------
+
+
+def _rotate_rects(r: np.ndarray) -> np.ndarray:
+    return eb._transform_rects(np.asarray(r, dtype=np.float64), mirror=False, rotated=True)
+
+
+def _rotate_polys(polys: list[np.ndarray]) -> list[np.ndarray]:
+    return [eb._transform_verts(np.asarray(p, dtype=np.float64), mirror=False, rotated=True)
+            for p in polys]
 
 
 def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
-                   polarity: str = METAL, pspec: Any | None = None) -> CellArt:
-    """A bonded face as two dies: F (outer ply, ``w × h``) at ``(cx, cy)`` and
-    B (inner ply) at the SAME centre — ``export_witness.build_plate`` moves the
-    back die to its pair position. Fine geometry from
-    ``export_fine.build_plate_fine`` at the box's glass-derived periods, merged
-    DRC heal included."""
+                   polarity: str = METAL, pspec: Any | None = None,
+                   rotated: bool = False) -> CellArt:
+    """One face as ONE die: the outer ply, ``w × h`` at ``(cx, cy)``. Fine
+    geometry from ``export_fine.build_plate_fine`` (single-ply branch: the
+    centrepiece as region gratings or a line screen, the garland as per-family
+    leaf gratings), merged DRC heal included, then inverted to the clear field
+    and mirrored for the chrome-down stack.
+
+    ``rotated``: the die is turned +90° on the plate (the cell is then
+    ``h × w``), so a 32 × 30.5 mm front can ride a 32 mm dicing row on its side.
+    Mirror first, then rotate — the ID ticks turn with the picture and say so.
+    """
     from .export_fine import build_plate_fine
 
     _, spec = blank_plan()
     if pspec is None:
         pspec = spec.faces[face]
+    if not bool(getattr(pspec, "single_ply", False)):
+        raise ValueError(f"{face}: the plate writes single plies only; {pspec.pattern_slug} "
+                         "is not single_ply (every face of the production box is)")
     d = die_dims(face)
-    if abs(d["f_w"] - w) > 1.0 or abs(d["f_h"] - h) > 1.0:
+    fw, fh = d["f_w"], d["f_h"]
+    cw, ch = (fh, fw) if rotated else (fw, fh)
+    if abs(cw - w) > 1.0 or abs(ch - h) > 1.0:
         raise ValueError(f"{face}: cell is {w:.0f}x{h:.0f} but the F ply cuts "
-                         f"{d['f_w']:.0f}x{d['f_h']:.0f}")
-    # Stage timings: a die that costs three minutes should say which stage
-    # spent them. ``fine`` is the pattern generation + the metal-side merged
-    # DRC heal (export_fine), the clear_field entries are the inversion and its
+                         f"{fw:.0f}x{fh:.0f}{' rotated' if rotated else ''}")
+    # Stage timings: a die that costs minutes should say which stage spent
+    # them. ``fine`` is the pattern generation + the metal-side merged DRC heal
+    # (export_fine), the clear_field entries are the inversion and its
     # written-data finish, ``drc_written`` the report on what is in the file.
     T = time.perf_counter
     timing: dict[str, Any] = {}
     _t = T()
     fine = build_plate_fine(pspec, face)
     timing["fine_s"] = round(T() - _t, 2)
-    single = bool(getattr(pspec, "single_ply", False))
+    if len(fine.back_polys):
+        raise RuntimeError(f"{face}: a single-ply face emitted {len(fine.back_polys)} back polygons")
     from . import plates as P
     art_box = P.CENTERPIECE_FILL * P._aperture(pspec)   # the centred centrepiece square
 
-    metal_f: list[np.ndarray] = list(fine.front_polys) + [bench_marks(face, "F", w, h)]
+    metal_f: list[np.ndarray] = list(fine.front_polys) + [bench_marks(face, "F", fw, fh)]
     cf_f: dict[str, Any] = {}
     drc_f: dict[str, Any] = {}
     _t = T()
-    fr, fp = _ply_art(w, h, metal_f, polarity, art_box, timing=cf_f, drc_out=drc_f)
+    fr, fp = _ply_art(fw, fh, metal_f, polarity, art_box, timing=cf_f, drc_out=drc_f)
     timing["clear_field_front_s"] = round(T() - _t, 2)
     timing["clear_field_front"] = cf_f
+    if rotated:
+        fr, fp = _rotate_rects(fr), _rotate_polys(fp)
     art = CellArt()
-    art.front = _shift_rects(_cat(fr, dice_ticks(w, h)), cx, cy)
+    art.front = _shift_rects(_cat(fr, dice_ticks(cw, ch)), cx, cy)
     art.polys = _shift_polys(fp, cx, cy)
-    if not single:
-        metal_b: list[np.ndarray] = list(fine.back_polys) + [bench_marks(face, "B", w, h)]
-        cf_b: dict[str, Any] = {}
-        drc_b: dict[str, Any] = {}
-        _t = T()
-        br, bp = _ply_art(d["b_w"], d["b_h"], metal_b, polarity, art_box, timing=cf_b,
-                          drc_out=drc_b)
-        timing["clear_field_back_s"] = round(T() - _t, 2)
-        timing["clear_field_back"] = cf_b
-        art.back = _shift_rects(_cat(br, dice_ticks(d["b_w"], d["b_h"])), cx, cy)
-        art.back_polys = _shift_polys(bp, cx, cy)
     _t = T()
     # The settle already measured exactly this, on exactly these pieces (see
     # ``clear_field``'s ``drc_out``); ``written_clear_drc`` is the fallback for
-    # the no-settle paths. Mirroring does not enter it: x -> -x is an isometry,
-    # so every width/space distance, and every merged violation site, is the one
-    # the settle counted.
+    # the no-settle paths. Mirroring and rotation do not enter it: both are
+    # isometries, so every width/space distance is the one the settle counted.
     drc_written_front = _written_drc(fp, drc_f) if polarity == CLEAR else None
-    drc_written_back = (_written_drc(bp, drc_b)
-                        if (polarity == CLEAR and not single) else None)
     timing["drc_written_s"] = round(T() - _t, 2)
     drc = fine.stats.get("drc", {})
     art.stats = {
         "polarity": polarity, "face": face, "slug": pspec.pattern_slug,
-        "ply_um": PLY_UM, "glass_n": GLASS_N, "mirrored": True,
-        "f_um": [w, h], "b_um": [d["b_w"], d["b_h"]],
+        "ply_um": PLY_UM, "glass_n": GLASS_N, "mirrored": True, "rotated": bool(rotated),
+        "f_um": [fw, fh], "cell_um": [cw, ch],
         "art_rim_um": float(pspec.weld_margin_um), "art_box_um": float(art_box),
         "band_um": float(P._band_um(pspec)),
         "periods": fine.stats.get("periods", {}),
+        "single_layer_regions": fine.stats.get("single_layer_regions"),
+        "single_ply_leaves": fine.stats.get("single_ply_leaves"),
         "metal_polys_front": len(fine.front_polys),
-        "metal_polys_back": len(fine.back_polys),
         "written_polys_front": len(art.polys),
-        "written_polys_back": len(art.back_polys),
         # metal-side heal result (export_fine), pre-inversion
         "drc_metal_front": drc.get("front_merged_after"),
-        "drc_metal_back": drc.get("back_merged_after"),
         # the WRITTEN clear data, post-inversion
         "drc_written_front": drc_written_front,
-        "drc_written_back": drc_written_back,
         "timing_s": timing,
         "finish_um": [FINISH_ART_UM, FINISH_FRAME_UM],
-        "single_layer": single,
+        "single_layer": True,
         "pattern_params": dict(getattr(pspec, "pattern_params", {}) or {}),
     }
     return art
@@ -649,21 +652,36 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
 
 
 # Every prepared photograph, as a side ply. The box has two photo walls; the
-# plate carries all six candidates so the choice is made on glass, not on a
-# screen. (image, colour_mode, cell id) — the modes are the Side Photos
-# review's picks: the beach group colours its faces, the garden its dress and
-# leaves (zones), the rest stay plain gold.
-# (image, colour_mode, cell id, garland seed). Every ply grows its OWN garland:
-# beach and sunset carry the box's left/right seeds (104 / 105, so the die IS
-# that face), the rest continue the sequence.
+# plate carries every candidate so the choice is made on glass, not on a
+# screen. (image, colour_mode, cell id, garland seed): the colour mode is
+# "authored" for every picture — each carries its own colour plan
+# (``assets/photos/<image>.colour.json``, see photo.colour_plan). Every ply
+# grows its OWN garland: beach and sunset carry the box's left/right seeds
+# (104 / 105, so the die IS that face), the rest continue the sequence.
 SIDE_PHOTOS: tuple[tuple[str, str, str, int], ...] = (
-    ("beach", "faces", "DIE-LEFT", 104),
-    ("sunset", "plain", "DIE-RIGHT", 105),
-    ("garden", "zones", "DIE-GARDEN", 106),
-    ("paris", "plain", "DIE-PARIS", 107),
-    ("night-group", "plain", "DIE-NIGHT", 108),
-    ("porch-group", "plain", "DIE-PORCH", 109),
+    ("beach", "authored", "DIE-LEFT", 104),
+    ("sunset", "authored", "DIE-RIGHT", 105),
+    ("garden", "authored", "DIE-GARDEN", 106),
+    ("paris", "authored", "DIE-PARIS", 107),
+    ("night-group", "authored", "DIE-NIGHT", 108),
+    ("porch-group", "authored", "DIE-PORCH", 109),
 )
+
+# Duplicates that fill any side spot the dicing rows leave after SIDE_PHOTOS:
+# (image, cell id, garland seed). With the solid base plate in the 32 mm row
+# (2026-09-15) the front's spare moved down beside the sides, and the two
+# 30.5 mm rows hold exactly the six photographs — no spot is free. To carry a
+# spare photograph, drop a spare face (or a photograph) and list it here.
+SPARE_SIDES: tuple[tuple[str, str, int], ...] = ()
+
+# Spare copies of the lid and the front: a diced ply that chips is replaced
+# from the same plate. (face, cell id, rotated 90 deg on the plate)
+SPARE_FACES: tuple[tuple[str, str, bool], ...] = (
+    ("top", "DIE-TOP-S", False),
+)
+# (the front's spare, DIE-FRONT-S, gave its 32 x 30.5 slot to the BACK
+# photograph on 2026-09-15; the two 30.5 mm rows hold the front, the back and
+# six sides exactly)
 
 
 def side_photo_spec(image: str, colour_mode: str, seed: int | None = None) -> Any:
@@ -682,40 +700,82 @@ def side_photo_spec(image: str, colour_mode: str, seed: int | None = None) -> An
     return dataclasses.replace(base, pattern_params=params, frame=frame)
 
 
+def _face_cell(face: str, cid: str, title: str, *, rotated: bool = False,
+               pspec: Any | None = None, label: str, level: str, note: str) -> Cell:
+    d = die_dims(face)
+    w, h = (d["f_h"], d["f_w"]) if rotated else (d["f_w"], d["f_h"])
+    return Cell(
+        cid=cid, title=title, group="X", w_um=w, h_um=h,
+        build=(lambda face=face, pspec=pspec, rotated=rotated:
+               (lambda cx, cy, w, h, polarity=METAL:
+                build_face_die(face, cx, cy, w, h, polarity, pspec=pspec, rotated=rotated)))(),
+        label=label, block="production", two_layer=False, takes_polarity=True,
+        axis="production die", level=level, note=note)
+
+
 def production_cells() -> list[Cell]:
-    """The written faces of the production box as plate cells, in layout order,
-    each built from the SAME PlateSpec the box compositor and the GDS bake use
-    (``blank_plan().faces``), so a die here is that face: the lid and front as
-    bonded F + B pairs, then every candidate photograph (``SIDE_PHOTOS``) as a
-    single-ply side die whose inner ply is bare glass and takes no plate area."""
+    """The written faces of the production box as plate cells, in LAYOUT
+    order, each built from the SAME PlateSpec the box compositor and the GDS
+    bake use (``blank_plan().faces``), so a die here is that face — every one
+    a single ply whose inner ply is bare glass and takes no plate area.
+
+    The order is the dicing plan (``export_witness.layout`` keeps a height
+    class in the order given): the 32 mm class — lid, base plate, lid spare —
+    then the 30.5 mm class with a FRONT (the die, then its spare) leading each
+    row of three photographs, so two 32 mm fronts and six 27.5 mm sides fill
+    two 117.5 mm rows exactly. ``SPARE_SIDES`` duplicates trail the list.
+    """
     MM = 1000.0
     _, spec = blank_plan()
-    cells: list[Cell] = []
-    for face, title in (("top", "lid"), ("front", "front")):
+
+    def _face(face: str, cid: str, title: str, label: str, level: str, note: str) -> Cell:
+        return _face_cell(face, cid, title, label=label, level=level, note=note)
+
+    tall: list[Cell] = []          # the 32 mm class
+    fronts: list[Cell] = []        # the 30.5 mm class, 32 mm wide
+    sides: list[Cell] = []         # the 30.5 mm class, 27.5 mm wide
+    for face, title in (("top", "lid"), ("front", "front"), ("back", "back")):
         ps = spec.faces[face]
         d = die_dims(face)
-        cells.append(Cell(
-            cid=f"DIE-{face.upper()}", title=f"{title}: {ps.pattern_slug} + garland", group="X",
-            w_um=d["f_w"], h_um=d["f_h"], back_w_um=d["b_w"], back_h_um=d["b_h"],
-            build=(lambda face=face: (lambda cx, cy, w, h, polarity=METAL:
-                   build_face_die(face, cx, cy, w, h, polarity)))(),
-            label=f"{face.upper()} F {ps.pattern_slug}", block="production",
-            two_layer=True, takes_polarity=True,
-            axis="production die", level=f"{face} F+B",
-            note=(f"bonded pair, {d['f_w']/MM:.1f} mm outer / {d['b_w']/MM:.1f} mm inner ply; "
-                  "mirrored for the chrome-down stack; 80/88 um verniers in the fold band")))
-    d = die_dims("left")
+        what = (f"{ps.pattern_slug} {ps.pattern_params.get('image', '')} + garland"
+                if ps.pattern_slug == "photo-halftone" else f"{ps.pattern_slug} + garland")
+        c = _face(face, f"DIE-{face.upper()}", f"{title}: {what}",
+                  f"{face.upper()} {ps.pattern_params.get('image', ps.pattern_slug)}", f"{face}",
+                  f"one ply, {d['f_w']/MM:.1f} x {d['f_h']/MM:.1f} mm; "
+                  + ("line screen with authored colour zones" if ps.pattern_slug == "photo-halftone"
+                     else "single-layer diffraction mapping (colour by region)")
+                  + "; mirrored for the chrome-down stack")
+        (tall if face == "top" else fronts).append(c)
+    # The solid gold base plate: a die with no openings, so it costs the mask
+    # nothing but its ticks — and the box a gold floor under the ring.
+    psb = spec.faces["bottom"]
+    d = die_dims("bottom")
+    tall.append(_face("bottom", "DIE-BOTTOM", f"base: {psb.pattern_slug}",
+                      f"BOTTOM {psb.pattern_slug}", "bottom",
+                      f"one ply, {d['f_w']/MM:.1f} x {d['f_h']/MM:.1f} mm; solid gold, no openings"))
+    for face, cid, rot in SPARE_FACES:
+        ps = spec.faces[face]
+        c = _face_cell(face, cid, f"spare {face}: {ps.pattern_slug} + garland", rotated=rot,
+                       label=f"{face.upper()} SPARE{' ROT' if rot else ''}", level=f"{face} spare",
+                       note=(f"spare copy of DIE-{face.upper()}" + (", rotated +90 deg on the plate" if rot else "")))
+        (tall if face == "top" else fronts).append(c)
     for image, mode, cid, seed in SIDE_PHOTOS:
         ps = side_photo_spec(image, mode, seed)
-        what = f"{ps.pattern_slug} {image}"
-        cells.append(Cell(
-            cid=cid, title=f"side: {what} ({mode}) + garland", group="X",
-            w_um=d["f_w"], h_um=d["f_h"], back_w_um=None, back_h_um=None,
-            build=(lambda ps=ps: (lambda cx, cy, w, h, polarity=METAL:
-                   build_face_die("left", cx, cy, w, h, polarity, pspec=ps)))(),
-            label=f"SIDE F photo {image}", block="production",
-            two_layer=False, takes_polarity=True,
-            axis="production die", level=f"side F, {mode}",
-            note=("single ply: leaf gratings + carrier on the one ply, inner ply is bare glass; "
-                  "mirrored for the chrome-down stack; 80/88 um verniers in the fold band")))
+        sides.append(_face_cell(
+            "left", cid, f"side: {ps.pattern_slug} {image} ({mode}) + garland", pspec=ps,
+            label=f"SIDE photo {image}", level=f"side {image}",
+            note="one ply: line screen with authored colour zones, leaf gratings on bare glass; "
+                 "mirrored for the chrome-down stack"))
+    for image, cid, seed in SPARE_SIDES:
+        ps = side_photo_spec(image, "authored", seed)
+        sides.append(_face_cell(
+            "left", cid, f"spare side: {ps.pattern_slug} {image} + garland", pspec=ps,
+            label=f"SIDE photo {image} SPARE", level=f"side spare {image}",
+            note="duplicate side ply (own garland seed)"))
+    cells: list[Cell] = list(tall)
+    per_row = 3                     # 32 + 3 x 27.5 + 3 streets = 117.5 mm
+    for i, fr in enumerate(fronts):
+        cells.append(fr)
+        cells.extend(sides[i * per_row:(i + 1) * per_row])
+    cells.extend(sides[len(fronts) * per_row:])
     return cells

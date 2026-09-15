@@ -1,0 +1,93 @@
+{
+  "base_period_um": 5.0,
+  "coarsen_px": 7,
+  "duty": 0.5,
+  "hue_equalize": false,
+  "hue_min_sat": 0.1,
+  "hue_min_value": 0.14,
+  "ladder_steps": 12,
+  "mode": "zones",
+  "name": "beach",
+  "rules": [
+    {
+      "bbox": [
+        0.14,
+        0.31,
+        0.42,
+        0.45
+      ],
+      "close_px": 3,
+      "dilate_px": 5,
+      "hue_deg": [
+        125.0,
+        190.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 12,
+      "mode": "fixed",
+      "name": "glasses",
+      "period_scale": 0.9506,
+      "sat": [
+        0.13,
+        1.0
+      ],
+      "val": [
+        0.35,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.14,
+        0.13,
+        0.72,
+        0.56
+      ],
+      "close_px": 5,
+      "dilate_px": 0,
+      "hue_deg": [
+        350.0,
+        30.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 400,
+      "mode": "fixed",
+      "name": "faces",
+      "period_scale": 1.1642,
+      "sat": [
+        0.17,
+        0.55
+      ],
+      "val": [
+        0.33,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.0,
+        0.498,
+        0.48,
+        1.0
+      ],
+      "close_px": 9,
+      "dilate_px": 0,
+      "hue_deg": null,
+      "mask_png": "",
+      "min_blob_px": 1500,
+      "mode": "fixed",
+      "name": "jacket",
+      "period_scale": 0.8305,
+      "sat": [
+        0.0,
+        0.15
+      ],
+      "val": [
+        0.55,
+        1.0
+      ]
+    }
+  ],
+  "spread": 1.45,
+  "sub_angle_deg": 90.0
+}

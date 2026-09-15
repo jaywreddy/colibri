@@ -1,0 +1,171 @@
+{
+  "base_period_um": 5.0,
+  "coarsen_px": 7,
+  "duty": 0.5,
+  "hue_equalize": false,
+  "hue_min_sat": 0.1,
+  "hue_min_value": 0.14,
+  "ladder_steps": 12,
+  "mode": "zones",
+  "name": "porch-group",
+  "rules": [
+    {
+      "bbox": [
+        0.0,
+        0.0,
+        0.56,
+        0.19
+      ],
+      "close_px": 0,
+      "dilate_px": 0,
+      "hue_deg": null,
+      "mask_png": "",
+      "min_blob_px": 0,
+      "mode": "plain",
+      "name": "pergola",
+      "period_scale": 1.0,
+      "sat": [
+        0.0,
+        1.0
+      ],
+      "val": [
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.56,
+        0.0,
+        1.0,
+        0.135
+      ],
+      "close_px": 0,
+      "dilate_px": 0,
+      "hue_deg": null,
+      "mask_png": "",
+      "min_blob_px": 0,
+      "mode": "plain",
+      "name": "pergola-right",
+      "period_scale": 1.0,
+      "sat": [
+        0.0,
+        1.0
+      ],
+      "val": [
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.2,
+        0.33,
+        0.4,
+        0.63
+      ],
+      "close_px": 7,
+      "dilate_px": 0,
+      "hue_deg": [
+        36.0,
+        50.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 900,
+      "mode": "fixed",
+      "name": "sage-shirt",
+      "period_scale": 0.9506,
+      "sat": [
+        0.34,
+        0.62
+      ],
+      "val": [
+        0.35,
+        0.72
+      ]
+    },
+    {
+      "bbox": [
+        0.38,
+        0.38,
+        0.57,
+        0.78
+      ],
+      "close_px": 7,
+      "dilate_px": 0,
+      "hue_deg": [
+        10.0,
+        35.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 700,
+      "mode": "fixed",
+      "name": "white-top",
+      "period_scale": 0.859,
+      "sat": [
+        0.15,
+        0.38
+      ],
+      "val": [
+        0.72,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.56,
+        0.25,
+        0.8,
+        0.62
+      ],
+      "close_px": 7,
+      "dilate_px": 0,
+      "hue_deg": [
+        10.0,
+        35.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 900,
+      "mode": "fixed",
+      "name": "guayabera",
+      "period_scale": 1.052,
+      "sat": [
+        0.12,
+        0.33
+      ],
+      "val": [
+        0.6,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.02,
+        0.135,
+        0.98,
+        0.4
+      ],
+      "close_px": 5,
+      "dilate_px": 0,
+      "hue_deg": [
+        8.0,
+        36.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 400,
+      "mode": "fixed",
+      "name": "faces",
+      "period_scale": 1.1642,
+      "sat": [
+        0.02,
+        0.62
+      ],
+      "val": [
+        0.4,
+        0.95
+      ]
+    }
+  ],
+  "spread": 1.45,
+  "sub_angle_deg": 90.0
+}

@@ -1,0 +1,120 @@
+{
+  "base_period_um": 5.0,
+  "coarsen_px": 7,
+  "duty": 0.5,
+  "hue_equalize": false,
+  "hue_min_sat": 0.1,
+  "hue_min_value": 0.14,
+  "ladder_steps": 12,
+  "mode": "zones",
+  "name": "night-group",
+  "rules": [
+    {
+      "bbox": [
+        0.01,
+        0.46,
+        0.27,
+        0.9
+      ],
+      "close_px": 7,
+      "dilate_px": 0,
+      "hue_deg": null,
+      "mask_png": "",
+      "min_blob_px": 600,
+      "mode": "fixed",
+      "name": "her-blouse",
+      "period_scale": 0.8305,
+      "sat": [
+        0.0,
+        1.0
+      ],
+      "val": [
+        0.55,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.46,
+        0.52,
+        0.74,
+        0.92
+      ],
+      "close_px": 7,
+      "dilate_px": 0,
+      "hue_deg": [
+        340.0,
+        45.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 500,
+      "mode": "fixed",
+      "name": "abuela-dress",
+      "period_scale": 1.2042,
+      "sat": [
+        0.25,
+        1.0
+      ],
+      "val": [
+        0.3,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.72,
+        0.42,
+        1.0,
+        0.92
+      ],
+      "close_px": 7,
+      "dilate_px": 0,
+      "hue_deg": [
+        10.0,
+        50.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 700,
+      "mode": "fixed",
+      "name": "his-shirt",
+      "period_scale": 0.9833,
+      "sat": [
+        0.08,
+        0.45
+      ],
+      "val": [
+        0.4,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.02,
+        0.25,
+        0.98,
+        0.52
+      ],
+      "close_px": 5,
+      "dilate_px": 0,
+      "hue_deg": [
+        350.0,
+        35.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 300,
+      "mode": "fixed",
+      "name": "faces",
+      "period_scale": 1.0881,
+      "sat": [
+        0.2,
+        0.7
+      ],
+      "val": [
+        0.4,
+        1.0
+      ]
+    }
+  ],
+  "spread": 1.45,
+  "sub_angle_deg": 90.0
+}

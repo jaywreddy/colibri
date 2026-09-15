@@ -39,6 +39,9 @@ def test_all_patterns_registered():
         "inscription-line",
         "jamon-tray",
         "monogram-jp",
+        # Single-layer box (2026-09-15): the Atlantic globe and the solid base plate
+        "globe-atlantic",
+        "solid-gold",
     }
     got = set(registry.keys())
     assert got == expected, f"registry mismatch: got {got}, expected {expected}"

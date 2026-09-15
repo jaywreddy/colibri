@@ -1,0 +1,69 @@
+{
+  "base_period_um": 5.0,
+  "coarsen_px": 7,
+  "duty": 0.5,
+  "hue_equalize": false,
+  "hue_min_sat": 0.1,
+  "hue_min_value": 0.14,
+  "ladder_steps": 12,
+  "mode": "zones",
+  "name": "sunset",
+  "rules": [
+    {
+      "bbox": [
+        0.48,
+        0.42,
+        1.0,
+        1.0
+      ],
+      "close_px": 7,
+      "dilate_px": 0,
+      "hue_deg": [
+        190.0,
+        230.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 900,
+      "mode": "fixed",
+      "name": "his-shirt",
+      "period_scale": 0.8885,
+      "sat": [
+        0.15,
+        1.0
+      ],
+      "val": [
+        0.55,
+        1.0
+      ]
+    },
+    {
+      "bbox": [
+        0.24,
+        0.14,
+        0.8,
+        0.6
+      ],
+      "close_px": 5,
+      "dilate_px": 0,
+      "hue_deg": [
+        350.0,
+        30.0
+      ],
+      "mask_png": "",
+      "min_blob_px": 400,
+      "mode": "fixed",
+      "name": "faces",
+      "period_scale": 1.2042,
+      "sat": [
+        0.22,
+        0.6
+      ],
+      "val": [
+        0.35,
+        1.0
+      ]
+    }
+  ],
+  "spread": 1.45,
+  "sub_angle_deg": 90.0
+}

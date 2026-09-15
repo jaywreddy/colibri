@@ -108,7 +108,14 @@ _DEFAULT_IMAGE = (
     else (_PHOTO_CHOICES[0] if _PHOTO_CHOICES else DEFAULT_PHOTO)
 )
 
-COLOUR_MODES = ["plain", "zones", "hue", "faces"]
+COLOUR_MODES = ["plain", "zones", "hue", "faces", "authored"]
+
+AUTHORED_SUFFIX = ".colour.json"
+"""``<image>.colour.json`` beside the photograph: an AUTHORED ``ColourPlan``
+(``colourplan.plan_to_json``) — the per-photo rule list that says which
+regions of THIS picture take which rung of the colour ladder. ``colour_mode
+"authored"`` reads it; a missing file is an error, not a silent fallback to
+plain gold."""
 
 
 def photo_path(image: str) -> Path:
@@ -223,15 +230,27 @@ def context_fade(
     return out.astype(np.float32), (1 - level).astype(np.float32)
 
 
-def colour_plan(mode: str) -> cp.ColourPlan:
+def authored_plan_path(image: str) -> Path:
+    return PHOTOS_DIR / f"{image}{AUTHORED_SUFFIX}"
+
+
+def colour_plan(mode: str, image: str | None = None) -> cp.ColourPlan:
     """The ``ColourPlan`` for a ``colour_mode`` choice.
 
-    ``zones`` is deliberately the same plan as ``faces`` for now: authored
-    per-photo rule lists (the sunset shirt, the garden dress — see
-    ``tools/dev/render_side_plate.py::RECIPES``) are a per-photo authoring job,
-    and shipping the mode with a hue fallback keeps the param honest until they
-    land rather than silently rendering plain gold.
+    ``authored`` loads the picture's own plan file (:func:`authored_plan_path`)
+    — the production mode: every photograph on the box carries a rule list
+    written for it. The generic modes stay for the Pattern Lab: ``zones`` is
+    the same plan as ``faces`` there (colour wherever the picture is
+    saturated), ``hue`` colours everything by hue, ``plain`` is gold.
     """
+    if mode == "authored":
+        if not image:
+            raise ValueError("colour_mode 'authored' needs the image name")
+        p = authored_plan_path(image)
+        if not p.is_file():
+            raise FileNotFoundError(
+                f"no authored colour plan for {image!r}: expected {p.name} beside the photograph")
+        return cp.plan_from_json(p.read_text(encoding="utf-8"))
     if mode == "plain":
         return cp.ColourPlan(name="photo-plain", mode="plain")
     if mode == "hue":
@@ -323,7 +342,7 @@ def photo_coverage(
         )
         cov, weight = context_fade(cov, subj, float(fade_start), float(fade_gate))
 
-    plan = colour_plan(str(colour_mode))
+    plan = colour_plan(str(colour_mode), str(image))
     ids, periods, _report = cp.build_period_field(rgb, plan)
     # Colour dies with the picture: past the halfway point of the dissolve the
     # bands are most of the way to the carrier field, and a sub-grating there
@@ -493,7 +512,7 @@ class PhotoHalftone(Pattern):
         cov, ids, _periods = photo_coverage(
             image, fade_start, fade_gate, steps, n_px, colour_mode=colour_mode
         )
-        plan = colour_plan(colour_mode)
+        plan = colour_plan(colour_mode, image)
         bands, _pid, report = sr.screen_bands(
             cov,
             extent_um=extent_um,

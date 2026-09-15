@@ -49,14 +49,20 @@ BOXES_ROOT = DATA_ROOT / "boxes"
 
 # --- the PRODUCTION box ------------------------------------------------------
 # Four written faces and two of bare glass. That is a decision, not an
-# omission: the lid's monogram and the front's globe switch are the two-ply
-# effects the bonded build exists for, the two sides are PHOTOGRAPHS on single
-# plies, and the back and bottom are left as quartz so the piece has somewhere
-# to be quiet. See patterns/blank.py.
-DEFAULT_FACE_PATTERN_SLUG = "globe-duo-phase"      # front: rotating CA↔Colombia globe
+# omission: the lid's monogram and the front's globe are SINGLE-LAYER
+# DIFFRACTION mappings (region_art: colour by region, one written ply), the
+# two sides are PHOTOGRAPHS on single plies, the bottom is a SOLID GOLD base
+# plate (patterns/solid.py) and the back is left as quartz so the piece has
+# somewhere to be quiet. See patterns/blank.py.
+#
+# 2026-09-15: every face is ONE written ply. The first plate's bonded moiré
+# pairs (monogram shading moiré, globe barrier switch) read badly on glass and
+# the pair could not be cleaved, so the two-ply effects are gone from the box;
+# the inner plies are bare quartz for wall thickness only.
+DEFAULT_FACE_PATTERN_SLUG = "globe-atlantic"       # front: the Atlantic globe, colour by region
 LID_PATTERN_SLUG = "monogram-jp"                   # top
-BOTTOM_PATTERN_SLUG = "blank"                      # bottom: bare glass
-BACK_PATTERN_SLUG = "blank"                        # back: bare glass
+BOTTOM_PATTERN_SLUG = "solid-gold"                 # bottom: a solid gold base plate (2026-09-15)
+BACK_PATTERN_SLUG = "photo-halftone"               # back: a third photograph (2026-09-15)
                                              # (capybara scanimation cut 2026-09: its 15 um
                                              # slots are far below the 1.5 mm near-field limit)
 LEFT_PATTERN_SLUG = "photo-halftone"          # left: the beach photograph, faces coloured
@@ -78,8 +84,9 @@ _FACE_PATTERN_SLUG: dict[str, str] = {
 # whole subject is one warm gradient and a hue ladder over it would read as
 # banding rather than as colour.
 _FACE_PATTERN_PARAMS: dict[str, dict[str, Any]] = {
-    "left": {"image": "beach", "colour_mode": "faces"},
-    "right": {"image": "sunset", "colour_mode": "plain"},
+    "left": {"image": "beach", "colour_mode": "authored"},
+    "right": {"image": "sunset", "colour_mode": "authored"},
+    "back": {"image": "paris", "colour_mode": "authored"},
 }
 
 # Faces built from ONE ply instead of a bonded pair. A photograph is a
@@ -88,7 +95,7 @@ _FACE_PATTERN_PARAMS: dict[str, dict[str, Any]] = {
 # every shadow. The garland on these faces therefore carries BOTH gratings on
 # the outer ply (leaves + carrier), and its shimmer is the in-plane beat rather
 # than a parallax one. See PlateSpec.single_ply.
-_SINGLE_PLY_FACES: frozenset[str] = frozenset({"left", "right"})
+_SINGLE_PLY_FACES: frozenset[str] = frozenset(FACE_IDS)
 
 # Motif size dial for every face's frame. 0.68 makes the foliage read finer and
 # lacier without narrowing the band — the leaves simply come more often — and
@@ -342,20 +349,23 @@ def default_box_spec() -> BoxSpec:
     its own seed + band-composition profile (so each side is a visibly distinct
     engraved border) at ``motif_scale`` 0.68 in a 2.4 mm band, around a centerpiece:
 
-      * TOP (lid) → the interlocked cursive J+P monogram (``monogram-jp``), a
-        shading moiré against the carrier — the engagement engraving.
-      * FRONT → the California↔Colombia duo-globe barrier switch
-        (``globe-duo-phase``, real Natural Earth geography): one globe that
-        appears to rotate between the couple's two homes as the box tilts.
-      * LEFT → the beach photograph as a gold line screen (``photo-halftone``),
-        SINGLE PLY, with the faces taking diffraction colour.
-      * RIGHT → the sunset photograph, same screen in plain gold, SINGLE PLY.
-      * BACK, BOTTOM → ``blank``: bare quartz, no gold on either ply.
+      * TOP (lid) → the interlocked cursive J+P monogram (``monogram-jp``) as a
+        single-layer diffraction mapping: each letter its own grating period,
+        so the two flash different colours — the engagement engraving.
+      * FRONT → the Atlantic globe (``globe-atlantic``, real Natural Earth
+        geography): one orthographic view holding the US with California,
+        Colombia and Europe, land/countries coloured by region.
+      * LEFT → the beach photograph as a gold line screen (``photo-halftone``)
+        with its authored colour plan.
+      * RIGHT → the sunset photograph, same screen, its own colour plan.
+      * BACK → the Paris photograph, same screen, its own colour plan.
+      * BOTTOM → ``solid-gold``: an unbroken gold base plate under the ring.
 
-    The two photographs are single-ply because a halftone is a single-layer
-    effect (its tone is the height of its bands); their garlands therefore
-    carry both gratings — leaves AND carrier — on the one outer ply, which is
-    what the picture's edge fade dissolves into.
+    EVERY face is single-ply (``_SINGLE_PLY_FACES``): the box is still built
+    from bonded 2.25 mm pairs for its wall thickness, but only the OUTER ply of
+    each pair is written; the inner one is bare quartz. A single ply carries
+    no carrier and no moiré — its effects are the photograph's tone and the
+    spectral colour of fine gratings (``region_art``, ``leaf_fills``).
     """
     spec = BoxSpec(
         width_um=PRODUCTION_WIDTH_UM,

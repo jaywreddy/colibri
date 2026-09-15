@@ -194,7 +194,7 @@ export type FaceId = 'front' | 'back' | 'top' | 'bottom' | 'left' | 'right';
 export const FACE_IDS: FaceId[] = ['front', 'back', 'top', 'bottom', 'left', 'right'];
 
 /** Default pattern slug stamped onto all six faces of a fresh box. */
-export const DEFAULT_PATTERN_SLUG = 'globe-duo-phase';
+export const DEFAULT_PATTERN_SLUG = 'globe-atlantic';
 
 export type FrameSpec = {
   algorithm: 'wreath' | 'colonize';
@@ -461,8 +461,9 @@ export const LID_PATTERN_SLUG = 'monogram-jp';
 export const BLANK_PATTERN_SLUG = 'blank';
 /** Continuous-tone photo, rasterised as halftone bands in the front layer. */
 export const PHOTO_PATTERN_SLUG = 'photo-halftone';
-export const BOTTOM_PATTERN_SLUG = BLANK_PATTERN_SLUG;
-export const BACK_PATTERN_SLUG = BLANK_PATTERN_SLUG; // capybara cut 2026-09 (near-field)
+export const SOLID_PATTERN_SLUG = 'solid-gold';
+export const BOTTOM_PATTERN_SLUG = SOLID_PATTERN_SLUG; // a solid gold base plate (2026-09-15)
+export const BACK_PATTERN_SLUG = 'photo-halftone'; // a third photograph (2026-09-15)
 export const LEFT_PATTERN_SLUG = PHOTO_PATTERN_SLUG;
 export const RIGHT_PATTERN_SLUG = PHOTO_PATTERN_SLUG;
 /**
@@ -470,16 +471,18 @@ export const RIGHT_PATTERN_SLUG = PHOTO_PATTERN_SLUG;
  * _FACE_PATTERN_PARAMS / _FACE_SINGLE_PLY, so the live-preview POST is the
  * same box the fab bake ships.
  *
- *   TOP    — the interlocked cursive J+P monogram (the engagement engraving).
- *   FRONT  — the California↔Colombia duo-globe barrier switch (or a
- *            caller-supplied override, for themed boxes).
- *   LEFT   — the beach photo, halftoned, colour-separated by FACES.
- *   RIGHT  — the sunset photo, halftoned, PLAIN (single-tone) separation.
- *   BACK   — bare glass.
- *   BOTTOM — bare glass.
+ *   TOP    — the interlocked cursive J+P monogram, a single-layer diffraction
+ *            mapping (colour by region).
+ *   FRONT  — the Atlantic globe (US with California, Colombia, Europe in one
+ *            view), colour by region (or a caller-supplied override).
+ *   LEFT   — the beach photo, halftoned, its AUTHORED colour plan.
+ *   RIGHT  — the sunset photo, halftoned, its AUTHORED colour plan.
+ *   BACK   — the Paris photo, halftoned, its AUTHORED colour plan.
+ *   BOTTOM — solid gold: the base plate.
  *
- * Both photo walls are SINGLE-PLY: a back carrier under a continuous-tone
- * picture buys nothing but an unwanted moiré, so the inner ply stays clean.
+ * EVERY face is SINGLE-PLY (2026-09-15): the bonded moiré effects of the first
+ * plate read badly on glass, so each face is one written ply over a bare
+ * inner ply. Mirrors backend boxes._SINGLE_PLY_FACES = all six.
  */
 type FacePlan = {
   slug: string;
@@ -487,20 +490,20 @@ type FacePlan = {
   singlePly: boolean;
 };
 const FACE_PLAN: Record<FaceId, FacePlan> = {
-  front: { slug: DEFAULT_PATTERN_SLUG, params: {}, singlePly: false },
-  back: { slug: BACK_PATTERN_SLUG, params: {}, singlePly: false },
+  front: { slug: DEFAULT_PATTERN_SLUG, params: {}, singlePly: true },
+  back: { slug: BACK_PATTERN_SLUG, params: { image: 'paris', colour_mode: 'authored' }, singlePly: true },
   left: {
     slug: LEFT_PATTERN_SLUG,
-    params: { image: 'beach', colour_mode: 'faces' },
+    params: { image: 'beach', colour_mode: 'authored' },
     singlePly: true,
   },
   right: {
     slug: RIGHT_PATTERN_SLUG,
-    params: { image: 'sunset', colour_mode: 'plain' },
+    params: { image: 'sunset', colour_mode: 'authored' },
     singlePly: true,
   },
-  top: { slug: LID_PATTERN_SLUG, params: {}, singlePly: false },
-  bottom: { slug: BOTTOM_PATTERN_SLUG, params: {}, singlePly: false },
+  top: { slug: LID_PATTERN_SLUG, params: {}, singlePly: true },
+  bottom: { slug: BOTTOM_PATTERN_SLUG, params: {}, singlePly: true },
 };
 const FACE_FRAME_PROFILE: Record<FaceId, Partial<FrameSpec> & { seed: number }> = {
   front: { seed: 100, edge_gradient: 0.75, understory: 0.9, border_vine: 1.2, corner_fans: 1.1 },
@@ -580,10 +583,10 @@ export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxS
   FACE_IDS.forEach((fid) => {
     const { seed, ...frameOverrides } = FACE_FRAME_PROFILE[fid];
     const plan = FACE_PLAN[fid];
-    // The production plan (see FACE_PLAN): top = J+P monogram, front =
-    // colibrí↔globe duo switch, left/right = the two halftone photos on
-    // single-ply walls, back + bottom = bare glass. A caller-supplied
-    // `patternSlug` overrides only the FRONT face (themed override boxes).
+    // The production plan (see FACE_PLAN): top = J+P monogram, front = the
+    // Atlantic globe, left/right = the two halftone photos, back + bottom =
+    // bare glass — every face one ply. A caller-supplied `patternSlug`
+    // overrides only the FRONT face (themed override boxes).
     const slug = fid === 'front' ? patternSlug : plan.slug;
     // motif_scale / band_um mirror backend boxes.PRODUCTION_MOTIF_SCALE /
     // PRODUCTION_BAND_UM: one 2.4 mm band on every face, foliage at 0.68.

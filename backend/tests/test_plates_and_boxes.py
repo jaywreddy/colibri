@@ -306,10 +306,10 @@ def test_default_box_spec_matches_contract():
     assert set(spec.faces) == set(FACE_IDS)
     # Four written faces and two of bare glass — see boxes.default_box_spec.
     expected_slug = {
-        "front": "globe-duo-phase",
-        "back": "blank",
+        "front": "globe-atlantic",
+        "back": "photo-halftone",
         "top": "monogram-jp",
-        "bottom": "blank",
+        "bottom": "solid-gold",
         "left": "photo-halftone",
         "right": "photo-halftone",
     }
@@ -320,11 +320,11 @@ def test_default_box_spec_matches_contract():
         # Finer, lacier foliage at the same band width, on every face.
         assert spec.faces[fid].frame.motif_scale == 0.68
         assert spec.faces[fid].frame.band_um == 2400.0
-    # The two photographs, and the only two single-ply faces: a halftone's tone
-    # IS its band height, so a second ply under it would show through the gaps.
-    assert spec.faces["left"].pattern_params == {"image": "beach", "colour_mode": "faces"}
-    assert spec.faces["right"].pattern_params == {"image": "sunset", "colour_mode": "plain"}
-    assert [fid for fid in FACE_IDS if spec.faces[fid].single_ply] == ["left", "right"]
+    # The two photographs carry their own AUTHORED colour plans, and every face
+    # is a single written ply (2026-09-15: the two-ply moire effects are gone).
+    assert spec.faces["left"].pattern_params == {"image": "beach", "colour_mode": "authored"}
+    assert spec.faces["right"].pattern_params == {"image": "sunset", "colour_mode": "authored"}
+    assert [fid for fid in FACE_IDS if spec.faces[fid].single_ply] == list(FACE_IDS)
 
 
 # ----- production face types --------------------------------------------------

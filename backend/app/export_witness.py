@@ -1,48 +1,42 @@
-"""Lay out and write the 5-inch witness plate: the DoE, the map, and the GDS.
+"""Lay out and write the 5-inch production plate: the dies, the dicing grid, the GDS.
 
-A 127 mm square is about 24x the area the witness cells were first laid out on
-(a 25.7 mm spare die off the box blank). That is not simply more room for the
-same sixteen cells; it changes what the plate can ANSWER. On the small die every
-cell was a single POINT — one screen pitch, one colour period, one image scale —
-and a point tells you whether a mechanism works, never where its optimum is.
-With this much glass each knob gets a LADDER, and the plate stops being a
-sampler and becomes an experiment.
+The plate is the box. Its first claim is the production plies
+(``witness_dies.production_cells``: the lid and the front as single-layer
+diffraction mappings, every candidate photograph as a side, and spares), and
+what is left of the field carries the bench cells that read THIS process:
+polarity, CD, duty, the diffraction period ladder, the halftone wedge and the
+acuity ladder. Every cell is one gold layer on one ply — the two-layer
+experiments went with the bonded design (2026-09-15).
 
-What the area buys, in order of value
--------------------------------------
-1. PRODUCTION PLIES. Since 2026-09-10 the plate's first and largest claim is the
-   box itself: the lid and front as bonded F+B pairs and all six candidate
-   photographs as single-ply sides, written from the box's own PlateSpecs
-   (``witness_dies.production_cells``). A die is a face, not a model of one, so
-   the subjective questions — is the picture good, does the garland read — are
-   answered on the part that ships.
-2. Each remaining knob still gets a LADDER around the reference point rather
-   than a single point, so one plate says which way it wants to move.
-3. Room for the two-layer cells to sit beside their single-layer twins, which is
-   what makes the gap's contribution measurable rather than assumed.
+The layout is a DICING GRID, not a packer
+-----------------------------------------
+The first plate was cleaved by hand and broke; this one is cut on a saw, and a
+saw cuts straight lines across whatever is in front of it. So the plate is laid
+out in ROWS of one height with full-width horizontal streets between them,
+and inside a row the dies sit side by side with full-height vertical streets:
 
-One plate, so Group A needs a bond
-----------------------------------
-Everything in Groups B, C and D is single-layer and needs no registration,
-which is why all the sweeps live there. The two-layer cells (A1, A2, A4, A6 and
-the C6 beat ladder) have nothing to register against on a single plate, so they
-are emitted as a FRONT die and a BACK die side by side inside a dicing frame:
-cut the pair, stack them chrome-up, bond. Neither die is mirrored — the back
-die is a translation of its design position — so a die must NOT be flipped. That is the only part of this plate that costs a
-process step the rest does not.
+    1. cut every horizontal street across the whole plate  -> strips
+    2. cut every vertical street of a strip across the strip -> dies
+    3. a strip's leftover may carry a COLUMN of short cells; those pieces get
+       their own horizontal cuts once the column piece is free
 
-There is also only one gold layer. Both members of a pair are the same physical
-write, so the writer puts every cell on ``LAYER_FRONT``; ``LAYER_PAIR`` carries
-outlines only, marking which die is the back ply of which pair. Treating the
-"back" cells as a second mask layer would double-expose the plate.
+``layout`` places the cells that way and returns the cut list (``dicing``) in
+millimetres from the plate centre; ``write_dicing_md`` writes it out for the
+saw operator and ``write_map_svg`` draws it. Streets are ``GUTTER_UM`` wide
+(1 mm: a 0.3 mm blade with room for its wander); the corner L-ticks every die
+carries reach into them so the operator sees where the lines run.
+
+One gold layer
+--------------
+Every cell is on ``LAYER_FRONT``. The plate is a darkfield write with positive
+resist and the file holds the openings (``polarity=CLEAR``, see witness_dies).
 
 Rectangle economy
 -----------------
 Geometry is rect-space throughout and periodic sub-gratings are deferred as
-ARRAY REFERENCES rather than polygons — see :func:`write_gds`. Flattened, the
-colour cells alone would be several million rectangles; as arrays they are a
-few hundred unit cells and one instance per band. ``--flat`` expands everything
-for a shop that will not take arrays, and prints what that costs.
+ARRAY REFERENCES rather than polygons — see :func:`write_gds`. ``--flat``
+expands everything for a shop that will not take arrays, and prints what that
+costs.
 """
 from __future__ import annotations
 
@@ -80,7 +74,8 @@ from .witness_geom import (
     _text_rects,
 )
 
-LAYER_PAIR = (21, 0)     # outline-only: marks the back ply of a bonded pair
+LAYER_PAIR = (21, 0)     # outline-only: marks the back die of a two-layer experiment cell
+LAYER_DICE = (2, 0)      # annotation: the saw's street centrelines (never chrome)
 
 TICK_REACH_UM = 550.0
 """How far a die's corner dicing tick reaches into the street beyond the die
@@ -89,9 +84,14 @@ every cell this much inside the geometric usable square, so no written shape —
 tick included — lands in the blank's 4 mm edge margin."""
 USABLE_UM = _GEOM_USABLE_UM - 2.0 * TICK_REACH_UM
 MM = 1000.0
-ROW_GUTTER_UM = 500.0
-"""Between rows. Most of this plate is never diced, so it does not need a saw
-street; the bonded pairs carry their own frame."""
+ROW_GUTTER_UM = GUTTER_UM
+"""Between rows: a real saw street, the same width as the one between dies.
+Every row boundary IS a cut on this plate."""
+ROW_SLACK_UM = 1500.0
+"""A cell may ride a row up to this much taller than itself (top-aligned; the
+strip is cut at the row's height and the piece trimmed, or, for a bench cell,
+simply left a little tall). Production dies never use it — they define their
+rows — so their cut dimensions stay exact."""
 
 
 def _label_h(cell_h_um: float) -> float:
@@ -130,10 +130,9 @@ def _label_h(cell_h_um: float) -> float:
 RESOLUTION_LADDER_UM = (0.8, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.5, 8.0)
 C3_DUTY_LADDER = (0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70)
 PERIOD_LADDER_UM = (2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0, 14.0, 20.0)
-NEAR_FIELD_LADDER_UM = (20.0, 64.0)   # brackets p_min 41 um: 20 washed out, 64 (the box carrier) intact
-SWITCH_COMB_LADDER_UM = (173.0, BOX_COMB_UM)
-"""100 and 173 were the 500 um and 1.5 mm designs' combs; BOX_COMB_UM is this
-glass's; 350 is a visible barrier by construction."""
+NEAR_FIELD_LADDER_UM = (20.0, 64.0)
+"""Kept for the physics tests (``wm.build_near_field`` and the Fresnel
+boundary): no near-field cell rides the plate since the two-layer design went."""
 SCREEN_LADDER_UM = (20.0, 30.0, 44.0, 60.0)
 WEDGE_SCREENS_UM = (44.0,)          # the photo screen; 20 and 60 were cut
 
@@ -271,51 +270,10 @@ def doe_cells() -> list[list[Cell]]:
     # is the H-WEDGE.
     B.append(hf)
 
-    # === TWO-LAYER -- everything the bond is actually for ===================
-    two: list[Cell] = [
-        _cell("M-VERN", "registration vernier", "metrology", 6.0, 6.0,
-              lambda cx, cy, w, h, polarity=METAL: wc.build_vernier(
-                  cx, cy, w, h, polarity=polarity),
-              label="M-VERN", two_layer=True, takes_polarity=True,
-              note="80/88 um, beat 880 um, gain p/delta = 10x. Read before anything else"),
-        _cell("P-RULE", "parallax ruler", "parallax", SWEEP_MM, 6.0,
-              lambda cx, cy, w, h, polarity=METAL: wm.build_parallax_ruler(
-                  cx, cy, w, h, polarity=polarity),
-              label="P-RULE", two_layer=True, takes_polarity=True,
-              note=f"reads t/n directly: {60.0/PARALLAX_UM_PER_DEG:.2f} deg per tooth on the {PLY_UM/1000:g} mm {GLASS_MATERIAL} pair"),
-        _cell("B-MOVE", "beat, across the gap", "moire", _beat_w_mm(1635.0),
-              BEAT_H_MM,
-              lambda cx, cy, w, h, polarity=METAL: wc.build_shading_moire(
-                  cx, cy, w, h, polarity=polarity),
-              label="B-MOVE", two_layer=True, takes_polarity=True,
-              note="same geometry as BEAT1635 -- the ONLY difference is motion"),
-    ]
-    for p_um in NEAR_FIELD_LADDER_UM:
-        two.append(_cell(
-            f"NF{p_um:g}", f"near field {p_um:g} um", "moire", PAIR_MM, PAIR_MM,
-            (lambda p_um=p_um: (lambda cx, cy, w, h, polarity=METAL:
-                wm.build_near_field(cx, cy, w, h, period_um=p_um,
-                                    polarity=polarity)))(),
-            label=f"NF {p_um:g}um", axis="E-NF pitch", level=f"{p_um:g} um",
-            two_layer=True, takes_polarity=True,
-            note=f"Fresnel N = 1/2 null at {P_MIN_UM:.0f} um; N(44) = {fresnel_number(44.0):.2f}, N(64) = {fresnel_number(64.0):.2f}"))
-    for comb in SWITCH_COMB_LADDER_UM:
-        two.append(_cell(
-            f"SWAP{comb:g}", f"switch, comb {comb:g} um", "parallax",
-            PAIR_MM, PAIR_MM,
-            (lambda comb=comb: (lambda cx, cy, w, h, polarity=METAL:
-                wc.build_barrier_switch(cx, cy, w, h, comb_um=comb,
-                                        polarity=polarity)))(),
-            label=f"SWAP {comb:g}um", axis="P-SWAP comb", level=f"{comb:g} um",
-            two_layer=True, takes_polarity=True,
-            note="straddle-registered: 50/50 blend head-on, clean A/B at +-p/4. Witness angles"))
-    # P-SCAN (the N-phase kinegram ladder) left with the capybara: no face of
-    # the box is a scanimation any more, and its 15 um slots were two orders of
-    # magnitude under the 1.5 mm near-field limit anyway. The B-MAG magnifier
-    # pair went with it — nothing on the box samples one lattice with another.
-    # Both builders stay in witness_cells' EXPERIMENTS section for a future
-    # thin-stock plate.
-    B.append(two)
+    # === TWO-LAYER ==========================================================
+    # Gone with the bonded design (2026-09-15). M-VERN, P-RULE, B-MOVE, the NF
+    # and SWAP ladders measured a gap the box no longer has; their builders
+    # stay in witness_cells / witness_moire (the physics tests still pin them).
     return B
 
 
@@ -394,141 +352,261 @@ def _cell_h(c: Cell) -> float:
 
 
 @dataclass
-class _Pocket:
-    """Unused width at the end of a tall row, packed as its own small shelf.
-
-    A 28 mm production die beside 8 mm experiment cells would otherwise waste
-    the rest of its row: a shelf packer pays the tallest cell's height for the
-    whole width. Every row's leftover becomes a pocket and later, shorter cells
-    stack into it two or three deep before a new full-width row is opened."""
+class _Column:
+    """A stack of short cells in a row's leftover width. The column is one
+    piece after the strip's vertical cuts; its own horizontal cuts free the
+    cells (step 3 of the dicing protocol)."""
     x0: float
-    x1: float
+    w: float
     y_top: float
     y_bot: float
-    x: float = 0.0
     y: float = 0.0
-    sub_h: float = 0.0
     cells: list = field(default_factory=list)
+    cuts: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.x = self.x0
         self.y = self.y_top
 
     def try_place(self, c: Cell) -> tuple[float, float] | None:
-        w, h = _span(c), _cell_h(c)
-        if w > self.x1 - self.x0:
+        if _span(c) > self.w + 1e-6:
             return None
-        if self.x > self.x0 and self.x + GUTTER_UM + w <= self.x1 and self.y - h >= self.y_bot:
-            x = self.x + GUTTER_UM
-        else:
-            # new sub-row
-            y_next = self.y if self.x == self.x0 else self.y - self.sub_h - ROW_GUTTER_UM
-            if y_next - h < self.y_bot:
-                return None
-            self.y, self.sub_h, x = y_next, 0.0, self.x0
-        self.x = x + w
-        self.sub_h = max(self.sub_h, h)
+        h = _cell_h(c)
+        y_top = self.y if not self.cells else self.y - ROW_GUTTER_UM
+        if y_top - h < self.y_bot - 1e-6:
+            return None
+        if self.cells:
+            self.cuts.append(self.y - ROW_GUTTER_UM / 2.0)
         self.cells.append(c.cid)
-        return x, self.y
+        self.y = y_top - h
+        return self.x0, y_top
+
+
+@dataclass
+class _Row:
+    """One dicing strip: cells of (about) one height side by side."""
+    h: float
+    y_top: float
+    x: float
+    cells: list = field(default_factory=list)
+    xs: list = field(default_factory=list)      # x0 of every die / column piece
+    x1s: list = field(default_factory=list)     # x1 of every die / column piece
+    columns: list = field(default_factory=list)
+
+    @property
+    def y_bot(self) -> float:
+        return self.y_top - self.h
 
 
 def layout(bands: Iterable[list[Cell]]) -> tuple[list[Placed], dict[str, Any]]:
-    """Shelf-pack the bands top-down, filling each row's leftover width with
-    later, shorter cells (pockets) before opening a new row.
+    """Place the cells as a DICING GRID and return the cut list.
 
-    Deliberately a packer rather than a hand-placed grid: cell sizes are still
-    being tuned, and a hand-placed map goes stale the moment one ladder gains a
-    rung. Within a band cells are sorted by descending height (a shelf packer
-    pays the tallest cell's height for every cell in the row) — the sort is
-    stable so a ladder still reads left to right. Bands pack continuously: a
-    band may wrap mid-ladder, which the map makes clear.
+    Rows are opened by the tallest cells first and each row holds cells of its
+    own height (a bench cell may be up to ``ROW_SLACK_UM`` shorter than its
+    row); a cell that finds no row of its height and no height budget for a
+    new one stacks into a COLUMN in the leftover width of an existing row.
+    Horizontal streets run the full plate width between rows; vertical streets
+    run the full strip height between dies (and column pieces); a column's own
+    cuts are listed with it. Within a height class the order of the bands is
+    kept, so a ladder still reads left to right.
 
-    Cells are placed with their TOP at the row's top and their label band below
-    them; a two-layer cell's back die sits one street to the right, centred on
-    the same y, at its own size (a box face's inner ply is smaller).
+    A two-layer experiment cell's back die sits one street to the right of its
+    front die at the same y (its own size); no production cell is two-layer.
     """
     x_lo = -USABLE_UM / 2.0
     x_hi = USABLE_UM / 2.0
+    y_hi = USABLE_UM / 2.0
+    y_lo = -USABLE_UM / 2.0
     placed: list[Placed] = []
-    rows: list[dict[str, Any]] = []
-    pockets: list[_Pocket] = []
+    rows: list[_Row] = []
+    overflow: list[str] = []
 
-    def put(c: Cell, x: float, y_top: float) -> None:
+    def put(c: Cell, x: float, y_top: float, row: _Row | None) -> None:
         pl = Placed(cell=c, cx=x + c.w_um / 2.0, cy=y_top - c.h_um / 2.0)
         if c.two_layer:
             pl.pair_cx = x + c.w_um + GUTTER_UM + c.back_dims[0] / 2.0
         placed.append(pl)
+        if row is not None:
+            row.cells.append(c.cid)
 
-    row: list[Cell] = []
-    row_x = x_lo          # next free x in the open row
-    y = USABLE_UM / 2.0   # top of the open row
-    col: dict[str, float] | None = None
-    """An open COLUMN inside the row: cells much shorter than the row stack
-    vertically at one x instead of each taking the row's full height. A 4 mm
-    wedge beside a 10 mm cell, or a 5 mm ladder beside a 28 mm die, costs its
-    own height this way and not the row's."""
+    def rows_h() -> float:
+        return sum(r.h for r in rows) + ROW_GUTTER_UM * max(0, len(rows) - 1)
 
-    def flush() -> None:
-        nonlocal row, row_x, y, col
-        if not row:
-            return
-        row_h = max(_cell_h(c) for c in row)
-        rows.append({"y_top_mm": round(y / MM, 2), "height_mm": round(row_h / MM, 2),
-                     "cells": [c.cid for c in row]})
-        if x_hi - row_x >= 4.0 * MM:
-            pockets.append(_Pocket(x0=row_x + GUTTER_UM, x1=x_hi, y_top=y, y_bot=y - row_h))
-        y -= row_h + ROW_GUTTER_UM
-        row, row_x, col = [], x_lo, None
-
-    for band in bands:
-        for c in sorted(band, key=lambda c: -_cell_h(c)):
-            w, h = _span(c), _cell_h(c)
-            # A pocket first: the cell is shorter than every row above it.
-            hit = None
-            for pk in pockets:
-                hit = pk.try_place(c)
+    cells = [c for band in bands for c in band]
+    # tallest first; stable, so a band's own order survives inside a class
+    order = sorted(range(len(cells)), key=lambda i: -_cell_h(cells[i]))
+    for i in order:
+        c = cells[i]
+        span, h = _span(c), _cell_h(c)
+        # 1. a row of this height (or a little taller, for a bench cell) with room
+        home = None
+        for r in rows:
+            slack = r.h - h
+            if 0 <= slack <= (ROW_SLACK_UM if c.block != "production" else 1e-6) \
+                    and r.x + (GUTTER_UM if r.cells else 0.0) + span <= x_hi + 1e-6:
+                home = r
+                break
+        if home is not None:
+            x = home.x + (GUTTER_UM if home.cells else 0.0)
+            put(c, x, home.y_top, home)
+            home.xs.append(x); home.x1s.append(x + span)
+            home.x = x + span
+            continue
+        # 2. a new row, if the height budget allows
+        if span <= x_hi - x_lo + 1e-6 and rows_h() + (ROW_GUTTER_UM if rows else 0.0) + h <= y_hi - y_lo + 1e-6:
+            y_top = y_hi - rows_h() - (ROW_GUTTER_UM if rows else 0.0)
+            r = _Row(h=h, y_top=y_top, x=x_lo)
+            rows.append(r)
+            put(c, x_lo, y_top, r)
+            r.xs.append(x_lo); r.x1s.append(x_lo + span)
+            r.x = x_lo + span
+            continue
+        # 3. a column in an existing row's leftover
+        done = False
+        for r in sorted(rows, key=lambda r: -r.h):
+            for col in r.columns:
+                hit = col.try_place(c)
                 if hit is not None:
+                    put(c, *hit, r)
+                    done = True
                     break
-            if hit is not None:
-                put(c, *hit)
-                continue
-            if row:
-                rh = max(_cell_h(r) for r in row)
-                if col is not None and w <= col["w"] and col["y"] - h >= y - rh:
-                    put(c, col["x0"], col["y"])
-                    col["y"] -= h + ROW_GUTTER_UM
-                    row.append(c)
-                    continue
-                col = None
-                if h < 0.5 * rh and row_x + GUTTER_UM + w <= x_hi:
-                    x = row_x + GUTTER_UM
-                    put(c, x, y)
-                    col = {"x0": x, "w": w, "y": y - h - ROW_GUTTER_UM}
-                    row.append(c)
-                    row_x = x + w
-                    continue
-            if row and row_x + GUTTER_UM + w > x_hi:
-                flush()
-            x = row_x if not row else row_x + GUTTER_UM
-            put(c, x, y)
-            row.append(c)
-            row_x = x + w
-    flush()
+            if done:
+                break
+            x0 = r.x + (GUTTER_UM if r.cells else 0.0)
+            if x0 + span <= x_hi + 1e-6 and h <= r.h + 1e-6:
+                col = _Column(x0=x0, w=span, y_top=r.y_top, y_bot=r.y_bot)
+                hit = col.try_place(c)
+                assert hit is not None
+                r.columns.append(col)
+                put(c, *hit, r)
+                r.xs.append(x0); r.x1s.append(x0 + span)
+                r.x = x0 + span
+                done = True
+                break
+        if not done:
+            overflow.append(c.cid)
 
-    used = USABLE_UM / 2.0 - (y + ROW_GUTTER_UM)
-    overflow = [p.cell.cid for p in placed
-                if p.cy - max(p.cell.h_um, p.cell.back_dims[1]) / 2.0
-                - _label_h(p.cell.h_um) < -USABLE_UM / 2.0 - 1e-6]
+    # --- the cut list: EDGE cuts -----------------------------------------------
+    # Every cut runs along a DIE EDGE with the blade wholly in the street, so
+    # the die comes out at its drawn size whatever the kerf. A 1 mm street
+    # between two dies therefore takes TWO cuts (one per edge, blade under
+    # 0.5 mm); a centred single cut would leave (street - kerf)/2 of extra
+    # glass on each die - 0.35 mm with a 0.3 mm blade, which the box's nesting
+    # cannot absorb. Rows: the die top and the die bottom of each strip (the
+    # label band below the dies is waste). Bench cells riding a taller row
+    # under ROW_SLACK_UM simply come out a little tall.
+    by_cid = {p.cell.cid: p for p in placed}
+    strips = []
+    y_cuts: list[float] = []
+    for k, r in enumerate(rows):
+        die_h = max(by_cid[c].cell.h_um for c in r.cells)
+        y_top_die = r.y_top
+        y_bot_die = r.y_top - die_h
+        y_cuts += [y_top_die, y_bot_die]
+        x_edges = sorted(set(r.xs) | set(r.x1s))
+        strips.append({
+            "row": k + 1,
+            "y_top_mm": round(r.y_top / MM, 3), "y_bot_mm": round(r.y_bot / MM, 3),
+            "height_mm": round(r.h / MM, 3),
+            "die_top_mm": round(y_top_die / MM, 3), "die_bot_mm": round(y_bot_die / MM, 3),
+            "die_height_mm": round(die_h / MM, 3),
+            "cells": list(r.cells),
+            # every die edge in the strip: cut here, blade OUTSIDE the die
+            "x_cuts_mm": [round(x / MM, 3) for x in x_edges],
+            "columns": [{"x0_mm": round(col.x0 / MM, 3), "x1_mm": round((col.x0 + col.w) / MM, 3),
+                         "cells": list(col.cells),
+                         "y_cuts_mm": sorted({round(v / MM, 3)
+                                              for c in col.cells
+                                              for v in (by_cid[c].cy + by_cid[c].cell.h_um / 2,
+                                                        by_cid[c].cy - by_cid[c].cell.h_um / 2)},
+                                             reverse=True)}
+                        for col in r.columns],
+        })
+    used = rows_h()
     return placed, {
-        "rows": rows,
-        "pockets": [{"x0_mm": round(pk.x0 / MM, 1), "x1_mm": round(pk.x1 / MM, 1),
-                     "y_top_mm": round(pk.y_top / MM, 1), "y_bot_mm": round(pk.y_bot / MM, 1),
-                     "cells": pk.cells} for pk in pockets if pk.cells],
+        "rows": [{"y_top_mm": s["y_top_mm"], "height_mm": s["height_mm"], "cells": s["cells"]}
+                 for s in strips],
+        "dicing": {
+            "street_um": GUTTER_UM,
+            "edge_cuts": True,
+            # full-width horizontal cuts: the top and bottom edge of every strip's dies
+            "y_cuts_mm": sorted({round(y / MM, 3) for y in y_cuts}, reverse=True),
+            "strips": strips,
+            "protocol": ["1. horizontal cuts along every die top/bottom edge, full plate width -> strips (label bands and streets fall away)",
+                         "2. per strip, vertical cuts along every die edge across the strip -> dies / column pieces",
+                         "3. per column piece, its own horizontal cuts along the cell edges -> cells",
+                         "blade wholly in the street, touching the edge line: two cuts per 1 mm street, blade under 0.5 mm"],
+        },
         "height_used_mm": round(used / MM, 2),
         "height_available_mm": round(USABLE_UM / MM, 2),
         "fits": not overflow,
         "overflow": overflow,
     }
+
+
+def write_dicing_md(plate: dict[str, Any], out_path: Path) -> Path:
+    """The saw operator's sheet: every cut in mm from the plate centre (x
+    right, y up, looking at the CHROME side), strip by strip."""
+    lg = plate["layout"]
+    dc = lg["dicing"]
+    by_cid = {m["cid"]: m for m in plate["manifest"]}
+    L: list[str] = []
+    L.append("# Dicing plan — 5\" production plate\n")
+    L.append(f"Coordinates in mm from the plate centre, x right, y up, chrome side up. "
+             f"Streets are {dc['street_um']/MM:.1f} mm wide. EVERY CUT IS AN EDGE CUT: the line given is a die "
+             f"edge and the blade sits wholly in the street touching that line, so the die comes out at its drawn "
+             f"size whatever the kerf; a street between two dies takes two cuts (blade under 0.5 mm). "
+             f"A die's corner L-ticks sit in the street {0.15:.2f} mm off its edge. Every cut line has SAW-LANE "
+             f"MARKS in the chrome: a horizontal cut is marked by a {DICE_MARK_LEN_UM/MM:.1f} mm clear bar at the "
+             f"left and right edge of the field; a strip's vertical cuts are marked by bars in the street just "
+             f"above its dies and in the label band just below them (the label bands and streets are waste).\n")
+    L.append("## Protocol\n")
+    for s in dc["protocol"]:
+        L.append(f"- {s}")
+    L.append("")
+    L.append("## Step 1 — horizontal edge cuts (full width)\n")
+    L.append("| cut | y (mm) | which edge |\n|---|---|---|")
+    edge_of: dict[float, list[str]] = {}
+    for st in dc["strips"]:
+        edge_of.setdefault(st["die_top_mm"], []).append(f"strip {st['row']} top")
+        edge_of.setdefault(st["die_bot_mm"], []).append(f"strip {st['row']} bottom")
+    for i, y in enumerate(dc["y_cuts_mm"], 1):
+        L.append(f"| H{i} | {y:+.3f} | {', '.join(edge_of.get(y, ['?']))} |")
+    L.append("")
+    L.append("## Step 2 — vertical streets, per strip\n")
+    for s in dc["strips"]:
+        L.append(f"### Strip {s['row']}: dies y {s['die_bot_mm']:+.3f} .. {s['die_top_mm']:+.3f} mm "
+                 f"(die height {s['die_height_mm']:.3f} mm; the label band below, down to {s['y_bot_mm']:+.3f}, is waste)\n")
+        L.append("| cell | x centre (mm) | die w x h (mm) | what |\n|---|---|---|---|")
+        for cid in s["cells"]:
+            m = by_cid.get(cid)
+            if m is None:
+                continue
+            L.append(f"| {cid} | {m['x_mm']:+.3f} | {m['w_mm']:.2f} x {m['h_mm']:.2f} | {m['title']} |")
+        L.append("")
+        if s["x_cuts_mm"]:
+            L.append("vertical edge cuts at x = " + ", ".join(f"{x:+.3f}" for x in s["x_cuts_mm"])
+                     + " mm (each is a die edge; blade on the street side of it)\n")
+        for col in s["columns"]:
+            L.append(f"- column piece x {col['x0_mm']:+.3f} .. {col['x1_mm']:+.3f} mm holds "
+                     f"{', '.join(col['cells'])}; step 3 cuts at y = "
+                     + (", ".join(f"{y:+.3f}" for y in col["y_cuts_mm"]) or "none") + " mm")
+        L.append("")
+    L.append("## Production dies\n")
+    L.append("| cell | face | cut size (mm) | rotated | notes |\n|---|---|---|---|---|")
+    for m in plate["manifest"]:
+        if m["block"] != "production":
+            continue
+        st = m.get("stats", {})
+        L.append(f"| {m['cid']} | {st.get('face','')} | {m['w_mm']:.2f} x {m['h_mm']:.2f} | "
+                 f"{'yes' if st.get('rotated') else 'no'} | {m['note']} |")
+    L.append("")
+    L.append("All production dies are written MIRRORED (x -> -x) for the chrome-down stack; a rotated die "
+             "was mirrored first, then turned +90 deg. Each carries a tick-code ID in the foil-fold band "
+             "(bars = face index + 1: front 1, back 2, left 3, right 4, top 5, bottom 6).")
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(L) + "\n", encoding="utf-8")
+    return out_path
 
 
 # --- build ------------------------------------------------------------------
@@ -649,13 +727,70 @@ def build_plate(
         "layout": lay,
         "polarity": polarity,
         "free_polys": free,
-        "front": _cat(*front),
+        # the saw-lane marks are DATA (clear in the chrome), so they ride ``front``
+        "front": _cat(*front, _dice_edge_marks(lay)),
         "outline": _cat(*outline),
         "labels": _cat(*labels),
         "pair_marks": _cat(*pair_marks),
+        "dice_lines": _dice_line_rects(lay),
         "arrays": arrays,
         "manifest": manifest,
     }
+
+
+DICE_MARK_LEN_UM = 500.0
+DICE_MARK_W_UM = 80.0
+"""Saw-lane marks WRITTEN IN THE CHROME (clear bars the operator sights the
+blade on): for every full-width horizontal cut a bar at the left and right
+edge of the field, and for every vertical cut of a strip a bar in the street
+just above and just below that strip (after the horizontal cuts these are the
+strip's own top and bottom edges). 0.5 mm long so a mark at the field's edge
+stays inside the blank's 4 mm handling margin, 80 µm wide like the corner
+L-ticks."""
+
+
+def _dice_edge_marks(lay: dict[str, Any]) -> np.ndarray:
+    """Clear saw-lane marks (chrome-layer DATA) at the ends of every cut."""
+    half = USABLE_UM / 2.0
+    edge0 = half + TICK_REACH_UM - DICE_MARK_LEN_UM   # 58.95 .. 59.45 mm: past the cells, inside the margin
+    edge1 = half + TICK_REACH_UM
+    w = DICE_MARK_W_UM / 2.0
+    out = []
+    dc = lay["dicing"]
+    for y in dc["y_cuts_mm"]:
+        yc = y * MM
+        out.append((-edge1, -edge0, yc - w, yc + w))
+        out.append((edge0, edge1, yc - w, yc + w))
+    for s in dc["strips"]:
+        yt = s["die_top_mm"] * MM             # the dies' top edge
+        yb = s["die_bot_mm"] * MM             # the dies' bottom edge (label band below it)
+        for x in s["x_cuts_mm"]:
+            xc = x * MM
+            # above the dies: the street above the strip (or the top margin)
+            y1 = min(yt + GUTTER_UM, edge1)
+            out.append((xc - w, xc + w, y1 - DICE_MARK_LEN_UM, y1))
+            # below the dies: the label band under them (waste once cut)
+            out.append((xc - w, xc + w, yb - DICE_MARK_LEN_UM, yb))
+    return np.asarray(out, dtype=np.float64) if out else np.empty((0, 4))
+
+
+def _dice_line_rects(lay: dict[str, Any], w_um: float = 20.0) -> np.ndarray:
+    """The saw's street centrelines as thin rects on the annotation layer:
+    horizontal cuts across the usable field, vertical cuts across their strip,
+    column cuts across their column piece."""
+    half = USABLE_UM / 2.0
+    out = []
+    dc = lay["dicing"]
+    for y in dc["y_cuts_mm"]:
+        out.append((-half, half, y * MM - w_um / 2, y * MM + w_um / 2))
+    for s in dc["strips"]:
+        yt, yb = s["die_top_mm"] * MM, s["die_bot_mm"] * MM
+        for x in s["x_cuts_mm"]:
+            out.append((x * MM - w_um / 2, x * MM + w_um / 2, yb, yt))
+        for col in s["columns"]:
+            for y in col["y_cuts_mm"]:
+                out.append((col["x0_mm"] * MM, col["x1_mm"] * MM, y * MM - w_um / 2, y * MM + w_um / 2))
+    return np.asarray(out, dtype=np.float64) if out else np.empty((0, 4))
 
 
 def flat_rect_count(plate: dict[str, Any]) -> int:
@@ -798,8 +933,10 @@ def write_mask(
     l_front = ly.layer(*LAYER_FRONT)
     l_out = ly.layer(*LAYER_OUTLINE)
     l_pair = ly.layer(*LAYER_PAIR)
+    l_dice = ly.layer(*LAYER_DICE)
 
     _insert_rects(top, l_front, plate["front"], kdb)
+    _insert_rects(top, l_dice, plate.get("dice_lines", np.empty((0, 4))), kdb)
     _insert_polys(top, l_front, plate.get("free_polys", ()), kdb)
     _insert_rects(top, l_front, plate["labels"], kdb)
     _insert_rects(top, l_out, plate["outline"], kdb)
@@ -932,6 +1069,26 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
                          f'height="{bh:.1f}" fill="{fill}" fill-opacity=".10" stroke="{fill}" '
                          f'stroke-dasharray="3 2" stroke-width="1"/>')
     lg = plate["layout"]
+    dc = lg.get("dicing")
+    if dc:
+        for yc in dc["y_cuts_mm"]:
+            yy = (s / 2 - yc * MM) * sc
+            parts.append(f'<line x1="{(s/2 - USABLE_UM/2)*sc:.1f}" y1="{yy:.1f}" x2="{(s/2 + USABLE_UM/2)*sc:.1f}" '
+                         f'y2="{yy:.1f}" stroke="#ff5252" stroke-width="1" stroke-dasharray="6 3"/>')
+        for st in dc["strips"]:
+            y0 = (s / 2 - st["die_top_mm"] * MM) * sc
+            y1 = (s / 2 - st["die_bot_mm"] * MM) * sc
+            for xc in st["x_cuts_mm"]:
+                xx = (xc * MM + s / 2) * sc
+                parts.append(f'<line x1="{xx:.1f}" y1="{y0:.1f}" x2="{xx:.1f}" y2="{y1:.1f}" '
+                             f'stroke="#ff5252" stroke-width="1" stroke-dasharray="6 3"/>')
+            for col in st["columns"]:
+                xa = (col["x0_mm"] * MM + s / 2) * sc
+                xb = (col["x1_mm"] * MM + s / 2) * sc
+                for yc in col["y_cuts_mm"]:
+                    yy = (s / 2 - yc * MM) * sc
+                    parts.append(f'<line x1="{xa:.1f}" y1="{yy:.1f}" x2="{xb:.1f}" y2="{yy:.1f}" '
+                                 f'stroke="#ff8a80" stroke-width="1" stroke-dasharray="3 3"/>')
     x = 10
     for blk, col in FILL.items():
         parts.append(f'<rect x="{x}" y="912" width="12" height="12" fill="{col}" fill-opacity=".6"/>'
@@ -939,7 +1096,7 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
         x += 16 + 8 * len(blk) + 22
     parts.append(f'<text x="10" y="948" fill="#9fb0b6" font-size="12" font-family="monospace">'
                  f'{len(man)} cells &#183; {lg["height_used_mm"]:.1f} of {lg["height_available_mm"]:.0f} mm used '
-                 f'&#183; dashed = back die &#183; shaded band = the bonded experiments &#183; gold = production dies</text>')
+                 f'&#183; red dashes = saw cuts (full-width rows first, then across each strip) &#183; gold = production dies</text>')
     parts.append("</svg>")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1002,6 +1159,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{plate['gds']['n_unit_cells']} unit cells")
         svg = write_map_svg(plate, Path(a.map))
         print(f"map  {svg}")
+        dmd = write_dicing_md(plate, Path(a.out).with_name("DICING.md"))
+        print(f"dicing {dmd}")
         mp = Path(a.manifest)
         mp.parent.mkdir(parents=True, exist_ok=True)
         mp.write_text(json.dumps({

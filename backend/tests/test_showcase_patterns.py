@@ -286,3 +286,106 @@ def test_orchid_budget_guard_rejects_abusive_params():
     # Defaults stay comfortably inside the budget (generate() succeeds).
     gp = cls.generate(**(cls.defaults() | {"extent_um": SMALL_EXTENT}))
     assert not gp.front.is_empty
+
+
+# ---------------------------------------------------------------------------
+# monogram-jp: the lid as a SINGLE-LAYER DIFFRACTION mapping (2026-09)
+#
+# The box is one written ply per face, so the monogram is no longer a
+# silhouette carved into a carrier that beats against a back plate: it is a MAP
+# OF REGIONS (app/region_art.py), one per initial, each written as its own fine
+# vertical 50 %-duty grating whose PERIOD is the colour it flashes.
+# ---------------------------------------------------------------------------
+
+
+def test_monogram_jp_region_map_gives_each_letter_its_own_period():
+    """The whole point: TWO distinct periods, one per initial, each covering a
+    real share of the ink — and both far enough apart on the colour ladder
+    (plates.SINGLE_PLY_LEAF_HUE_PERIODS_UM) to read as two different colours."""
+    from app import region_art as RA
+    from app.plates import SINGLE_PLY_LEAF_HUE_PERIODS_UM
+
+    art = RA.centerpiece_regions("monogram-jp", 320, {})
+    assert art is not None, "monogram-jp must register a centrepiece region map"
+
+    periods = {r.period_um for r in art.regions.values()}
+    assert len(periods) >= 2, f"one colour is not a colour mapping: {periods}"
+    # Every period is a legal rung of the ladder, and the pair straddles it.
+    for p in periods:
+        assert min(SINGLE_PLY_LEAF_HUE_PERIODS_UM) <= p <= max(SINGLE_PLY_LEAF_HUE_PERIODS_UM)
+    assert max(periods) / min(periods) > 1.25, (
+        "the two initials' first orders must differ by more than the eye's hue "
+        f"step, got {sorted(periods)}"
+    )
+
+    # Both letters actually survive the weave: neither is a garnish.
+    by_name = {r.name: rid for rid, r in art.regions.items()}
+    assert set(by_name) == {"J", "P"}
+    for name, rid in by_name.items():
+        frac = float((art.labels == rid).sum()) / art.labels.size
+        assert frac > 0.02, f"{name} covers only {frac:.3%} of the art box"
+
+    # Nothing is written at a period no Region declares (RegionArt enforces it
+    # on construction; assert it here so a future map that hand-builds labels
+    # cannot quietly ship an unwritable id).
+    ids = {int(v) for v in np.unique(art.labels)} - {0}
+    assert ids <= set(art.regions), f"labels carry ids with no Region: {ids - set(art.regions)}"
+
+    # And every declared period is writable: clears the litho floor AND the die
+    # finish open (the same guard the leaf families pass).
+    from app.export_fine import check_region_periods
+
+    check_region_periods(art.regions)
+
+
+def test_monogram_jp_region_map_is_resolution_stable():
+    """The SAME map is asked for at two different pitches for one part — the
+    fine bake rasters at region_art.REGION_ZONE_PITCH_UM, the composed preview
+    and the period map at the plate texel pitch. If the letters wove differently
+    at different n, the preview would not describe the part."""
+    from app import region_art as RA
+
+    coarse = RA.centerpiece_regions("monogram-jp", 256, {})
+    fine = RA.centerpiece_regions("monogram-jp", 640, {})
+    for rid in coarse.regions:
+        a = float((coarse.labels == rid).sum()) / coarse.labels.size
+        b = float((fine.labels == rid).sum()) / fine.labels.size
+        assert a == pytest.approx(b, abs=0.006), f"region {rid}: {a:.4f} vs {b:.4f}"
+
+
+def test_monogram_jp_bakes_one_ply_of_colour_gratings():
+    """generate() writes the same two gratings, FRONT only: one ply means the
+    back is bare glass, and the finest rectangle is exactly period x duty."""
+    cls = registry["monogram-jp"]
+    gp = cls.generate(**(cls.defaults() | {"extent_um": SMALL_EXTENT}))
+
+    assert gp.back.is_empty, "one written ply: the back face is bare glass"
+    _assert_layer_inside_extent(gp.front, SMALL_EXTENT, "monogram-jp front")
+    # 50% duty over the letters, so the metal is about half the inked area.
+    frac = gp.front.area / (SMALL_EXTENT * SMALL_EXTENT)
+    assert 0.01 < frac < 0.12, f"gold coverage {frac:.3f} is not a 50% duty monogram"
+
+    assert gp.min_feature_um == pytest.approx(min(cls.defaults()["j_period_um"],
+                                                 cls.defaults()["p_period_um"]) * 0.5)
+    assert gp.min_feature_um >= 2.0, "2 um lines and gaps: the litho floor"
+    # What a region face publishes: the art IS the metal, no procedural carrier.
+    assert gp.recipe_data["art_solid"] is True
+    assert gp.extra["construction"] == "single_layer_regions"
+
+
+def test_monogram_jp_worst_case_params_stay_inside_the_lattice_budget():
+    """The abusive corner of the sliders — widest extent at the finest rung of
+    the colour ladder — must not be able to take the host down.
+
+    Unlike the moiré generators this one CANNOT reach the cap: the region
+    raster is capped at 512 cells a side and the letters ink under a tenth of
+    it, so the worst case is tens of thousands of rects, not millions. The
+    guard is still armed in ``generate`` (on the TRUE emitted count, not an
+    estimate); this pins the headroom that makes it unreachable, so a future
+    change that removes the raster cap fails here rather than on the machine."""
+    from app.patterns._helpers import MAX_LATTICE_CELLS
+
+    cls = registry["monogram-jp"]
+    gp = cls.generate(extent_um=5000.0, j_period_um=4.15, p_period_um=4.15,
+                      overlap=0.4)
+    assert gp.extra["n_line_rects"] < MAX_LATTICE_CELLS // 4

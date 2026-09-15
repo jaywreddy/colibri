@@ -2,8 +2,22 @@
 
 **Subject:** one 127 mm (5″) chrome plate on **2.25 mm fused quartz — the box's own
 stock** — written darkfield with positive resist. **Purpose:** measure every
-physical mechanism the ring box depends on, and carry four of the box's faces
-as finished plies on the same write (§4.7).
+physical mechanism the ring box depends on, and carry the box's faces as
+finished plies on the same write (§4.7).
+
+> **2026-09-15 — the second plate is single-layer.** The first plate's bonded
+> pairs were cleaved by hand and broke, and on glass the two-ply moirés (the
+> monogram's shading beat, the globe's barrier switch) read badly. Every face
+> of the box is now ONE written ply and every effect is single-layer: the
+> photographs' tone and the spectral colour of fine gratings, with the
+> centrepieces written as **diffraction mappings by region** (`app/region_art.py`:
+> each region a vertical 50 % grating at its own period from the 4.15–6.02 µm
+> ladder, or solid gold). §§1.2, 2.1–2.5b, 4.3–4.4 and the two-layer cells
+> (M-VERN, P-RULE, B-MOVE, NF, SWAP) describe the abandoned design and stay as
+> the record of why; §4.2 (diffraction) and §4.5 (halftone) are the physics the
+> box now stands on. The plate is laid out as a **dicing grid** (rows of one
+> height, straight 1 mm streets; `DICING.md`) — see
+> `docs/production-plate-plan.md` decisions 10 and 11.
 
 ---
 
@@ -23,11 +37,10 @@ the box (§4.7) are the portraits, at a 13.3 mm art box, and the subjective ques
 two pictures make the box — is answered on the box itself.
 
 The plate is also the box's glass. Since it is written on the 2.25 mm fused quartz
-the bonded box is built from, a rectangle of it carrying a face's fine geometry
-IS that face's ply once diced. Eight dies ride along — the lid and the front as
-bonded pairs, six photo sides as single plies (only two, beach and sunset,
-make the box) — and take
-31% of the usable field; the experiments fill the rest.
+the box is built from, a rectangle of it carrying a face's fine geometry IS
+that face's outer ply once diced. Eleven dies ride it — the lid and the front
+(with spares), six photo sides and a spare side, every one a single ply — and
+take about 70% of the usable field; the bench cells fill the rest.
 
 ### The box as designed
 
@@ -37,7 +50,7 @@ Every derived number below uses these.
 |---|---|
 | **glass** | 2.25 mm fused quartz, n = 1.4585 — box and plate alike (the 5″ × 0.090″ mask blank) |
 | **witness pair** | two dies of this plate stacked: the same 2.25 mm gap as the box, so every angle below is one number |
-| **production dies** | top F 32 mm + B 27.5 mm; front F 32 × 30.5 + B 27.5 × 26; six photo sides F 27.5 × 30.5 (single ply). Cut dims from the production box (`boxes.default_box_spec`, 32 × 32 × 35 mm, sized by the ring), so a die here IS that box's ply |
+| **production dies** | lid 32 × 32 (×2); front 32 × 30.5 (×2, one rotated); seven photo sides 27.5 × 30.5 — every one the OUTER ply only, single-layer. Cut dims from the production box (`boxes.default_box_spec`, 32 × 32 × 35 mm, sized by the ring), so a die here IS that box's ply; the inner plies are bare quartz off the second blank |
 | **carrier** | 65.5 µm back-layer grating, 50% duty — the lattice every lid moiré beats against. Sized by the EYE: the period subtends 0.75′ at 300 mm, so the lines are invisible in hand and only the beat shows. (Gap-scaling the 22 µm design pitch gave 99 µm, 1.13′, a hatch the eye resolves; the near-field cost of the finer pitch is in §2.3) |
 | **screen** | 44 µm halftone, 22 levels (2 µm step) |
 | **comb** | 270.5 µm parallax-barrier comb; lane = p/2 = 135.25 µm — 1.55′ at 300 mm, a barrier the eye resolves |
