@@ -99,12 +99,9 @@ test-ci: (test-backend "--maxfail=1")
 export-wafer:
     cd backend; uv run python -m app.export_wafer --out data/wafer/wafer.gds
 
-# Grating-pitch E2E probe: Playwright driving the real UI, asserting the
-# preset -> /boxes/generate -> shader-rebind chain per pitch. Requires both
-# servers already up (`just dev`). HEAVY — run alone, never alongside
-# another compute process.
-test-pitch:
-    cd frontend; pnpm exec node scripts/e2e-pitch.mjs
+# (`test-pitch` retired with the Grating-pitch UI section: the box-level pitch
+# is a code constant now — boxes.PRODUCTION_CARRIER_UM — so there is no
+# preset -> /boxes/generate -> shader-rebind chain left to probe.)
 
 # Wipe generated pattern cache (regenerate via `just seed`)
 clean:

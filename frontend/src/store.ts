@@ -97,18 +97,13 @@ type State = {
   /** Slow OrbitControls turntable. Default OFF. */
   autoRotate: boolean;
   setAutoRotate: (on: boolean) => void;
-  /** Pattern Lab — 2D dual-layer preview overlay. */
-  labOpen: boolean;
-  setLabOpen: (open: boolean) => void;
-  /** Pattern under study in the lab; null = follow the selected face. */
-  labSlug: string | null;
-  setLabSlug: (slug: string | null) => void;
   /**
    * Pattern Scale: uniform multiplier on every procedural preview period on
-   * both plate planes (frame carrier + louvre, centerpiece switch, water comb +
-   * ripple lanes, barrier-interlace lanes). 1 = exact fab dimensions (sub-pixel
-   * at default zoom — the fine structure resolves when you raise this or zoom
-   * in). Frontend-only; no backend regen. Default 1×.
+   * both plate planes (frame carrier + louvre, barrier-interlace lanes). 1 =
+   * exact fab dimensions (sub-pixel at default zoom — the fine structure
+   * resolves when you raise this or zoom in). Frontend-only; no backend regen.
+   * Default 1×. Inert on a LITERAL face (every production wall) — it only
+   * magnifies the procedurally drawn exemplar faces.
    */
   patternScale: number;
   setPatternScale: (s: number) => void;
@@ -142,12 +137,6 @@ type State = {
    */
   inspectMode: boolean;
   setInspectMode: (on: boolean) => void;
-  /** Tilt-progression view: per-face supersampled tilt sweeps + eye verdict. */
-  progressionOpen: boolean;
-  /** Collage view: every catalogue pattern composited across a fan of angles. */
-  collageOpen: boolean;
-  setProgressionOpen: (open: boolean) => void;
-  setCollageOpen: (open: boolean) => void;
 };
 
 export const useStore = create<State>((set, get) => ({
@@ -160,8 +149,6 @@ export const useStore = create<State>((set, get) => ({
   lidTargetDeg: 0,
   layout: 'assembled',
   autoRotate: false,
-  labOpen: false,
-  labSlug: null,
   patternScale: 1,
   illumination: 'ambient',
   laserColor: 'green',
@@ -170,8 +157,6 @@ export const useStore = create<State>((set, get) => ({
   showRing: false,
   backdrop: 'studio',
   inspectMode: false,
-  progressionOpen: false,
-  collageOpen: false,
 
   setCatalog: (catalog) => set({ catalog }),
 
@@ -327,16 +312,12 @@ export const useStore = create<State>((set, get) => ({
   setLidTargetDeg: (deg) => set({ lidTargetDeg: clampLid(deg) }),
   setLayout: (layout) => set({ layout }),
   setAutoRotate: (autoRotate) => set({ autoRotate }),
-  setLabOpen: (labOpen) => set({ labOpen }),
-  setLabSlug: (labSlug) => set({ labSlug }),
   setPatternScale: (patternScale) => set({ patternScale }),
 
   setIllumination: (illumination) => set({ illumination }),
   setShowRing: (showRing) => set({ showRing }),
   setBackdrop: (backdrop) => set({ backdrop }),
   setInspectMode: (inspectMode) => set({ inspectMode }),
-  setProgressionOpen: (progressionOpen) => set({ progressionOpen }),
-  setCollageOpen: (collageOpen) => set({ collageOpen }),
   setLaserColor: (laserColor) => set({ laserColor }),
   setLight: (lightAzimuthDeg, lightElevationDeg) =>
     set({ lightAzimuthDeg, lightElevationDeg }),

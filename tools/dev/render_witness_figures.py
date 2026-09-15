@@ -5,6 +5,14 @@ same appearance model as the box renderer — specular gold (eta0 = 0.25) plus
 the first-order sheen (eta1 = 0.10) from the CIE table — because a render that
 drops the specular shows black wherever the first order leaves the visible band.
 
+Single-layer only (2026-09-15): the two-ply figures (screen-over-carrier
+harmonic chart, P-SWAP barrier-comb plot, the front/back-ply stack diagram,
+the zero-gap union-identity diagram) rendered cells retired with the bond —
+see docs/archived/witness-physics-plan.md secs 1.2/1.3/2.1/2.4/4.3/4.4 for
+the record. What is left: the colour-ladder swatch (4.2, still the box's own
+diffraction-colour physics), the H-WEDGE tone linearisation figure (4.5, a
+surviving bench cell), and the generic cell-anatomy diagram (4.6).
+
     uv run --directory backend python ../tools/dev/render_witness_figures.py OUTDIR
 """
 from __future__ import annotations
@@ -19,9 +27,6 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 from app import witness_moire as wm  # noqa: E402
-from app.export_witness import SWITCH_COMB_LADDER_UM  # noqa: E402
-from app.witness_geom import (BOX_CARRIER_UM, BOX_COMB_UM, GLASS_MATERIAL, GLASS_N,  # noqa: E402
-                              PARALLAX_UM_PER_DEG, PLY_UM, swap_deg)
 from app.diffraction import bake_lut, lamellar_order_efficiency  # noqa: E402
 from app.patterns.bitmap.colourzone import hue_ladder  # noqa: E402
 from app.patterns.bitmap.imageprep import linear_to_srgb, srgb_to_linear  # noqa: E402

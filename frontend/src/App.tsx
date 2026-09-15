@@ -17,11 +17,8 @@ import { validateBox } from './assembly';
 import { log } from './logger';
 import { useStore, LID_MAX_DEG } from './store';
 import BoxScene from './scene/BoxScene';
-import ProgressionView from './ui/ProgressionView';
-import CollageView from './ui/CollageView';
 import BuildPanel from './ui/BuildPanel';
 import FacesPanel from './ui/FacesPanel';
-import PatternLab from './ui/PatternLab';
 import { BUTTON_STYLE, INPUT_STYLE, KIT } from './ui/kit';
 
 function useDebounce<T extends (...args: never[]) => void>(fn: T, ms: number): T {
@@ -263,10 +260,6 @@ export default function App() {
   const setAutoRotate = useStore((s) => s.setAutoRotate);
   const inspectMode = useStore((s) => s.inspectMode);
   const setInspectMode = useStore((s) => s.setInspectMode);
-  const setProgressionOpen = useStore((s) => s.setProgressionOpen);
-  const setCollageOpen = useStore((s) => s.setCollageOpen);
-  const labOpen = useStore((s) => s.labOpen);
-  const setLabOpen = useStore((s) => s.setLabOpen);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -658,18 +651,6 @@ export default function App() {
           Fused-silica plates · gold-on-quartz masks · copper foil + solder
         </div>
         <div style={{ flex: 1 }} />
-        <button
-          data-testid="lab-toggle"
-          aria-pressed={labOpen}
-          title="2D dual-layer preview for pattern development (parallax + spacing)"
-          onClick={() => {
-            log('lab_toggled', { open: !labOpen });
-            setLabOpen(!labOpen);
-          }}
-          style={{ ...BUTTON_STYLE, borderColor: labOpen ? KIT.accent : KIT.border }}
-        >
-          Pattern Lab
-        </button>
         {busy && (
           <span data-testid="regen-status" style={{ fontSize: 12, opacity: 0.7 }}>
             Regenerating…
@@ -785,8 +766,6 @@ export default function App() {
         )}
       </header>
 
-      <CollageView />
-
       <div
         style={{
           display: 'grid',
@@ -822,7 +801,6 @@ export default function App() {
         >
           <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
             <BoxScene />
-            <ProgressionView />
           </div>
           <div
             style={{
@@ -894,28 +872,6 @@ export default function App() {
             >
               {inspectMode ? '◉ Inspect' : '○ Inspect'}
             </button>
-            <button
-              data-testid="collage-toggle"
-              title="Composite every catalogue pattern across a fan of view angles — what the eye integrates, which the 3D preview cannot show"
-              onClick={() => {
-                log('collage_toggled', { on: true });
-                setCollageOpen(true);
-              }}
-              style={BUTTON_STYLE}
-            >
-              Collage
-            </button>
-            <button
-              data-testid="progression-toggle"
-              title="Render each face alone through a tilt sweep, supersampled, with an eye-visibility verdict"
-              onClick={() => {
-                log('progression_toggled', { on: true });
-                setProgressionOpen(true);
-              }}
-              style={BUTTON_STYLE}
-            >
-              Progression
-            </button>
             <div style={{ flex: 1 }} />
             <div
               role="tablist"
@@ -967,9 +923,6 @@ export default function App() {
           <FacesPanel />
         </aside>
       </div>
-
-      {/* Pattern Lab — fixed 2D overlay, view-only; never touches the box spec. */}
-      {labOpen && <PatternLab />}
     </div>
   );
 }
