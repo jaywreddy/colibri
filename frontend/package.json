@@ -10,7 +10,11 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:types": "tsc -p tsconfig.tests.json",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -19,6 +23,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -27,9 +32,13 @@
     "@types/react-dom": "^18.3.1",
     "@types/three": "^0.171.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
     "happy-dom": "^20.9.0",
     "jsdom": "^29.0.2",
+    "prettier": "^3.9.6",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.70.0",
     "vite": "^6.0.3",
     "vite-plugin-glsl": "^1.3.1",
     "vitest": "^4.1.4"

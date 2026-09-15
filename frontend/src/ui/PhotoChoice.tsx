@@ -44,8 +44,11 @@ export default function PhotoChoice({ faceId }: { faceId: FaceId }) {
     );
   }
 
-  const current = String(face.pattern_params[PHOTO_PARAM] ?? descriptor?.params
-    .find((p) => p.name === PHOTO_PARAM)?.default ?? choices[0]);
+  const current = String(
+    face.pattern_params[PHOTO_PARAM] ??
+      descriptor?.params.find((p) => p.name === PHOTO_PARAM)?.default ??
+      choices[0],
+  );
 
   return (
     <Section title="Photograph" testId="photo-choice" persistId="photo" defaultOpen>
@@ -66,8 +69,8 @@ export default function PhotoChoice({ faceId }: { faceId: FaceId }) {
         testId="photo-select"
       />
       <div style={{ fontSize: 11, opacity: 0.6, lineHeight: 1.5, marginTop: 2 }}>
-        Halftoned as a gold line screen, with this picture&rsquo;s authored
-        colour plan driving the diffraction sub-gratings.
+        Halftoned as a gold line screen, with this picture&rsquo;s authored colour plan
+        driving the diffraction sub-gratings.
       </div>
     </Section>
   );

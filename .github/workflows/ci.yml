@@ -1,0 +1,59 @@
+# Ring Box Studio CI — the cheap gates only.
+#
+# What is deliberately NOT here: Playwright (@effects, @visual, the box specs)
+# and the heavy backend chunks. Those spin up two servers, compose six plates
+# and write fab masks; on the dev host they are the "one heavy process at a
+# time" rule (CLAUDE.md), and on a shared runner they are minutes of wall clock
+# for a signal the local `just test-e2e` / `just test-backend` already give.
+# This workflow answers one question fast: does the tree still typecheck, do the
+# unit tests pass, and do the two light backend chunks still hold?
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: typecheck
+        run: pnpm exec tsc --noEmit
+      - name: unit tests
+        run: pnpm exec vitest run
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # Chunks 1 and 9 of the justfile's proven order — the assembly contract
+      # and the plate/box composition (1), and the screen-rect / colour-plan /
+      # witness geometry (9). Run as two SEPARATE steps, never one pytest
+      # invocation: the chunking is a memory bound, and keeping the CI command
+      # shape identical to the local one is what makes a CI failure
+      # reproducible with a single copy-paste.
+      - name: pytest chunk 1
+        run: uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
+      - name: pytest chunk 9
+        run: >-
+          uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py
+          tests/test_witness.py tests/test_export_svg_rects.py -q
