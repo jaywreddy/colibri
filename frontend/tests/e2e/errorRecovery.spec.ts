@@ -9,10 +9,14 @@
  * 2. The SPEC is invalid (validateBox fails). regen() never POSTs at all
  *    (App.tsx logs box_regen_skipped_invalid and returns), so this is a
  *    different code path from 1 — the one that used to be untested. The
- *    always-visible validation strip must name the offending geometry, no
- *    request may reach /boxes/generate, and Export must refuse, because the
- *    held manifest still describes the last VALID design and shipping it for
- *    the box on screen is an unrecoverable fab error.
+ *    always-visible validation strip must name the offending geometry and no
+ *    request may reach /boxes/generate: the held manifest still describes the
+ *    last VALID design, so a silent regen of the invalid one would put a box
+ *    on screen that the cut list below it does not describe.
+ *
+ * (The third assertion these tests used to carry — that the "Export fab
+ * bundle" button refuses while the spec is invalid — went with the button:
+ * the fab archive is a CLI step now, run against a named box id.)
  *
  * Test budgets: every inner wait must fit INSIDE the test timeout, or
  * Playwright kills the test before expectLogEvent can dump the log buffer and
@@ -59,17 +63,16 @@ test.describe('error recovery', () => {
     await expectLogEvent(page, 'box_regen_done', undefined, { timeout: REGEN_WAIT_MS });
   });
 
-  test('an invalid box width pauses regen, names the fault, and blocks export', async ({
+  test('an invalid box width pauses regen and names the fault', async ({
     page,
   }) => {
     // Boot regen + the restore regen at the end, both bounded by REGEN_WAIT_MS.
     test.setTimeout(2 * REGEN_WAIT_MS + 60_000);
     await page.goto('/');
     await waitForStudio(page);
-    // A valid boot spec: no strip, and export is live.
+    // A valid boot spec: no strip.
     await expectLogEvent(page, 'box_regen_done', undefined, { timeout: REGEN_WAIT_MS });
     await expect(page.getByTestId('validation-errors')).toHaveCount(0);
-    await expect(page.getByTestId('export-fab')).toBeEnabled();
 
     // Count everything that reaches the generate endpoint from here on. The
     // validation gate's whole job is that this stays at zero while invalid.
@@ -114,25 +117,18 @@ test.describe('error recovery', () => {
     await expect(page.getByTestId('regen-error')).toBeVisible();
     await expect(page.getByTestId('regen-error')).toContainText('spec error');
 
-    // Export must refuse to ship the last valid manifest for this box.
-    await expect(page.getByTestId('export-fab')).toBeDisabled();
-    await expect(page.getByTestId('export-blocked-reason')).toBeVisible();
-    await expect(page.getByTestId('export-blocked-reason')).toContainText('spec error');
-
     // The gate is client-side: nothing was sent for the backend to reject.
     expect(
       generatePosts,
       'an invalid spec must never reach POST /boxes/generate'
     ).toBe(0);
 
-    // Restore validity through the same control: the strip clears, the regen
-    // resumes, and export comes back.
+    // Restore validity through the same control: the strip clears and the
+    // regen resumes.
     await width.fill('50');
     await expect(page.getByTestId('validation-errors')).toHaveCount(0);
     await expectLogEvent(page, 'box_regen_done', undefined, { timeout: REGEN_WAIT_MS });
     expect(generatePosts).toBeGreaterThanOrEqual(1);
-    await expect(page.getByTestId('export-fab')).toBeEnabled();
-    await expect(page.getByTestId('export-blocked-reason')).toHaveCount(0);
     await page.unroute('**/boxes/generate');
   });
 });

@@ -64,17 +64,8 @@ export const EVENT_TYPES = [
   'box_reset',
   'size_preset_applied',
 
-  // --- fab bundle export (the deliverable; staleness-gated in App.tsx) -----
-  'export_started',
-  /**
-   * One PHASE CHANGE of the export job (phase/face/faces_done), never one per
-   * poll — a cold export is minutes of 1 Hz polling and this buffer holds 500
-   * events. Payload mirrors the worker's progress snapshot.
-   */
-  'export_progress',
-  /** Carries the manifest `content_hash` the bytes were built from. */
-  'export_done',
-  'export_failed',
+  // (The fab-bundle export events are gone with the button: the archive is
+  // built by the CLI against a named box id, not pulled through the browser.)
 
   // --- design edits (these are the ones that dirty the fab masks) ---------
   'face_clicked',
@@ -104,8 +95,6 @@ export const EVENT_TYPES = [
   'face_texture_retry',
   'face_texture_failed',
   'diffraction_lut_loaded',
-  'progression_captured',
-  'progression_toggled',
   'diffraction_lut_failed',
   /** Manifest asked for a recipe the two-plane renderer refuses to fake. */
   'face_recipe_unsupported',
@@ -131,18 +120,6 @@ export const EVENT_TYPES = [
   'thumbnail_loaded',
   'thumbnail_load_failed',
   'thumbnail_retry_clicked',
-
-  // --- 2D Pattern Lab ----------------------------------------------------
-  'lab_toggled',
-  'lab_pattern_loaded',
-  'lab_pattern_load_failed',
-  'lab_regen_start',
-  'lab_regen_done',
-  'lab_regen_failed',
-  /** Slow Regenerate superseded by a newer slug/param set; response dropped. */
-  'lab_regen_stale',
-  /** Lab-tuned params pushed back onto a box face. */
-  'lab_apply_to_face',
 
   // --- transport ---------------------------------------------------------
   /** Any non-2xx or network failure through api.ts::tracedFetch. */

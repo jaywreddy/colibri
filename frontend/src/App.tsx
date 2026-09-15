@@ -1,17 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ExportBusyError,
-  exportJobZip,
   generateBox,
   getBox,
-  getExportJob,
   listBoxes,
   listPatterns,
-  startBoxExport,
   type BoxManifest,
   type BoxSpec,
-  type ExportJobProgress,
-  type ExportJobStatus,
 } from './api';
 import { validateBox } from './assembly';
 import { log } from './logger';
@@ -58,16 +52,12 @@ function canonicalJson(v: unknown): string {
  * The regenerate identity of a box spec: every persisted field that changes
  * what the backend would produce. Hinge, bead and finish don't change masks,
  * but they DO change the saved manifest — ASSEMBLY.md's hinge cut list and
- * finish come from it — so excluding them would let "Export fab bundle" ship
- * a bundle that disagrees with the UI. Hinge/foil-only regens are cheap: the
- * backend per-face plate caches hit and only the manifest assembly block is
- * recomputed.
+ * finish come from it — so they participate too. Hinge/foil-only regens are
+ * cheap: the backend per-face plate caches hit and only the manifest assembly
+ * block is recomputed.
  *
- * `label` is deliberately OUT (naming a preset must not invalidate the
- * bundle), as are lid angle and layout, which are view-only state.
- *
- * Applied to BOTH the live spec and the held manifest's spec, this is what
- * decides whether the export button is serving the design on screen.
+ * `label` is deliberately OUT (naming a preset must not invalidate the held
+ * manifest), as are lid angle and layout, which are view-only state.
  */
 function specRegenKey(spec: BoxSpec): string {
   return canonicalJson({
@@ -99,151 +89,23 @@ function friendlyError(e: unknown): string {
   return err.message;
 }
 
-/** How often the export job is polled. Polling takes no heavy-compute slot. */
-const EXPORT_POLL_MS = 1000;
-/**
- * Consecutive poll failures tolerated before an export is declared failed. A
- * cold export runs for minutes; one dropped poll (dev-server HMR reload, a
- * proxy hiccup) must not throw away a build that is still running next door.
- * A genuinely dead job — unknown id after a backend restart — fails after this
- * many attempts with the backend's own "start a new export" sentence.
- */
-const EXPORT_POLL_FAILS_MAX = 3;
-
-/** Abortable delay. Rejects with AbortError so the poll loop unwinds at once. */
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      window.clearTimeout(timer);
-      reject(new DOMException('aborted', 'AbortError'));
-    };
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    if (signal.aborted) onAbort();
-    else signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-/**
- * Short labels for the worker's phase names (export_job.py::PHASES). The raw
- * strings are honest but built for logs; the header strip is ~230 px wide, so
- * the user gets the same fact in fewer characters. UNKNOWN PHASES PASS THROUGH
- * verbatim — the worker owns that list, and inventing a label for a phase this
- * build doesn't know about would be a lie.
- */
-const EXPORT_PHASE_LABEL: Record<string, string> = {
-  starting: 'starting worker',
-  'resolve faces': 'resolving faces',
-  'rebuild plate': 'recomposing plate',
-  'svg bake': 'preview SVG bake',
-  'fine mask (cached)': 'mask cached',
-  'fine mask (compose)': 'mask compose',
-  'fine mask (DRC heal)': 'DRC heal',
-  zip: 'packing archive',
-  done: 'archive ready',
-};
-
-/**
- * The header's export strip: honest position + what the worker is doing right
- * now, e.g. `Masks: 3/6 · right DRC heal…`. `title` carries the worker's own
- * `detail` (pattern slug, byte count, "plate cache miss — recomposing …"),
- * which the strip itself has no room for.
- *
- * Everything shown comes from the job payload — no invented percentage, no
- * time estimate. A phase this build has no label for is printed as the worker
- * named it.
- */
-function exportProgressView(
-  p: ExportJobProgress | null,
-  prefix = ''
-): { text: string; title: string } {
-  if (!p) {
-    return {
-      text: `${prefix}Starting export…`,
-      title: 'Waiting for the export worker to publish its first phase',
-    };
-  }
-  const phase = EXPORT_PHASE_LABEL[p.phase] ?? p.phase;
-  const where = p.face ? `${p.face} ${phase}` : phase;
-  const head =
-    p.faces_total > 0 ? `Masks: ${p.faces_done}/${p.faces_total}` : 'Masks: preparing';
-  const elapsed = typeof p.elapsed_s === 'number' ? ` (${Math.round(p.elapsed_s)}s)` : '';
-  return {
-    text: `${prefix}${head} · ${where}…`,
-    title: `${prefix}${head} · ${where}${elapsed}${p.detail ? ` — ${p.detail}` : ''}`,
-  };
-}
-
-/** Identity of a progress snapshot for "did the phase actually change?". */
-const exportPhaseKey = (p: ExportJobProgress | null): string =>
-  p ? `${p.phase}|${p.face ?? ''}|${p.faces_done}/${p.faces_total}` : 'starting|';
-
-/** How the running job's phase is reported while we queue behind it. */
-const EXPORT_QUEUED_PREFIX = 'Queued · ';
-
-type ShowProgress = (
-  p: ExportJobProgress | null,
-  opts?: { prefix?: string; extra?: Record<string, unknown> }
-) => void;
-
-/**
- * Poll a job that holds the host-wide export slot until it stops running,
- * reporting ITS phase so the wait is never a blank stall.
- *
- * Deliberately does NOT return the job's archive: it may have started before
- * the last regen, so its bundle can disagree with the screen even for the same
- * box. The caller starts its own build once this returns. A job we cannot poll
- * (unknown id after a backend restart, unreachable server) means we have
- * nothing to wait on — return and let the caller's next start attempt produce
- * the real answer.
- */
-async function waitOutRunningExport(
-  jobId: string,
-  boxId: string | null,
-  ac: AbortController,
-  show: ShowProgress
-): Promise<void> {
-  for (;;) {
-    let status: ExportJobStatus;
-    try {
-      status = await getExportJob(jobId, { signal: ac.signal });
-    } catch (e) {
-      if (ac.signal.aborted) throw e;
-      return;
-    }
-    if (status.status !== 'running') return;
-    show(status.progress, {
-      prefix: EXPORT_QUEUED_PREFIX,
-      extra: { queued_behind: jobId, queued_box: boxId },
-    });
-    await sleep(EXPORT_POLL_MS, ac.signal);
-  }
-}
-
 /**
  * Ring Box Studio — single-purpose, box-first studio screen.
  *
  * Any persisted spec change (dims, glass, foil, hinge, faces) triggers a
  * debounced POST /boxes/generate with a stale-response guard, keeping the
- * saved manifest — and the "Export fab bundle" zip built from it — in sync
- * with the on-screen design. Hinge/bead/finish edits still update the scene
- * instantly via src/assembly.ts; their regen only refreshes the manifest
+ * held manifest — and therefore the six composed plates the scene samples —
+ * in sync with the on-screen design. Hinge/bead/finish edits still update the
+ * scene instantly via src/assembly.ts; their regen only refreshes the manifest
  * (per-face plate caches hit, no mask recompute). Lid angle and layout are
  * view-only and never hit the backend.
  *
- * That sync is enforced, not assumed: export is a fetch-driven button that
- * refuses to run while the spec is invalid, while a regen is in flight, or
- * while the live spec's `specRegenKey` differs from the held manifest's — the
- * three windows in which the zip would carry a different mask set than the
- * screen shows. On a 2 µm gold-on-quartz run that mismatch is an unrecoverable
- * fab error, so it fails loudly instead of downloading quietly.
- *
- * The export itself is a polled JOB (see `exportFab`): the backend builds the
- * archive in a subprocess and this button reports the worker's own phase and
- * face count once a second, because a build that can honestly run for minutes
- * needs a number that moves — not a spinner the user cannot tell from a hang.
+ * The FAB BUNDLE is no longer built from here. A cold export is six plate
+ * composes and six DRC-healed fab masks — minutes of the host's one heavy
+ * compute slot — and pulling it through a browser download bought nothing but
+ * a progress strip and a staleness gate. It is a CLI step now, run against the
+ * box id this screen shows, so the archive can never be a stale echo of a
+ * design the user has since changed.
  */
 export default function App() {
   const boxSpec = useStore((s) => s.boxSpec);
@@ -268,24 +130,12 @@ export default function App() {
   const [retrying, setRetrying] = useState(false);
   const [savedBoxes, setSavedBoxes] = useState<BoxManifest[]>([]);
   const [presetName, setPresetName] = useState('');
-  const [exporting, setExporting] = useState(false);
-  const [exportedId, setExportedId] = useState<string | null>(null);
-  // Live phase from the export job payload — null until the first poll answers.
-  const [exportProgress, setExportProgress] = useState<{ text: string; title: string } | null>(
-    null
-  );
-  // Aborts the in-flight export's fetches AND its poll sleeps on unmount.
-  const exportAbortRef = useRef<AbortController | null>(null);
   const lastReqIdRef = useRef(0);
   // Consecutive regen failures — drives the backend-warmup retry backoff.
   const regenFailsRef = useRef(0);
-  // regenKey of the spec we POSTed for the manifest currently held. The
-  // manifest's OWN spec is the primary staleness signal (see exportStale), but
-  // it round-trips through the backend's normalize_face_dims: were that ever to
-  // drift from assembly.ts::stampFaces by a digit, comparing against it alone
-  // would wedge export as permanently "out of date" with no regen left to fire.
-  // This ref records what actually produced the manifest, so the regen path can
-  // never deadlock on that.
+  // regenKey of the spec we POSTed for the manifest currently held: what
+  // actually produced the manifest on screen, independent of how the backend's
+  // normalize_face_dims spells the spec back.
   const builtFromKeyRef = useRef<string | null>(null);
 
   // Pattern catalog — fetched at boot for the face editors. Retries with
@@ -327,10 +177,6 @@ export default function App() {
 
   // See specRegenKey for what participates and why.
   const regenKey = useMemo(() => specRegenKey(boxSpec), [boxSpec]);
-  const manifestKey = useMemo(
-    () => (boxManifest ? specRegenKey(boxManifest.spec) : null),
-    [boxManifest]
-  );
 
   const regen = useDebounce(async () => {
     const spec = useStore.getState().boxSpec;
@@ -443,189 +289,6 @@ export default function App() {
     }
   };
 
-  // Why export is refusing right now, or null when the bundle would match the
-  // screen. Ordered by what the user has to do about it.
-  const exportBlockedReason: string | null = (() => {
-    if (validationErrors.length > 0) {
-      return `Fix ${validationErrors.length} spec error${
-        validationErrors.length === 1 ? '' : 's'
-      } first`;
-    }
-    if (!boxManifest) return 'Waiting for the first generate';
-    if (regenKey !== manifestKey && regenKey !== builtFromKeyRef.current) {
-      return busy ? 'Design changed — regenerating…' : 'Design changed — waiting for regenerate';
-    }
-    // Keys agree, so the held manifest matches the screen — but a POST is in
-    // flight (initial generate or a warmup retry) and its result could still
-    // move the manifest under us. Refuse until it settles.
-    if (busy) return 'Regenerating — try again in a moment';
-    return null;
-  })();
-
-  /**
-   * Run one fab export: start the subprocess job, poll it ~1×/s showing the
-   * worker's real phase, then download the finished archive as a blob.
-   *
-   * Why a job instead of one long GET: a cold export is six plate composes and
-   * six DRC-healed fab masks, minutes on this host. The old synchronous fetch
-   * left the button saying "the first export is slow" with no way to tell a
-   * live build from a wedged one — the user's only honest signal is a number
-   * that moves, so every phase here comes from the worker's own progress file
-   * (api.ts::ExportJobProgress). Nothing is invented: no percentage, no ETA.
-   *
-   * The whole run hangs off one AbortController so unmounting (or a second
-   * click that somehow beats the disabled button) tears down both the fetches
-   * and the poll sleeps instead of setting state on a dead component.
-   */
-  const exportFab = async () => {
-    const m = useStore.getState().boxManifest;
-    if (!m || exportBlockedReason || exporting) return;
-    exportAbortRef.current?.abort();
-    const ac = new AbortController();
-    exportAbortRef.current = ac;
-    setExporting(true);
-    setExportedId(null);
-    setError(null);
-    setExportProgress(exportProgressView(null));
-    const t0 = performance.now();
-    log('export_started', { id: m.id, content_hash: m.content_hash });
-
-    // One `export_progress` event per PHASE CHANGE, not per poll: a cold export
-    // is hundreds of polls and the log buffer is a 500-entry ring, so per-poll
-    // events would evict the very history a post-mortem needs.
-    let lastKey = '';
-    let jobId = '';
-    const show = (
-      p: ExportJobProgress | null,
-      opts: { prefix?: string; extra?: Record<string, unknown> } = {}
-    ) => {
-      const prefix = opts.prefix ?? '';
-      setExportProgress(exportProgressView(p, prefix));
-      const key = `${prefix}${exportPhaseKey(p)}`;
-      if (key === lastKey) return;
-      lastKey = key;
-      log('export_progress', {
-        id: m.id,
-        job_id: jobId,
-        phase: p?.phase ?? 'starting',
-        face: p?.face ?? null,
-        faces_done: p?.faces_done ?? 0,
-        faces_total: p?.faces_total ?? 0,
-        detail: p?.detail ?? '',
-        ...(opts.extra ?? {}),
-      });
-    };
-
-    try {
-      // 429 = the one host-wide export slot is taken (CLAUDE.md). The honest
-      // move is to WAIT OUT the job that holds it, showing ITS progress, and
-      // then start our own — never to download the running job's archive.
-      // Even when it is building the same box it may have started before the
-      // last regen, and a bundle that predates the screen is precisely the
-      // unrecoverable fab error the staleness gate exists to prevent. The
-      // backend's 429 detail is the only handle on that job (there is no list
-      // route), so a wording that carries no id leaves nothing to wait on and
-      // the user gets the retry sentence instead.
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const started = await startBoxExport(m.id, { signal: ac.signal });
-          jobId = started.job_id;
-          show(started.progress);
-          break;
-        } catch (e) {
-          if (!(e instanceof ExportBusyError)) throw e;
-          const running = e.runningJobId;
-          if (running === null || attempt >= 1) {
-            // Both backend wordings already end in their own retry sentence;
-            // only add one when it doesn't (so the banner never says it twice).
-            const guidance = /retry|try again/i.test(e.message)
-              ? ''
-              : ' — one export runs at a time on this host; retry in a moment.';
-            throw new Error(`${e.message}${guidance}`);
-          }
-          await waitOutRunningExport(running, e.runningBoxId, ac, show);
-        }
-      }
-
-      let status = await getExportJob(jobId, { signal: ac.signal });
-      show(status.progress);
-      let pollFails = 0;
-      while (status.status === 'running') {
-        await sleep(EXPORT_POLL_MS, ac.signal);
-        try {
-          status = await getExportJob(jobId, { signal: ac.signal });
-          pollFails = 0;
-        } catch (e) {
-          if (ac.signal.aborted) throw e;
-          pollFails += 1;
-          if (pollFails >= EXPORT_POLL_FAILS_MAX) throw e;
-          continue;
-        }
-        show(status.progress);
-      }
-      if (status.status !== 'done') {
-        const why =
-          status.error?.trim() ||
-          status.progress?.error?.trim() ||
-          `job ${jobId} ended as '${status.status}' without a diagnosis`;
-        throw new Error(`Fab export: ${why}`);
-      }
-
-      // The one phase the worker cannot report: the client pulling the archive
-      // over the wire. Named distinctly so it is never confused with the
-      // worker's 'zip' phase (and so it is its own phase-change event).
-      show({
-        phase: 'downloading archive',
-        face: null,
-        faces_done: status.progress?.faces_done ?? 0,
-        faces_total: status.progress?.faces_total ?? 0,
-        detail: 'fetching fab.zip',
-        updated_at: (status.progress?.updated_at ?? 0) + 1,
-      });
-      const blob = await exportJobZip(jobId, { signal: ac.signal });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      // Matches the server's Content-Disposition name (export.py::export_job_zip).
-      a.download = `box-${m.id}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      // Chrome needs the blob URL alive until the download has actually
-      // started; revoking synchronously can truncate it.
-      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
-      setExportedId(m.id);
-      log('export_done', {
-        id: m.id,
-        content_hash: m.content_hash,
-        job_id: jobId,
-        bytes: blob.size,
-        duration_ms: Math.round(performance.now() - t0),
-      });
-    } catch (e) {
-      // An aborted run is a teardown, not a failure: the component is gone (or
-      // superseded), so there is nobody to show a banner to.
-      if (ac.signal.aborted) return;
-      setError(friendlyError(e));
-      log('export_failed', { id: m.id, job_id: jobId, error: (e as Error).message });
-    } finally {
-      if (exportAbortRef.current === ac) exportAbortRef.current = null;
-      if (!ac.signal.aborted) {
-        setExporting(false);
-        setExportProgress(null);
-      }
-    }
-  };
-
-  // Kill any in-flight export poll loop when the studio unmounts.
-  useEffect(() => () => exportAbortRef.current?.abort(), []);
-
-  // Clear the "Bundle downloaded" confirmation a few seconds after it lands.
-  useEffect(() => {
-    if (!exportedId) return;
-    const t = window.setTimeout(() => setExportedId(null), 6000);
-    return () => window.clearTimeout(t);
-  }, [exportedId]);
 
   return (
     <div
@@ -700,70 +363,6 @@ export default function App() {
             </option>
           ))}
         </select>
-        {/* Never a bare <a download>: the zip must be refused while it would
-            disagree with the screen, and a cold build (six sequential fab
-            masks, minutes) needs live progress and a real failure path — hence
-            the job + poll flow in exportFab. */}
-        <button
-          data-testid="export-fab"
-          onClick={exportFab}
-          aria-busy={exporting}
-          disabled={exporting || exportBlockedReason !== null}
-          title={
-            exportBlockedReason ??
-            'Download masks (fine.gds), plate SVG/PNG previews, CUTLIST.csv and ASSEMBLY.md for this design'
-          }
-          style={{
-            ...BUTTON_STYLE,
-            opacity: exporting || exportBlockedReason ? 0.5 : 1,
-            cursor: exporting || exportBlockedReason ? 'default' : 'pointer',
-          }}
-        >
-          {exporting ? 'Exporting…' : 'Export fab bundle'}
-        </button>
-        {exporting && (
-          <span
-            data-testid="export-progress"
-            /* The worker's own phase + face count, polled once a second. A
-               number that moves is the only honest "not hung" signal for a
-               build that can legitimately run for minutes; the full detail
-               (slug, byte count, cache-miss note) is in the tooltip. */
-            title={exportProgress?.title ?? 'Building the fab bundle'}
-            style={{
-              fontSize: 11,
-              opacity: 0.7,
-              maxWidth: 230,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {exportProgress?.text ?? 'Starting export…'}
-          </span>
-        )}
-        {exportBlockedReason && !exporting && (
-          <span
-            data-testid="export-blocked-reason"
-            style={{
-              fontSize: 11,
-              opacity: 0.7,
-              maxWidth: 210,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {exportBlockedReason}
-          </span>
-        )}
-        {exportedId && !exporting && (
-          <span
-            data-testid="export-done"
-            style={{ fontSize: 11, color: KIT.accent }}
-          >
-            Bundle downloaded
-          </span>
-        )}
       </header>
 
       <div

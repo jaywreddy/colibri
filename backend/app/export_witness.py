@@ -79,7 +79,7 @@ LAYER_DICE = (2, 0)      # annotation: the saw's street centrelines (never chrom
 
 TICK_REACH_UM = 550.0
 """How far a die's corner dicing tick reaches into the street beyond the die
-edge (``export_blank.DICE_TICK_GAP_UM + DICE_TICK_LEN_UM``). The packer keeps
+edge (``ply_cuts.DICE_TICK_GAP_UM + DICE_TICK_LEN_UM``). The packer keeps
 every cell this much inside the geometric usable square, so no written shape —
 tick included — lands in the blank's 4 mm edge margin."""
 USABLE_UM = _GEOM_USABLE_UM - 2.0 * TICK_REACH_UM
@@ -1111,10 +1111,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--formats", default="gds,oas",
                     help="comma list of gds,oas. Both by default: GDSII is the "
                          "primary deliverable, OASIS the 1 MB copy of it")
-    ap.add_argument("--writer", choices=("klayout", "gf"), default="klayout",
-                    help="klayout: flat-ish, 5 s, 40 MB GDS. gf: gdsfactory "
-                         "hierarchy with @cell-cached band cells, 100 s, 31 MB GDS. "
-                         "Measured; the floor is ~470k references either way")
     ap.add_argument("--flat", action="store_true",
                     help="expand array references into polygons (much larger)")
     ap.add_argument("--map", default="data/witness/witness-5in-map.svg")
@@ -1139,19 +1135,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if not a.dry_run:
         fmts = tuple("." + f.strip().lstrip(".") for f in a.formats.split(","))
-        if a.writer == "gf":
-            from .export_witness_gf import write_mask_gf
-            paths = write_mask_gf(plate, Path(a.out), formats=fmts)
-            plate["gds"] = {**plate.get("gds", {}), **plate["gds_gf"],
-                            "path": str(paths[0]), "writer": "gdsfactory",
-                            "size_mb": plate["gds_gf"]["size_mb_by_format"][
-                                paths[0].suffix.lstrip(".")]}
-        else:
-            t_w = time.perf_counter()
-            paths = write_mask(plate, Path(a.out), flat=a.flat, formats=fmts)
-            plate["gds"]["writer"] = "klayout"
-            plate["gds"]["write_s"] = round(time.perf_counter() - t_w, 1)
-            print(f"written in {plate['gds']['write_s']}s")
+        t_w = time.perf_counter()
+        paths = write_mask(plate, Path(a.out), flat=a.flat, formats=fmts)
+        plate["gds"]["writer"] = "klayout"
+        plate["gds"]["write_s"] = round(time.perf_counter() - t_w, 1)
+        print(f"written in {plate['gds']['write_s']}s")
         for p_ in paths:
             mb_ = plate["gds"]["size_mb_by_format"][p_.suffix.lstrip(".")]
             print(f"mask {p_}  {mb_} MB")

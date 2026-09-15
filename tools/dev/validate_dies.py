@@ -32,9 +32,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
-from app import sim2d  # noqa: E402
 from app import witness_dies as wd  # noqa: E402
-from app.sim.angular_spectrum import _propagate  # noqa: E402
 from app.witness_geom import (BOX_CARRIER_UM, BOX_FRONT_LEAF_UM, BOX_MONO_UM,  # noqa: E402
                               GLASS_MATERIAL, METAL)
 
@@ -114,6 +112,27 @@ def coverage_grid(rects, x0, y1, cell, nx, ny, out=None):
 def box_mean(g, k):
     m, n = g.shape[0] - g.shape[0] % k, g.shape[1] - g.shape[1] % k
     return g[:m, :n].reshape(m // k, k, n // k, k).mean(axis=(1, 3))
+
+
+def _propagate(field: np.ndarray, dx_um: float, z_um: float, lam_um: float, n: float) -> np.ndarray:
+    """Angular-spectrum propagation of a scalar complex field. Vendored from
+    ``app.sim.angular_spectrum._propagate`` (the sim/ package was deleted with
+    the holography-simulator retirement, 2026-09 tools+docs cleanup) — this is
+    the only caller left, the A3 near-field gate below, so the ~15-line
+    pure-numpy FFT sandwich lives here instead of pulling in a whole package
+    for one function."""
+    h, w = field.shape
+    k0 = 2 * np.pi / lam_um
+    kx = np.fft.fftfreq(w, d=dx_um) * 2 * np.pi
+    ky = np.fft.fftfreq(h, d=dx_um) * 2 * np.pi
+    KX, KY = np.meshgrid(kx, ky)
+    kz_sq = (n * k0) ** 2 - KX**2 - KY**2
+    kz = np.sqrt(np.maximum(kz_sq, 0)).astype(np.complex64)
+    evanescent = kz_sq < 0
+    kz = np.where(evanescent, 1j * np.sqrt(np.abs(kz_sq)), kz)
+    H = np.exp(1j * kz * z_um).astype(np.complex64)
+    F = np.fft.fft2(field)
+    return np.fft.ifft2(F * H)
 
 
 # --- A1 photo ------------------------------------------------------------------

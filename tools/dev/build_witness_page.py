@@ -16,31 +16,32 @@ SP = sys.argv[1]
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backend'))
 from app.witness_geom import GLASS_MATERIAL, GLASS_N, PLY_UM  # noqa: E402
 ROOT = r"C:/Users/jaywr/OneDrive/Desktop/optics"
-PLAN = f"{ROOT}/docs/witness-physics-plan.md"
+# The full whitepaper (moire/barrier/near-field-bench sections included) was
+# archived whole on the tools+docs cleanup (2026-09-15) once the box went
+# single-ply; this page still walks its original section numbering so it
+# stays the historical record, minus the figures for cells that no longer
+# exist to render (see ARCHIVED below and docs/decisions.md).
+PLAN = f"{ROOT}/docs/archived/witness-physics-plan.md"
 MAN = f"{ROOT}/backend/data/witness/witness-5in.json"
 MAP = f"{ROOT}/backend/data/witness/witness-5in-map.svg"
 OUT = f"{SP}/witness-5in.html"
 RENDERERS = {
-    "witness_swatch.png": "render_witness_figures.py", "witness_harmonic.png": "render_witness_figures.py",
-    "witness_swap.png": "render_witness_figures.py", "witness_wedge.png": "render_witness_figures.py",
-    "fig_stack.svg": "render_witness_figures.py", "fig_union.svg": "render_witness_figures.py",
+    "witness_swatch.png": "render_witness_figures.py", "witness_wedge.png": "render_witness_figures.py",
     "fig_cell.svg": "render_witness_figures.py",
-    "witness_moire.png": "render_moire_preview.py", "witness_moire_b.png": "render_moire_preview.py",
-    "witness_variants.png": "render_witness_preview.py",
     "witness_plate.png": "render_witness_plate.py", "witness_die_top.png": "render_witness_plate.py",
     "witness_die_leaf.png": "render_witness_plate.py", "witness_die_portrait.png": "render_witness_plate.py",
     "witness_die_front.png": "render_witness_plate.py",
     "witness_die_garland.png": "render_witness_plate.py",
     "validate_photo.png": "validate_dies.py", "validate_regions_top.png": "validate_dies.py",
     "validate_regions_front.png": "validate_dies.py",
-    "validate_nearfield.png": "validate_dies.py",
 }
-# Figures of experiment blocks that were cut from the plate on 2026-09-10 are
-# kept as the record of the first design; their renderer can no longer draw
-# them from the plate, so they are exempt from the staleness rule.
-ARCHIVED = {"witness_moire.png", "witness_moire_b.png", "witness_variants.png",
-            # the near-field gate measured the bonded design's gap; kept as record
-            "validate_nearfield.png"}
+# Nothing left to archive-exempt: the retired-cell figures (moire ladders,
+# barrier/P-SWAP, the parallax-stack and union-identity diagrams, the
+# three-treatment portrait comparison, the bonded-design near-field gate)
+# are gone from RENDERERS and AFTER below, along with the scripts that made
+# most of them (render_moire_preview.py, deleted). Their prose stays in
+# docs/archived/witness-physics-plan.md; only their pixels are gone.
+ARCHIVED: set[str] = set()
 for name, r in RENDERERS.items():
     fig_path, r_path = f"{SP}/{name}", f"{ROOT}/tools/dev/{r}"
     if not os.path.exists(fig_path):
@@ -229,19 +230,15 @@ FAB = f"""
 </tbody></table></div>"""
 
 # ---------------------------------------------------------------- assemble
+# Sections 1.2 Moiré, 1.3 Parallax, 2.1 The union identity, 2.4 The moiré
+# the halftone carries, 4.3 Moiré and 4.4 Parallax rendered cells retired
+# with the bond (moiré ladders, the parallax-stack and union-identity
+# diagrams, the barrier/P-SWAP comb); their prose still renders from the
+# archived plan above, just without a figure under it. Sections 4.2, 4.5,
+# 4.6 and 4.7 describe box physics that is still current.
 AFTER = {
-    "1.2 Moiré": fig("witness_moire.png", "beat and rotation ladders, simulated from the emitted geometry",
-                      "Top: pitch beat at five spacings, at the widths built — fringes across the lines. Bottom: rotation at four angles — fringes along the lines. Each panel rasterises the rectangles the writer emits and averages over the 87 µm eye cell, so the fringes are the geometry's, not the formula's."),
-    "1.3 Parallax": diagram("fig_stack.svg", "The two plies and the line of sight. Head-on the slit straddles the A/B lane boundary (a 50/50 blend); a back shift of p/4 uncovers one lane class cleanly. The plies do not move; tilting the part moves where the refracted ray crosses the back ply."),
-    "2.1 The union identity": diagram("fig_union.svg", "One plane carrying both gratings against two plies in contact. The transmission functions are identical, so the static moiré is measured single-layer. In reflection the same cross term appears with inverted brightness."),
-    "2.4 The moiré the halftone carries": fig("witness_harmonic.png", "(2,3) beat modulation vs screen duty, three cases",
-                      "Modulation of the 559 µm beat against the screen's local duty. Tone case in transmission (solid): zero at 0.50, 5.6% at 0.42, 15.6% at 0.65, 40% at 0.90. The built HARM cells realise the bias case (dashed): 3.5 / 0 / 6.7%. In reflection off gold (thin) the lid never exceeds 5.5%."),
     "4.2 Diffraction": fig("witness_swatch.png", "colour swatch matrix, simulated at four tilts",
                       "D-SWATCH simulated: specular gold plus first-order sheen at tilts of 0 / 0.5 / 1 / 2°, blue end left; the bottom row strips the specular to show the ordering. The spread sets how much of the visible the ladder covers. Δλ per degree of tilt is p(cos θ_out − cos θ_in): the renderer assumes a lamp about 65° off the normal with the eye near it, so the hue walks with tilt; with the lamp behind the viewer it would not. SW 4/* and SW 5/1.90 have their blue end below the 2 µm line and are on the plate to be seen failing."),
-    "4.3 Moiré": fig("witness_moire_b.png", "harmonic, contrast and crossed cells, simulated",
-                      "B-HARM at true contrast with a column-mean profile under each panel: the 559 µm component is in the profile at 0.42 and 0.58 and absent at 0.50 — the panels themselves are dominated by the 143 µm (1,1) beat. B-CONT with its transmission and reflection means. D-CROSS raw over a 100 µm window: at the eye cell a 5 µm lattice averages to a flat tone."),
-    "4.4 Parallax": fig("witness_swap.png", "swap angle and lane visibility vs comb pitch",
-                      "Swap angle (left) and lane subtense (right) against comb pitch, for the witness pair and the box. The 1′ eye-cell line is crossed at p = 174 µm at 300 mm: the 173 µm comb sits on the threshold and is 1.5′ at the 200 mm a box is held; SWAP 250 and 350 are visible barriers by construction."),
     "4.5 Halftone": fig("witness_wedge.png", "tone wedges and the linearisation curve",
                       "The three H-WEDGE strips rendered from the emitted rectangles and column-averaged to coverage, with the designed duty under each patch (repeats in orange at 20 µm, where only 10 levels fit). Below: coverage against source value — the linearisation curve, with the classic error marked."),
     "4.6 Edge of envelope": diagram("fig_cell.svg", "Anatomy of a cell as written: the drawn geometry is the clear data; the label is chrome at the bottom-left and carries the value."),
@@ -258,8 +255,6 @@ AFTER = {
               "Three millimetres of DIE-LEFT: the 44 µm line screen with the 4.15–6.0 µm colour sub-gratings inside the coloured bands. The die is mirrored, so the picture reads correctly through the glass once it is the box's outer ply.")
         + fig("witness_die_garland.png", "3 mm of the beach side's garland: per-family diffractive leaf gratings on bare glass",
               "The garland at the same scale: each motif family is filled with a vertical 50% grating at its own period (4.15–6.02 µm) — flat gold at normal incidence, its own spectral colour under a lamp. There is no carrier on this ply; the picture itself has dissolved to bare glass, so the whole side is single-layer and needs no bond.")
-        + fig("validate_nearfield.png", "near-field simulation across 2.25 mm",
-              f"A3, the gate: angular-spectrum propagation through {PLY_UM/1000:g} mm of glass under an incoherent source, eye-cell integrated. Left: a garland at the 500 µm design pitch of 22 / 24 µm; middle: the garland as built at this glass's carrier; right: the monogram pair. The surviving fraction of the zero-gap fringe contrast is printed under each. Predicted by §2.2's Fresnel number, and the number that decided the garland pitch and cut the capybara.")
         + fig("validate_regions_top.png", "the lid's regions as written",
               "A2: the lid's own written polygons rastered at 0.5 µm and painted by the period each region was mapped to (blue 4.15 µm … red 6.02 µm; solid gold where no grating). The gate measures the metal fraction and the stripe pitch inside every region against the map's duty and period.")
         + fig("validate_regions_front.png", "the front's regions as written",
@@ -269,8 +264,6 @@ AFTER = {
     ),
     "5. Area budget, as built": BUDGET,
 }
-VARIANTS = fig("witness_variants.png", "three portrait treatments at three tilts",
-               "The three colour treatments of the same photograph on the 44 µm / 22-level screen — plain, hue-mapped and zone-mapped — at 0 / 1 / 2°, simulated. Plain does not change with tilt; that is the control. On this plate the sides carry ZONES (left) and HUE (right) at 15 mm, and the choice between them is made on the box.")
 
 parts = []
 for kind, html_ in blocks:
@@ -289,8 +282,6 @@ for kind, html_ in blocks:
         for k, v in AFTER.items():
             if key.startswith(k):
                 parts.append(("__AFTER__", v))
-        if key.startswith("4.5 Halftone"):
-            parts.append(("__AFTER__", VARIANTS))
 
 final, pending = [], []
 for p in parts:
@@ -346,12 +337,14 @@ ol {{ max-width: 72ch; color: var(--ink-2); }}
 {FAB}
 
   <footer>
-    Built by <code>app.export_witness</code>; cell geometry in <code>app.witness_cells</code> and
-    <code>app.witness_moire</code>, the colour pipeline in <code>patterns.bitmap.colourplan</code> +
-    <code>screenrects</code>. The plan is <code>docs/witness-physics-plan.md</code>, rendered here with
-    the as-built tables inserted from the manifest. Simulated figures are rendered from the emitted
-    geometry by <code>tools/dev/render_moire_preview.py</code>, <code>render_witness_preview.py</code>
-    and <code>render_witness_figures.py</code>; the production dies live in <code>app.witness_dies</code>,
+    Built by <code>app.export_witness</code>; the surviving bench-cell geometry lives in
+    <code>app.witness_cells</code> / <code>app.witness_moire</code>, the colour pipeline in
+    <code>patterns.bitmap.colourplan</code> + <code>screenrects</code>. The plan is
+    <code>docs/archived/witness-physics-plan.md</code> — the whole original whitepaper, kept as the
+    record of the first (bonded, two-ply) design — rendered here with the as-built tables inserted
+    from the manifest; the current single-ply decisions are <code>docs/plan.md</code> and
+    <code>docs/physics-appendix.md</code>. Simulated figures are rendered from the emitted geometry by
+    <code>render_witness_figures.py</code>; the production dies live in <code>app.witness_dies</code>,
     their renders come from <code>render_witness_plate.py</code> (klayout, from the GDS) and their gates
     from <code>validate_dies.py</code>. The page refuses a figure older than its renderer.
   </footer>

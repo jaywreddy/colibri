@@ -33,7 +33,7 @@ Mirroring. A die is written MIRRORED (x → −x) because the box is assembled
 chrome-down: the gold faces the inner ply and the picture is seen through its
 own glass. A rotated die is mirrored first, then turned +90°.
 
-Marks. Each die carries a tick-code ID (``export_blank.id_tick_rects``) inside
+Marks. Each die carries a tick-code ID (``ply_cuts.id_tick_rects``) inside
 the interior foil-fold band, where the tape hides it, and L-shaped dicing ticks
 just outside its corners in the street. The vernier combs of the bonded design
 are gone with the pairs: a bare inner ply has nothing to read them against.
@@ -50,7 +50,7 @@ from typing import Any
 
 import numpy as np
 
-from . import export_blank as eb
+from . import ply_cuts as pc
 from .witness_geom import (CLEAR, GLASS_MATERIAL, GLASS_N, METAL, PLY_UM, CellArt,
                            Cell, _cat)
 
@@ -90,9 +90,9 @@ def die_dims(face: str) -> dict[str, float]:
     """Cut dimensions (µm) of a face's outer (F) and inner (B) plies."""
     (w_um, d_um, h_um), _ = blank_plan()
     dims = {r.face: (r.width_um, r.height_um)
-            for r in eb.pair_rects(w_um, d_um, h_um, PLY_UM)}
-    fw, fh = dims[eb.subplate_id(face, "F")]
-    bw, bh = dims[eb.subplate_id(face, "B")]
+            for r in pc.pair_rects(w_um, d_um, h_um, PLY_UM)}
+    fw, fh = dims[pc.subplate_id(face, "F")]
+    bw, bh = dims[pc.subplate_id(face, "B")]
     return {"f_w": fw, "f_h": fh, "b_w": bw, "b_h": bh}
 
 
@@ -111,7 +111,7 @@ def bench_marks(face: str, ply: str, stack_w: float, stack_h: float) -> np.ndarr
     from .assembly import FACE_IDS
 
     fold = _fold_um()
-    return eb.id_tick_rects(list(FACE_IDS).index(face), ply == "B",
+    return pc.id_tick_rects(list(FACE_IDS).index(face), ply == "B",
                             stack_w, stack_h, PLY_UM, fold)
 
 
@@ -119,7 +119,7 @@ def dice_ticks(w: float, h: float) -> np.ndarray:
     """Corner L-ticks in the street around a ``w × h`` die centred at the
     origin. Emitted as DATA in either polarity: in the darkfield write the
     street is chrome and a clear L is what a scribe can see."""
-    return eb.dice_tick_rects(eb.Placement("die", -w / 2.0, -h / 2.0, w, h, False))
+    return pc.dice_tick_rects(pc.Placement("die", -w / 2.0, -h / 2.0, w, h, False))
 
 
 # --- inversion ----------------------------------------------------------------
@@ -508,7 +508,7 @@ _MIRROR = np.array([-1.0, 1.0])
 
 
 def _mirror_polys(polys: list[np.ndarray]) -> list[np.ndarray]:
-    # ``eb._transform_verts(..., mirror=True, rotated=False)`` is x -> -x; one
+    # ``pc._transform_verts(..., mirror=True, rotated=False)`` is x -> -x; one
     # multiply per polygon beats its stack() of two column slices, and a die
     # hands this 200k polygons.
     return [np.asarray(p, dtype=np.float64) * _MIRROR for p in polys]
@@ -546,7 +546,7 @@ def _ply_art(w: float, h: float, metal: list[np.ndarray], polarity: str,
                 rects.append(a)
             elif a.ndim == 2 and a.shape[1] == 2:
                 polys.append(a)
-        return eb.mirror_rects(_cat(*rects)) if rects else np.empty((0, 4)), _mirror_polys(polys)
+        return pc.mirror_rects(_cat(*rects)) if rects else np.empty((0, 4)), _mirror_polys(polys)
     return np.empty((0, 4)), _mirror_polys(
         clear_field(w, h, metal, art_box_um=art_box_um, timing=timing,
                     drc_out=drc_out))
@@ -556,11 +556,11 @@ def _ply_art(w: float, h: float, metal: list[np.ndarray], polarity: str,
 
 
 def _rotate_rects(r: np.ndarray) -> np.ndarray:
-    return eb._transform_rects(np.asarray(r, dtype=np.float64), mirror=False, rotated=True)
+    return pc._transform_rects(np.asarray(r, dtype=np.float64), mirror=False, rotated=True)
 
 
 def _rotate_polys(polys: list[np.ndarray]) -> list[np.ndarray]:
-    return [eb._transform_verts(np.asarray(p, dtype=np.float64), mirror=False, rotated=True)
+    return [pc._transform_verts(np.asarray(p, dtype=np.float64), mirror=False, rotated=True)
             for p in polys]
 
 
