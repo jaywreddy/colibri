@@ -6,7 +6,7 @@
   font itself is not modified.
 - **Natural Earth** (`backend/app/patterns/geo/data/ne_110m_*.geojson`) — public
   domain vector map data, https://www.naturalearthdata.com (`LICENSE_NOTE.md` beside the files). Used for the
-  California/Colombia globe centerpiece.
+  `globe-atlantic` front-face centerpiece (US/California, Colombia and Europe).
 - **rembg / u2net** — used only offline by `tools/dev/render_side_plate.py` to
   matte the photographs; not distributed with this repository.
 

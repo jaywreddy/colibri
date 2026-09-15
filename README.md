@@ -39,23 +39,22 @@ backend/   FastAPI (Python, uv). ALL geometry in micrometers (um).
                          bitmap/ (photo -> halftone plates, assets/bitmaps/),
                          geo/ (Natural Earth orthographic globe silhouettes,
                          rotation via lon0)
-  app/export_fine.py / export_gds.py / export_wafer.py
-                         fine-pitch GDS + 4-inch (100 mm) wafer packing
-                         (GET /export/wafer/plan)
-  app/sim2d.py           headless 2D dual-layer parallax compositor + contrast
-                         metrics (the lightweight alternative to the 3D preview)
-  app/api/               routers: /patterns /plates /boxes /export /sim
-                         (incl. /sim/parallax2d composite + curve endpoints)
+  app/export_fine.py     fab-grade vector geometry at the true optical periods
+  app/witness_dies.py / export_witness.py
+                         the 5" mask: clear-field dies, dicing grid, GDS/OASIS
+                         (uv run python -m app.export_witness)
+  app/ply_cuts.py        per-ply cut rects, plate ID + dicing ticks
+  app/api/               routers: /patterns /plates /boxes
 frontend/  Vite + React + TypeScript + vanilla three.js. UI displays mm.
   src/assembly.ts        client-side MIRROR of backend/app/assembly.py
   src/scene/BoxScene.tsx 3D preview — two-plane geometric renderer: back gold
                          on a real inner plane at the paraxial T/n gap, every
                          composed plate binds foliage_moire, PBR metal
                          finishes; src/store.ts zustand state
-  src/lab/composite2d.ts + src/ui/PatternLab.tsx
-                         2D Pattern Lab: canvas dual-layer preview with tilt
-                         sliders/drag, illumination, and live param regen
-tools/     visual verification harness (visual_verifier.py + tools/dev/)
+tools/     visual verification harness (visual_verifier.py) + tools/dev/ —
+           see tools/dev/README.md for the full list of surviving dev
+           scripts (plate figures/previews, fab-gate probes, the assembly
+           golden-fixture generator)
 ```
 
 **Contract pair — keep in sync:** `backend/app/assembly.py` and
@@ -72,7 +71,9 @@ beach, right = `photo-halftone` sunset, back = `photo-halftone` Paris (each with
 its authored colour plan), bottom = `solid-gold`. Every effect is single-layer
 diffraction; the two-ply moiré and two-way switch constructions are kept only
 as hidden exemplars. The 5″ mask that carries the plies is laid out as a
-dicing grid by `app.export_witness` (see `docs/production-plate-plan.md`).
+dicing grid by `app.export_witness` (see `docs/plan.md`; the physics behind
+the single-layer colour is in `docs/physics-appendix.md`, the decision
+numbers in `docs/decisions.md`).
 
 **Lazy caches:** nothing materializes at startup. Pattern variants, composed
 plates, and boxes are generated on first request and cached on disk under
@@ -92,8 +93,9 @@ just test-effects   # @effects physical-honesty suite (pixel metrics, no LLM)
 ```
 
 **Assembly contract golden fixture** — `tools/fixtures/assembly_golden.json`
-is generated from the backend math (`tools/dev/gen_assembly_golden.py`) and
-consumed by BOTH `backend/tests/test_assembly.py` and
+is generated from the backend math (`just gen-golden`, i.e.
+`tools/dev/gen_assembly_golden.py`) and consumed by BOTH
+`backend/tests/test_assembly.py` and
 `frontend/tests/unit/assemblyGolden.test.ts`, so any drift between
 `app/assembly.py` and `src/assembly.ts` fails a suite instead of silently
 diverging. Regenerate it only when the contract intentionally changes.
