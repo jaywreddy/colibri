@@ -623,6 +623,10 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
     drc = fine.stats.get("drc", {})
     art.stats = {
         "polarity": polarity, "face": face, "slug": pspec.pattern_slug,
+        # WHICH construction wrote this die (plates.FaceKind) — the same value
+        # the plate manifest's recipe_data stamps, so a die and its preview
+        # cannot disagree about what the face is.
+        "face_kind": pspec.kind.value,
         "ply_um": PLY_UM, "glass_n": GLASS_N, "mirrored": True, "rotated": bool(rotated),
         "f_um": [fw, fh], "cell_um": [cw, ch],
         "art_rim_um": float(pspec.weld_margin_um), "art_box_um": float(art_box),
@@ -721,6 +725,8 @@ def production_cells() -> list[Cell]:
     row of three photographs, so two 32 mm fronts and six 27.5 mm sides fill
     two 117.5 mm rows exactly. ``SPARE_SIDES`` duplicates trail the list.
     """
+    from . import plates as P
+
     MM = 1000.0
     _, spec = blank_plan()
 
@@ -733,12 +739,13 @@ def production_cells() -> list[Cell]:
     for face, title in (("top", "lid"), ("front", "front"), ("back", "back")):
         ps = spec.faces[face]
         d = die_dims(face)
+        is_photo = ps.kind is P.FaceKind.PHOTO
         what = (f"{ps.pattern_slug} {ps.pattern_params.get('image', '')} + garland"
-                if ps.pattern_slug == "photo-halftone" else f"{ps.pattern_slug} + garland")
+                if is_photo else f"{ps.pattern_slug} + garland")
         c = _face(face, f"DIE-{face.upper()}", f"{title}: {what}",
                   f"{face.upper()} {ps.pattern_params.get('image', ps.pattern_slug)}", f"{face}",
                   f"one ply, {d['f_w']/MM:.1f} x {d['f_h']/MM:.1f} mm; "
-                  + ("line screen with authored colour zones" if ps.pattern_slug == "photo-halftone"
+                  + ("line screen with authored colour zones" if is_photo
                      else "single-layer diffraction mapping (colour by region)")
                   + "; mirrored for the chrome-down stack")
         (tall if face == "top" else fronts).append(c)

@@ -226,7 +226,7 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     art_regions: np.ndarray | None = None
     region_specs: dict[int, Any] | None = None
 
-    if spec.pattern_slug in (P.BLANK_SLUG, P.SOLID_SLUG):
+    if spec.kind in (P.FaceKind.BLANK, P.FaceKind.SOLID):
         # BARE GLASS (and SOLID GOLD, whose one rectangle build_plate_fine adds
         # itself): every zone stays empty, so every ``.any()`` gate in
         # ``build_plate_fine`` falls through and the plate emits no geometry at
@@ -298,7 +298,7 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         from . import region_art as RA
 
         ra = (RA.centerpiece_regions(spec.pattern_slug, side_px, spec.pattern_params)
-              if RA.single_layer_centerpiece(spec) else None)
+              if spec.kind is P.FaceKind.REGION else None)
         if ra is not None:
             # SINGLE-LAYER DIFFRACTION centrepiece: the label map goes on the
             # grid at the art box; the silhouette masks stay empty so nothing
@@ -316,7 +316,7 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
             masks = None
         else:
             art_regions, region_specs = None, None
-            masks = P._centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
+            masks = P._centerpiece_masks(spec, side_px)
         if masks is not None:
             def _place(art: np.ndarray) -> np.ndarray:
                 if art.shape[0] != side_px or art.shape[1] != side_px:
@@ -572,9 +572,9 @@ def single_layer_region_rects(spec: Any) -> np.ndarray:
     ``build_plate_fine`` writes, for the fab SVG bake to concatenate (the
     2-6 µm gratings are far below the SVG's raster pitch). Empty when the face
     has no region centrepiece."""
-    from . import region_art as RA
+    from . import plates as P
 
-    if not RA.single_layer_centerpiece(spec):
+    if spec.kind is not P.FaceKind.REGION:
         return np.empty((0, 4), dtype=np.float64)
     parts: list[np.ndarray] = []
     _emit_region_art(spec, parts)
@@ -608,11 +608,13 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     frame_count = int(round(float(rd["frame_bucket_count"])))
     center_period = float(rd.get("fab_center_period_um", rd["center_period_um"]))  # 60.0
     center_axis = float(rd["switch_axis_deg"])
+    kind = spec.kind
+    # WHICH exemplar, inside FaceKind.TWO_PLY — see plates._carrier_recipe_data.
     is_interlace = spec.pattern_slug in P.SWITCH_INTERLACE_SLUGS
     # PHOTOGRAPH: the centerpiece is a line screen, emitted as exact rectangles
     # from ``plates.photo_band_rects`` (front layer only) rather than a
     # silhouette filled with the switch carrier.
-    is_photo = spec.pattern_slug == P.PHOTO_SLUG
+    is_photo = kind is P.FaceKind.PHOTO
     # SINGLE PLY: no inner ply exists, so the uniform carrier joins the leaves on
     # the FRONT layer and the back layer stays empty.
     single_ply = bool(getattr(spec, "single_ply", False))
@@ -635,7 +637,7 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     back_angled: list[tuple[np.ndarray, float]] = []
     stats: dict[str, Any] = {"pitch_um": pitch}
 
-    if spec.pattern_slug == P.SOLID_SLUG:
+    if kind is P.FaceKind.SOLID:
         # SOLID GOLD (the base plate): the whole outer ply, one rectangle, no
         # rim — the gold runs under the foil. Every zone mask is empty, so
         # nothing else below emits.
@@ -746,7 +748,7 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # (≫ 2 µm floor). Legacy phase-switch faces (front-only shimmer): the
     # FRONT silhouette filled with the phase-0 switch carrier. Both exclude
     # the accent zone (4.4 µm grating).
-    if single_ply and zm.art_regions is not None:
+    if kind is P.FaceKind.REGION and zm.art_regions is not None:
         # SINGLE-LAYER DIFFRACTION centrepiece (region_art): each region of the
         # motif is its own vertical grating at its own period — colour by
         # region, one ply, no carrier — or solid gold where the period is 0.

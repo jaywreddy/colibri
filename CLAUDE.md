@@ -18,7 +18,7 @@
   Manual equivalent, from `backend/`, one at a time:
   ```
   uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
-  uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py -q
+  uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py tests/test_face_kind.py -q
   uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q
   uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_showcase_patterns.py -q
   uv run --extra dev pytest tests/test_param_validation.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_shimmer_moire.py -q
@@ -29,7 +29,7 @@
   (The heavy files — plates_and_boxes, api_patterns, frames, patterns_roundtrip,
   cache_integrity (~80 s, does a real fab-zip rebuild) — never share a chunk
   with more than one other file. Everything else is light: chunk 2 and chunk 7
-  are five and six files but run in seconds, chunk 5 is validation/registration
+  are six files each but run in seconds, chunk 5 is validation/registration
   at small extents, and the witness chunk builds every cell at a couple of mm,
   never at the shipping 30 mm — the real plate is `just plate`, an 8 min
   standalone build.)

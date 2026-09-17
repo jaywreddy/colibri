@@ -30,6 +30,8 @@ import math
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from enum import Enum
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +158,65 @@ class GlassSpec:
     n: float = 1.46
 
 
+class FaceKind(Enum):
+    """WHAT a face is, decided once (``PlateSpec.kind``) and read everywhere.
+
+    Until 2026-09-16 each writer re-derived this from the slug: nine
+    ``slug == PHOTO_SLUG`` / ``slug in (BLANK_SLUG, SOLID_SLUG)`` /
+    ``single_layer_centerpiece(spec)`` tests across ``plates`` (six),
+    ``export_fine`` (two) and ``witness_dies`` (one). Two of them drifted in the
+    same week — the fab SVG drew a carrier the fine bake did not — which is the
+    failure mode a recomputed classification has. The enum is computed from the
+    same three inputs those tests read (slug, ``single_ply``, whether the slug
+    registered a ``region_art`` map), once, and is stamped into the plate
+    manifest's ``recipe_data`` so a consumer can see which branch wrote it.
+
+    The five kinds, in the order the classification tests them (the first match
+    wins, which is also the order every writer used to test them in):
+
+    ``BLANK``    bare quartz: no frame, no carrier, no centrepiece, either layer.
+    ``SOLID``    one unbroken sheet of gold over the whole ply, no rim.
+    ``PHOTO``    the centrepiece is a LINE SCREEN (no silhouette, front only).
+    ``REGION``   a SINGLE-PLY face whose slug registers a ``region_art`` map:
+                 the centrepiece is regions of gratings, colour by period.
+    ``TWO_PLY``  the silhouette-and-carrier construction — a centrepiece
+                 ``_centerpiece_masks`` fills with the centre carrier, and a
+                 back layer to fill. Every PRODUCTION face is one of the first
+                 four; this kind is reached only by the two hidden exemplars
+                 (``SWITCH_INTERLACE_SLUGS`` the barrier switch,
+                 ``SHIMMER_MOIRE_SLUGS`` the shading moiré) and by a
+                 hypothetical two-ply composition of a region slug, which the
+                 same branch already handled by emitting nothing.
+
+    WHICH two-ply exemplar a ``TWO_PLY`` face is stays a slug-set test
+    (``SWITCH_INTERLACE_SLUGS`` vs ``SHIMMER_MOIRE_SLUGS``): that split changes
+    a grating's period and phase inside one construction rather than choosing
+    the construction, and folding it in here would make the enum's two halves
+    mean different things.
+    """
+
+    BLANK = "blank"
+    SOLID = "solid"
+    PHOTO = "photo"
+    REGION = "region"
+    TWO_PLY = "two_ply"
+
+
+def face_kind(spec: "PlateSpec") -> FaceKind:
+    """Classify a plate spec — the ONE place the five constructions are told
+    apart. See :class:`FaceKind`; ``PlateSpec.kind`` caches this per spec."""
+    slug = getattr(spec, "pattern_slug", "")
+    if slug == BLANK_SLUG:
+        return FaceKind.BLANK
+    if slug == SOLID_SLUG:
+        return FaceKind.SOLID
+    if slug == PHOTO_SLUG:
+        return FaceKind.PHOTO
+    if _RA.single_layer_centerpiece(spec):
+        return FaceKind.REGION
+    return FaceKind.TWO_PLY
+
+
 @dataclass
 class PlateSpec:
     """User-level recipe for one glass plate."""
@@ -249,6 +310,22 @@ class PlateSpec:
             single_ply=bool(data.get("single_ply", False)),
             label=data.get("label", ""),
         )
+
+    @cached_property
+    def kind(self) -> FaceKind:
+        """Which of the five constructions this face is (:class:`FaceKind`).
+
+        Cached because every writer asks and the REGION test imports the
+        pattern package to see whether the slug registered a region map. Safe
+        to cache: it depends only on ``pattern_slug`` and ``single_ply``, and
+        nothing mutates those after construction — ``normalize_face_dims``
+        stamps dims/glass/pitch, and the one place that swaps a photograph
+        (``witness_dies.side_photo_spec``) builds a NEW spec with
+        ``dataclasses.replace``. It is deliberately NOT a dataclass field: it
+        is derived, so it stays out of ``to_dict`` and therefore out of
+        ``plate_hash``.
+        """
+        return face_kind(self)
 
     def active_dims(self) -> tuple[float, float]:
         """(W, H) of the FRONT foliage area inside the weld border, in μm."""
@@ -666,6 +743,7 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     shading-moiré face (SHIMMER_MOIRE_SLUGS) it is the glimmer carrier. Both
     are two-ply exemplars — no production face reads either.
     """
+    kind = spec.kind
     base_angle = (spec.frame.seed * 17.0) % 180.0
     # User-tunable grating pitch drives the REAL back carrier + leaf louvre
     # family (the switch/comb barrier faces keep their own 60 µm architecture,
@@ -715,6 +793,11 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     # glass-derived barrier/comb pitch on the +X axis, because there the pitch
     # and axis set a SWITCH angle rather than a beat and must not be retuned for
     # fringe aesthetics.
+    # WHICH two-ply exemplar, not WHICH construction: a slug-set test on
+    # purpose (see FaceKind). Deliberately NOT gated on ``kind is TWO_PLY`` —
+    # the production lid is the same slug on one ply, and narrowing this would
+    # change the ``fab_center_period_um``/``switch_axis_deg`` it has always
+    # published (unread there, but published) for no gain.
     is_shimmer = spec.pattern_slug in SHIMMER_MOIRE_SLUGS
     center_period = (
         carrier_pitch + beat_delta_um(carrier_pitch, CENTERPIECE_BEAT_UM)
@@ -761,22 +844,25 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         # (like switch_barrier_phase_um): a consumer that reads the flag on every
         # face cannot drift from it, and a key that appears on some faces and not
         # others is how a stale manifest quietly changes meaning.
-        "blank": spec.pattern_slug == BLANK_SLUG,
+        "blank": kind is FaceKind.BLANK,
         # SOLID GOLD: the whole outer ply is metal (patterns/solid.py).
-        "solid": spec.pattern_slug == SOLID_SLUG,
+        "solid": kind is FaceKind.SOLID,
         # SOLID ART: the centerpiece is a line-screen picture whose bands are
         # already the tone, so the shader must fill ART_LEVEL with plain gold
         # instead of running the procedural switch carrier over it — a second
         # grating on top would multiply the halftone's duty and wash the picture
         # out. (RAINBOW_LEVEL bands keep their diffraction sheen; those ARE the
         # colour sub-grating.)
-        "art_solid": (spec.pattern_slug in (PHOTO_SLUG, SOLID_SLUG)
-                      or _RA.single_layer_centerpiece(spec)),
+        "art_solid": kind in (FaceKind.PHOTO, FaceKind.SOLID, FaceKind.REGION),
         # SINGLE-LAYER DIFFRACTION centrepiece (region_art): the motif is a map
         # of regions each written as a vertical grating at its own period
         # (colour by region) or solid gold. Its periods ride ``period_front``
         # like the photo colour zones do; ``literal_front`` carries the metal.
-        "region_art": _RA.single_layer_centerpiece(spec),
+        "region_art": kind is FaceKind.REGION,
+        # WHICH of the five constructions wrote this plate (FaceKind), decided
+        # once on the spec and published so a reader of the manifest does not
+        # have to re-derive it from the slug. Part of PLATE_COMPOSE_VERSION.
+        "face_kind": kind.value,
         # SINGLE PLY: one sheet of glass, so there is no second plane for a
         # carrier to beat against — CARRIER_COV = 0 for every photo-halftone
         # face, so the picture dissolves straight to bare glass instead. The
@@ -862,35 +948,35 @@ def _aperture(spec: PlateSpec) -> float:
 
 
 def _centerpiece_masks(
-    slug: str, n_px: int, params: dict | None = None
+    spec: PlateSpec, n_px: int
 ) -> tuple["np.ndarray", "np.ndarray"] | None:
     """(front_art, back_art) bool silhouettes for the tilt-switch centerpiece.
 
     Rendered directly from the motif silhouettes (clean masks, NO baked stripe
     carrier — the shader draws the glimmer procedurally) at ``n_px`` resolution.
-    Returns ``None`` for patterns that don't define a paired centerpiece, so the
-    plate is frame-only. Driven by the pattern slug so the composition stays
-    data-directed rather than hard-wiring one pattern into the plate compositor.
+    Returns ``None`` for faces that don't define a paired centerpiece, so the
+    plate is frame-only. Which motif to render is driven by the pattern slug so
+    the composition stays data-directed rather than hard-wiring one pattern into
+    the plate compositor; the face's ``pattern_params`` feed the slugs whose
+    silhouette depends on them (neither of the two that reach the body today
+    does).
 
-    ``params`` carries the face's ``pattern_params`` for slugs whose silhouette
-    depends on them; slugs with a fixed silhouette ignore it.
+    Only a ``FaceKind.TWO_PLY`` face has a silhouette pair at all, and saying so
+    HERE is what keeps every consumer consistent: the composed preview, the fab
+    SVG's ``_center_masks`` and ``export_fine._build_zone_masks`` all read this
+    one function, so a blank face gets no art on either layer and a photo face
+    gets no ``front_art``/``back_art`` for the switch carrier to fill. (A
+    photo's geometry is a LINE SCREEN, not a silhouette — it comes from
+    ``_photo_band_stamp`` / ``photo_band_rects``; a region face's is a map of
+    gratings — ``region_art.centerpiece_regions``.)
 
-    TWO SLUGS REACH THIS (2026-09-16), and both are hidden two-ply exemplars:
+    TWO SLUGS REACH THE BODY (2026-09-16), both hidden two-ply exemplars:
     ``globe-duo-phase`` (the barrier switch) and ``monogram-jp`` composed with
-    ``single_ply=False`` (the shading moiré). Every PRODUCTION face answers
-    earlier — blank/photo/solid below, or a ``region_art`` centrepiece, which
-    ``_paste_centerpiece`` handles before it ever calls this.
+    ``single_ply=False`` (the shading moiré).
     """
-    params = params or {}
-    if slug in (BLANK_SLUG, PHOTO_SLUG, SOLID_SLUG):
-        # None of these faces has a silhouette centerpiece, and saying so HERE is what
-        # keeps every consumer consistent: the composed preview, the fab SVG's
-        # ``_center_masks`` and ``export_fine._build_zone_masks`` all read this
-        # one function, so a blank face gets no art on either layer and a photo
-        # face gets no ``front_art``/``back_art`` for the switch carrier to fill.
-        # The photo's own geometry is a LINE SCREEN, not a silhouette — it comes
-        # from ``_photo_band_stamp`` (preview) / ``photo_band_rects`` (fab).
+    if spec.kind is not FaceKind.TWO_PLY:
         return None
+    slug = spec.pattern_slug
     if slug == "globe-duo-phase":
         # Duo-globe A/B tilt switch: front = orthographic globe centered on
         # CALIFORNIA (phase 0), back = orthographic globe centered on COLOMBIA
@@ -1136,7 +1222,7 @@ def photo_colour_band_periods(spec: PlateSpec) -> tuple["np.ndarray", "np.ndarra
     import numpy as np
 
     empty = (np.empty((0, 4), dtype=float), np.empty((0,), dtype=float))
-    if spec.pattern_slug != PHOTO_SLUG:
+    if spec.kind is not FaceKind.PHOTO:
         return empty
     # defer_arrays=True: we want the band + period reference, NOT the expanded
     # stripes (which is also why this is cheaper than photo_band_rects).
@@ -1181,7 +1267,7 @@ def _paste_centerpiece(
     x0 = cx - side_px // 2
     y0 = cy - side_px // 2
 
-    if _RA.single_layer_centerpiece(spec):
+    if spec.kind is FaceKind.REGION:
         # SINGLE-LAYER DIFFRACTION centrepiece: solid regions at ART_LEVEL
         # (``art_solid`` → plain gold), diffractive regions at RAINBOW_LEVEL
         # (the shader's spectral sheen; the period itself rides period_front).
@@ -1197,7 +1283,7 @@ def _paste_centerpiece(
         )
         return
 
-    if spec.pattern_slug == PHOTO_SLUG:
+    if spec.kind is FaceKind.PHOTO:
         # LINE SCREEN, front only. Bands go in at ART_LEVEL — with
         # ``recipe_data['art_solid']`` the shader fills that level with solid
         # gold instead of the procedural switch carrier, because the band height
@@ -1221,7 +1307,7 @@ def _paste_centerpiece(
         )
         return
 
-    masks = _centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
+    masks = _centerpiece_masks(spec, side_px)
     if masks is None:
         return
     front_art, back_art = masks
@@ -1312,10 +1398,10 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     # BARE GLASS: no frame, no carrier, no centerpiece, on either layer. The
     # plate still exists — the box needs its cut dims, glass and assembly entry
     # — it just describes a rectangle of quartz. See BLANK_SLUG.
-    is_blank = spec.pattern_slug == BLANK_SLUG
+    is_blank = spec.kind is FaceKind.BLANK
     # SOLID GOLD: no frame and no centerpiece either — the front mask is
     # ART_LEVEL over the whole plate (painted below) and the rim is NOT zeroed.
-    is_solid = spec.pattern_slug == SOLID_SLUG
+    is_solid = spec.kind is FaceKind.SOLID
     # SINGLE PLY: there is no inner ply to write on, and (2026-09-10) the one
     # ply carries NO carrier: the photograph and the leaf frame on bare glass.
     # The back layer stays empty. Reference: export_fine's single-ply note.
@@ -1551,7 +1637,7 @@ def _literal_period_raster(spec: PlateSpec, w_px: int, h_px: int) -> Image.Image
     from .literal_raster import rect_texel_overlaps
 
     out = np.zeros(h_px * w_px, dtype=np.uint8)
-    if _RA.single_layer_centerpiece(spec):
+    if spec.kind is FaceKind.REGION:
         # SINGLE-LAYER DIFFRACTION centrepiece: the region map's periods, at
         # the art box, nearest-neighbour onto the texel grid.
         side_um = CENTERPIECE_FILL * _aperture(spec)
@@ -1722,7 +1808,12 @@ def _write_literal_rasters(spec: PlateSpec, out_dir: Path, pid: str) -> dict[str
 #     and ``_centerpiece_masks`` keeps only the two hidden exemplars. The mask
 #     PNGs of every PRODUCTION face are unchanged (none of them entered any of
 #     those branches) but recipe_data is, and it is cached.
-PLATE_COMPOSE_VERSION = 26
+# v27: FaceKind (2026-09-16). The blank/solid/photo/region/two-ply decision moves
+#     to ``PlateSpec.kind`` and ``recipe_data`` gains ``face_kind``. No writer's
+#     BRANCH changes — the enum classifies on exactly the inputs the nine slug
+#     tests read — so every face's PNGs and SVG are byte-identical; the marker
+#     moves because the manifest gained a key.
+PLATE_COMPOSE_VERSION = 27
 
 
 # Plate ids whose ``scene.json`` was written by the compose CURRENTLY running on
@@ -2166,7 +2257,7 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
     if manifest is None or "spec" not in manifest:
         return None
     spec = PlateSpec.from_dict(manifest["spec"])
-    if spec.pattern_slug == BLANK_SLUG:
+    if spec.kind is FaceKind.BLANK:
         # BARE GLASS: two valid but empty documents. Written (rather than
         # skipped) so the export bundle carries a file per layer per face and a
         # fab reader sees "this face is blank", not "this face is missing".
@@ -2175,7 +2266,7 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             spec.width_um, spec.height_um, "", "", {},
         )
         return front_svg, back_svg
-    if spec.pattern_slug == SOLID_SLUG:
+    if spec.kind is FaceKind.SOLID:
         # SOLID GOLD: the whole outer ply as one rectangle, the inner empty —
         # the same geometry export_fine writes for this face.
         from shapely.geometry import box as _box
@@ -2269,10 +2360,11 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             plate_id,
             spec.pattern_slug,
         )
+    # WHICH exemplar, inside FaceKind.TWO_PLY — see _carrier_recipe_data.
     is_interlace = spec.pattern_slug in SWITCH_INTERLACE_SLUGS
-    is_photo = spec.pattern_slug == PHOTO_SLUG
+    is_photo = spec.kind is FaceKind.PHOTO
     single_ply = bool(getattr(spec, "single_ply", False))
-    is_region = _RA.single_layer_centerpiece(spec)
+    is_region = spec.kind is FaceKind.REGION
     aperture = _aperture(spec)
     side_px = max(8, int(round(CENTERPIECE_FILL * aperture / pitch))) if aperture > 0 else 0
     cxg = fw // 2
@@ -2366,7 +2458,7 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             # a region centrepiece has no silhouette to fill with a carrier:
             # its exact rects are concatenated below (single_layer_region_rects)
             return empty, empty.copy()
-        masks = _centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
+        masks = _centerpiece_masks(spec, side_px)
         if masks is None:
             return empty, empty.copy()
         from PIL import Image as _Image
