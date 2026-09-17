@@ -481,8 +481,8 @@ vec2 barrierPUm(vec2 pUm) {
 // aliasing — the barrier structure only resolves once the CAMERA (zoom / render
 // pixel ratio) makes a period span several pixels. Pattern Scale deliberately does
 // not touch this pitch (see uPatternScale), because scaling it would scale the
-// switch tilt angle. This is the outer-plane half of both the water scanimation
-// (openFrac = 1/N) and the barrier-interlace switch (openFrac = 0.5).
+// switch tilt angle. One caller left: the outer-plane comb of the
+// barrier-interlace switch (openFrac = 0.5).
 float slitBarCoverage(vec2 pUm, float pitchUm, float openFrac, float phase) {
   float coord = pUm.x / max(1.0, pitchUm) + phase;
   // ITEM 6 — exact box average (see boxPulse). boxPulse returns the OPEN-slot
@@ -656,14 +656,14 @@ vec4 shadeCoverage(float cov, float dimCov, float hotCov, float accentDiffFrac,
     // is darker only by its physical two-interface transmission (item 5's T2), which
     // is ~0.93 head-on and falls toward 0.42 at 80° — so the recession is now a real
     // view-dependent second-surface cue rather than a fixed dimming factor. The
-    // dim/hot buckets (water barrier / flowing water) still override the default so
-    // the scanimation reads: the barrier recedes and the water behind it glows.
+    // dim/hot buckets still override the default so the barrier interlace reads:
+    // the slit comb recedes and the image revealed behind it glows.
     //
     // NOTE for the visual re-check: retiring the old ~40% arbitrary back-plane
     // dimming raises the inner plane's baseline substantially. That is the physically
     // correct budget, but the dimCov/hotCov bucket balance was tuned against the old
-    // constants, so the water-barrier vs. flowing-water read is the one thing here
-    // that wants eyes on it (see the commit message).
+    // constants, so the comb vs. revealed-image read is the one thing here that
+    // wants eyes on it (see the commit message).
     // ITEM 2d — coefficients RE-DERIVED for linear-light shading. Every constant
     // here was originally hand-tuned against display-space output; with GOLD now
     // linear and <tonemapping_fragment>/<colorspace_fragment> in main(), the same

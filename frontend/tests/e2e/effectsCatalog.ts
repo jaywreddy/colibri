@@ -54,11 +54,12 @@
  *               gets a back carrier to beat against. Assigning the ply is the
  *               whole exemplar; there is no separate pattern.
  *
- * Retired with the patterns they previewed: `stereo` (globe-rotation-stereo,
- * the deleted single-plane stereo_lenticular recipe) and `reveal`
- * (monogram-carrier-reveal, the banned phase_shift_overlay). The physics both
- * pinned — a cross-layer effect that tracks the REAL plane gap — is what the
- * two-ply moiré parallax scenario measures.
+ * Two entries retired with the patterns they previewed: one drove the deleted
+ * single-plane stereo_lenticular recipe, the other the banned
+ * phase_shift_overlay (a front-layer image that vanishes under tilt, which
+ * CLAUDE.md names as an anti-pattern). The physics both pinned — a cross-layer
+ * effect that tracks the REAL plane gap — is what the two-ply moiré parallax
+ * scenario measures.
  */
 export const TEST_PATTERNS = {
   interlace: 'globe-duo-phase',

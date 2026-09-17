@@ -1438,8 +1438,8 @@ export default function BoxScene() {
       // Bonded: the front chrome physically sits at the bond line, one ply
       // below the outer surface. Both layers' apparent depths shift by the
       // same paraxial amount, so the LAYER-TO-LAYER gap — the quantity every
-      // moiré/switch/scanimation crossing depends on, and what the @effects
-      // suite scales — is T/n in both constructions. We keep the front plane
+      // moiré beat and switch crossing depends on, and what the @effects suite
+      // scales — is T/n in both constructions. We keep the front plane
       // at the stack surface (its burial only affects parallax against the
       // glass edge, not against the back layer) and place the back plane T/n
       // below it, exactly as in the single-plate build.
