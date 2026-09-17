@@ -18,15 +18,15 @@
   Manual equivalent, from `backend/`, one at a time:
   ```
   uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
-  uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_export_gds_stub.py tests/test_theme_metadata.py tests/test_variant_hash.py -q
+  uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py -q
   uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q
   uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_sim_numerics.py -q
   uv run --extra dev pytest tests/test_sim2d.py tests/test_pattern_types.py tests/test_showcase_patterns.py tests/test_bitmap_halftone.py -q
   uv run --extra dev pytest tests/test_param_validation.py tests/test_sim_bounds.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_readability.py -q
   uv run --extra dev pytest tests/test_collage.py tests/test_api_collage.py tests/test_shimmer_moire.py -q
   uv run --extra dev pytest tests/test_imageprep.py tests/test_colourzone.py -q
-  uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py tests/test_witness.py tests/test_export_blank.py tests/test_export_svg_rects.py -q
-  uv run --extra dev pytest tests/test_cache_integrity.py tests/test_export_jobs.py -q
+  uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py tests/test_witness.py tests/test_ply_cuts.py tests/test_export_svg_rects.py -q
+  uv run --extra dev pytest tests/test_cache_integrity.py -q
   ```
   (The witness chunk is light — every cell in it is built at a couple of mm,
   never at the shipping 30 mm; the real plate is a 30 s standalone build.

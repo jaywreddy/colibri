@@ -188,48 +188,10 @@ class ZoneMasks:
     back_window: np.ndarray                # whole exposed-face carrier window (back)
     front_art: np.ndarray                  # centerpiece front silhouette
     back_art: np.ndarray                   # centerpiece back silhouette
-    front_accent: np.ndarray               # rainbow accent subset of front_art
     # Full centerpiece art box (the CENTERPIECE_FILL square, weld-rim clipped).
     # The barrier-interlace front comb spans this WHOLE square — never the
     # silhouette union (a union-gated comb is itself a static front image).
     art_box: np.ndarray | None = None
-    # Scanimation (capybara back only); None otherwise. The barrier + back frames
-    # are EMITTED as exact vector rects (see the scanimation vector builders) —
-    # only ``capy_body`` (the dry silhouette that carries the shimmer grating) and
-    # ``water_band`` (used to exclude the carrier from the animated region) are
-    # rastered here, and both are boundary-only zones like the other masks.
-    # ``water_band`` is the CARVED band — below the waterline MINUS the submerged
-    # body (``capybara_scanimation._capybara_and_water``, the same algebra the
-    # composed preview uses) — so the plain back carrier is KEPT over the animal
-    # rather than cleared for a ripple field that must not print there.
-    water_band: np.ndarray | None = None
-    capy_body: np.ndarray | None = None      # dry capybara silhouette (above water)
-    # FULL capybara silhouette in the SQUARE art-box grid (``side_px``², y-DOWN,
-    # normalized 0..1 coords) — NOT placed on the plate grid like the fields above.
-    # The exact vector builders work in art-box normalized coords, so they carve the
-    # animal out of the barrier comb / ripple slots by sampling THIS mask (see
-    # ``_sample_art_mask``); handing them the plate-grid placement would mean
-    # re-deriving the normalization they already have. Same silhouette raster the
-    # ``water_band`` / ``capy_body`` zones above were cut from, so the rastered
-    # zones and the vector geometry cannot disagree about where the animal is.
-    #
-    # The FULL silhouette, not the submerged part, for the same reason
-    # ``_capybara_and_water`` carves the band with ``~capy``: the builders only ever
-    # emit INSIDE the water band, so above the waterline the mask is never consulted
-    # — while a submerged-only mask would lose the body in the one raster row that
-    # STRADDLES the waterline (the band's analytic edge sits partway into that row,
-    # so ``capy & below`` calls it dry and a bar/crest would print on the animal's
-    # back there).
-    capy_art: np.ndarray | None = None
-    # EFFECTIVE waterline (art-box normalized y, 0 = top) this plate's zones were
-    # built at — resolved ONCE from the face's ``waterline`` pattern param by
-    # ``plates._water_waterline_y``, the same resolver the composed preview mask,
-    # the fab SVG bake and the shader's ``water_waterline_y`` read. Carried here
-    # (rather than re-read from the module constant downstream) so the rastered
-    # body/band zones and the EXACT vector barrier + back-frame builders in
-    # ``build_plate_fine`` cannot be built at two different waterlines. None on a
-    # non-scanimation plate.
-    waterline_y: float | None = None
     # SINGLE-LAYER DIFFRACTION centrepiece (region_art): int32 label raster on
     # the plate grid (0 = glass) and the Region each label is written as. When
     # set, ``front_art`` / ``back_art`` are EMPTY — the regions ARE the
@@ -243,10 +205,9 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
 
     Reuses plates.py's own helpers (`frame_scene_for_plate` →
     `render_scene_to_image` for the foliage band graylevels — the composed
-    plate's own scene, not a regrown one — `_centerpiece_masks` for the silhouettes,
-    `_front_accent_zone` for the rainbow patch, the capybara `_build` for the
-    scanimation). Boundary quantization only — periods are added later as vector
-    geometry.
+    plate's own scene, not a regrown one — and `region_art.centerpiece_regions` /
+    `_centerpiece_masks` for the centrepiece). Boundary quantization only —
+    periods are added later as vector geometry.
     """
     from PIL import Image
 
@@ -261,7 +222,6 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
     back_window = np.zeros((fh, fw), dtype=bool)
     front_art = np.zeros((fh, fw), dtype=bool)
     back_art = np.zeros((fh, fw), dtype=bool)
-    front_accent = np.zeros((fh, fw), dtype=bool)
     art_box = np.zeros((fh, fw), dtype=bool)
     art_regions: np.ndarray | None = None
     region_specs: dict[int, Any] | None = None
@@ -281,7 +241,6 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
             back_window=back_window,
             front_art=front_art,
             back_art=back_art,
-            front_accent=front_accent,
             art_box=art_box,
         )
 
@@ -326,7 +285,7 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         back_margin = spec.weld_margin_um if spec.back_margin_um is None else spec.back_margin_um
         _mask_rim(back_window, back_margin, pitch_um)
 
-    # --- CENTERPIECE silhouettes + accent ----------------------------------
+    # --- CENTERPIECE silhouettes -------------------------------------------
     aperture = P._aperture(spec)
     side_px = max(8, int(round(P.CENTERPIECE_FILL * aperture / pitch_um))) if aperture > 0 else 0
     if side_px > 0:
@@ -373,15 +332,11 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
                 m[ya:yb, xa:xb] = art[ya - y0 : yb - y0, xa - x0 : xb - x0]
                 return m, art
 
-            front_art, front_side = _place(masks[0])
+            front_art, _front_side = _place(masks[0])
             back_art, _ = _place(masks[1])
             _mask_rim(front_art, spec.weld_margin_um, pitch_um)
-            accent_zone = P._front_accent_zone(spec.pattern_slug, front_side)
-            if accent_zone is not None:
-                front_accent, _ = _place(accent_zone)
-                _mask_rim(front_accent, spec.weld_margin_um, pitch_um)
 
-    zm = ZoneMasks(
+    return ZoneMasks(
         pitch_um=pitch_um,
         extent_um=(W, H),
         frame=frame,
@@ -389,73 +344,10 @@ def _build_zone_masks(spec: Any, pitch_um: float) -> ZoneMasks:
         back_window=back_window,
         front_art=front_art,
         back_art=back_art,
-        front_accent=front_accent,
         art_box=art_box,
         art_regions=art_regions,
         region_specs=region_specs,
     )
-
-    # --- SCANIMATION (capybara back face) ----------------------------------
-    # Only the SILHOUETTE zones are rastered here (boundary quantization is fine
-    # for them): the dry capybara body that carries the shimmer grating, and the
-    # water-band rectangle. The 60/15/45 barrier and the N=4 interleaved back
-    # frames are NOT rastered — they are emitted as exact vector geometry in
-    # ``build_plate_fine`` (blockers 1+2), so the coarse pitch never touches the
-    # 15 µm slot structure.
-    if spec.pattern_slug == P.WATER_SCAN_SLUG and side_px > 0:
-        from .patterns.artistic import capybara_scanimation as capyscan
-
-        # Honour the face's tunable ``waterline`` param instead of the module
-        # constant: ONE resolver (plates._water_waterline_y) feeds the composed
-        # preview mask, the fab SVG bake, the recipe_data the shader binds and —
-        # via zm.waterline_y below — this fine-GDS bake, so a face that moves its
-        # waterline gets a band/wake that matches its preview and its SVG. The
-        # silhouettes above already honour it (``_centerpiece_masks`` takes
-        # ``spec.pattern_params``), so hardwiring it here also split THIS module
-        # against itself: the dry-body zone moved while the water band did not.
-        waterline_y = P._water_waterline_y(spec.pattern_params)
-        scene = capyscan._capybara_and_water(side_px, waterline_y)
-
-        def _place_side(side_mask: np.ndarray, w_px: int | None = None) -> np.ndarray:
-            w_px = side_px if w_px is None else w_px
-            m = np.zeros((fh, fw), dtype=bool)
-            x0 = fw // 2 - w_px // 2
-            y0 = fh // 2 - side_px // 2
-            xa, ya = max(0, x0), max(0, y0)
-            xb, yb = min(fw, x0 + w_px), min(fh, y0 + side_px)
-            m[ya:yb, xa:xb] = side_mask[ya - y0 : yb - y0, xa - x0 : xb - x0]
-            return m
-
-        # WATER FULL WIDTH: the water band spans the full WIDTH-axis aperture
-        # (`_aperture_width_um`, edge-to-edge of the window — NOT the square
-        # `_aperture` that sizes the body); its VERTICAL extent stays the body
-        # square's so the waterline lines up with the half-submerged capybara.
-        # The submerged body is carved only from the central square columns — the
-        # wings are open water, and ``scene["water_band"]`` is already
-        # ``below & ~capy``, the same carve `plates._paste_centerpiece` pastes into
-        # the preview's full-width band.
-        ap_w = max(side_px, int(round(P._aperture_width_um(spec) / pitch_um)))
-        rows = np.arange(side_px)[:, None] / side_px  # 0..1 y-down over the square
-        below = np.broadcast_to(rows >= waterline_y, (side_px, ap_w))
-        water_full = np.array(below, dtype=bool)
-        col_off = (ap_w - side_px) // 2
-        water_full[:, col_off : col_off + side_px] = scene["water_band"]
-
-        zm.water_band = _place_side(water_full, w_px=ap_w)
-        zm.capy_body = _place_side(scene["capy_above"])
-        # Art-box-grid silhouette for the EXACT vector builders (they carve the
-        # barrier comb + ripple slots against it — see `_sample_art_mask`). Kept in
-        # the square grid, unplaced, because those builders address the art box in
-        # normalized coords; the FULL silhouette rather than ``capy_below`` for the
-        # waterline-row reason in the field's docstring.
-        zm.capy_art = scene["capy"]
-        # Publish the resolved value so build_plate_fine's EXACT vector builders
-        # bake at the SAME waterline these raster zones were carved at.
-        zm.waterline_y = waterline_y
-        _mask_rim(zm.water_band, spec.weld_margin_um, pitch_um)
-        _mask_rim(zm.capy_body, spec.weld_margin_um, pitch_um)
-
-    return zm
 
 
 def _mask_rim(mask: np.ndarray, margin_um: float, pitch_um: float) -> None:
@@ -468,484 +360,6 @@ def _mask_rim(mask: np.ndarray, margin_um: float, pitch_um: float) -> None:
     mask[-m:, :] = False
     mask[:, :m] = False
     mask[:, -m:] = False
-
-
-# =========================================================================== #
-#  SCANIMATION — EXACT vector geometry (F3/F7, blockers 1+2)                    #
-# =========================================================================== #
-# The coarse zone-mask path resampled the 60/15/45 barrier and the N=4
-# interleaved ripple frames through the ~39.5 µm boundary raster, so the 15 µm
-# slot (0.38 cell) was unreachable: the barrier aliased to a ~70-118 µm comb and
-# the back frames came out empty (audit blockers 1+2). These builders instead
-# emit the scanimation as EXACT vector rectangles in plate coords:
-#
-#   * the slit-barrier BARS are a 60 µm-pitch comb of 45 µm-wide vertical bars,
-#     clipped to the water-band rectangle and CARVED around the submerged animal
-#     — pure geometry, no raster;
-#   * the N interleaved back frames put ripple phase k into slot k (a 15 µm-wide
-#     vertical column) of every 60 µm period; each slot's crest y-runs come from
-#     the SAME analytic flow field the shader/pattern use (``capyscan._flow_*``),
-#     sampled finely in y at the slot's own columns and floored to the 2 µm
-#     litho minimum — so the slot WIDTH is exactly 15 µm and the crest THICKNESS
-#     is ≥ 2 µm, nothing between.
-#
-# The water band's OUTLINE is analytic in plate coords — the lower
-# ``(1 - waterline_y)`` of the art-box square, full width — but it is NOT a plain
-# half-plane: the SUBMERGED CAPYBARA IS CARVED OUT of it (the pattern's
-# ``water_band`` is ``below & ~capy``, matching the composed preview). The ripple
-# band covers the water AROUND the animal, so both builders take the capybara
-# silhouette (``ZoneMasks.capy_art``, the same raster the zone masks were cut
-# from) and drop every bar segment / crest run that lands on it. Two consequences
-# worth keeping in mind:
-#   * the body affects crest AMPLITUDE (the calm patch, analytic) AND the emitted
-#     extent (the carve, silhouette-driven) — the old "no silhouette raster is
-#     needed here" note was what let the fine GDS print ripples over the animal
-#     while the preview showed clean carrier there;
-#   * the carve is applied to the y-SAMPLE, before the run close/open, so every
-#     surviving segment and every carved gap is still a whole number of ≥2 µm
-#     samples — the carve cannot mint a sub-floor sliver.
-
-
-def _art_box_um(spec: Any) -> tuple[float, float, float, float]:
-    """Plate-coord bbox (x0,y0,x1,y1 µm, y up) of the centerpiece art square.
-
-    The centerpiece is a square of side ``CENTERPIECE_FILL·aperture`` centered on
-    the plate (see ``plates._aperture`` / ``CENTERPIECE_FILL``); the capybara +
-    water live in it in normalized art-box coords (x,y in 0..1, y DOWN). This box
-    is the BODY registration frame: the flow-field wake (body center, calm patch)
-    is normalized against it so the current organizes around the capybara.
-    """
-    from . import plates as P
-
-    aperture = P._aperture(spec)
-    side = P.CENTERPIECE_FILL * aperture
-    h = side / 2.0
-    return (-h, -h, h, h)
-
-
-def _water_box_um(spec: Any) -> tuple[float, float, float, float]:
-    """Plate-coord bbox (x0,y0,x1,y1 µm, y up) of the WATER band's extent.
-
-    WATER FULL WIDTH: the water band spans the whole window edge-to-edge
-    horizontally (the full WIDTH-axis aperture ``_aperture_width_um``, NOT the
-    square ``_aperture`` that sizes the body), while its VERTICAL extent stays
-    the body square's (so the waterline lines up with the half-submerged
-    capybara). The barrier comb + interleaved back frames iterate x over THIS
-    box; the flow field's crest shape/wake stays normalized to the body square
-    (``_art_box_um``) so the wings just continue the periodic streamline current
-    past the animal.
-    """
-    from . import plates as P
-
-    aperture = P._aperture(spec)
-    side = P.CENTERPIECE_FILL * aperture
-    hy = side / 2.0
-    hx = P._aperture_width_um(spec) / 2.0
-    return (-hx, -hy, hx, hy)
-
-
-def _artbox_norm_to_plate(
-    xn: np.ndarray | float, yn: np.ndarray | float, art_bbox: tuple[float, float, float, float]
-):
-    """Normalized art-box (xn,yn in 0..1, y DOWN) → plate µm (x right, y UP)."""
-    x0, y0, x1, y1 = art_bbox
-    side = x1 - x0
-    px = x0 + xn * side
-    py = y1 - yn * side   # y-down normalized → y-up plate
-    return px, py
-
-
-def _sample_art_mask(
-    mask: np.ndarray, xn: np.ndarray, yn: np.ndarray
-) -> np.ndarray:
-    """Nearest-neighbour sample of a SQUARE art-box mask at normalized coords.
-
-    ``mask`` is the ``(n, n)`` art-box raster (y DOWN, the Pillow order every motif
-    silhouette uses); ``xn`` / ``yn`` are normalized art-box coordinates that
-    BROADCAST against each other (the builders pass an ``(S,1)`` column of x's and
-    a ``(1,n_y)`` row of y's). Samples outside the unit box read False — the
-    full-width water band's wings lie outside the body square, so "off the box" and
-    "not the animal" are the same answer there.
-
-    Nearest sampling (not interpolation) is deliberate: the mask IS the silhouette
-    the rastered zones and the composed preview were cut from, so sampling it this
-    way keeps the vector geometry and the zone masks agreeing cell-for-cell about
-    where the animal is.
-    """
-    n_r, n_c = mask.shape
-    ci = np.floor(np.asarray(xn, dtype=np.float64) * n_c).astype(np.int64)
-    ri = np.floor(np.asarray(yn, dtype=np.float64) * n_r).astype(np.int64)
-    inside = (ci >= 0) & (ci < n_c) & (ri >= 0) & (ri < n_r)
-    vals = mask[np.clip(ri, 0, n_r - 1), np.clip(ci, 0, n_c - 1)]
-    return vals & inside
-
-
-def _carve_submerged_from_bars(
-    bars: np.ndarray,
-    art_bbox: tuple[float, float, float, float],
-    body_art: np.ndarray,
-    y_samp_um: float,
-) -> np.ndarray:
-    """Split full-band vertical rects around the SUBMERGED capybara silhouette.
-
-    The ripple band covers the water AROUND the animal, so the slit-barrier comb
-    must stop at the body: a bar striping across the submerged capybara is gold
-    printed ON the animal (and it is not even a barrier there — there is no back
-    ripple lane left to gate). Each bar is sampled down its span on a ``y_samp_um``
-    grid, samples that land on the silhouette are dropped, and every surviving
-    contiguous run becomes one rect. Sampling at the 2 µm litho floor makes each
-    emitted segment and each carved gap a whole number of ≥2 µm samples, so the
-    carve cannot mint a sub-floor sliver.
-
-    The probe is CONSERVATIVE: the body is sampled at the bar's left edge, center
-    and right edge, and any hit clears the sample. A bar that straddles the
-    silhouette outline is therefore cut back by up to its own 45 µm width rather
-    than left half-printed over the animal — a hair more open water at the outline,
-    never gold on the capybara.
-
-    Bars outside the body square in x are returned untouched (they cannot overlap
-    it), which is most of a full-width band.
-
-    ``body_art`` is the FULL silhouette (see ``ZoneMasks.capy_art``); the bars only
-    exist inside the water band, so everything it flags here is submerged.
-    """
-    x0b, _y0b, x1b, y1b = art_bbox
-    side = x1b - x0b
-    touch = (bars[:, 1] > x0b) & (bars[:, 0] < x1b)
-    if not touch.any():
-        return bars
-    hit = bars[touch]
-    # Every bar spans the same water band in y (see the builder), so one sample
-    # ladder serves them all.
-    band_y1 = float(hit[0, 3])
-    band_y0 = float(hit[0, 2])
-    band_h = band_y1 - band_y0
-    if band_h <= 0.0:
-        return bars
-    n_y = max(2, int(round(band_h / y_samp_um)))
-    dy = band_h / n_y
-    ys = band_y1 - (np.arange(n_y) + 0.5) * dy      # plate y, top→bottom
-    yn = ((y1b - ys) / side)[None, :]               # art-box normalized, y-down
-    eps = 1e-6
-    on_body = np.zeros((hit.shape[0], n_y), dtype=bool)
-    for xs in (hit[:, 0] + eps, 0.5 * (hit[:, 0] + hit[:, 1]), hit[:, 1] - eps):
-        on_body |= _sample_art_mask(body_art, ((xs - x0b) / side)[:, None], yn)
-    keep = ~on_body
-    # Same floor discipline as the back-frame builder: CLOSE bridges a carved gap
-    # thinner than the floor (a printer would bridge it anyway), OPEN drops a
-    # surviving segment thinner than the floor. A no-op at the 2 µm default sample,
-    # and the guarantee if a caller samples finer.
-    keep = _close_and_open_rows(keep, max(1, int(round(LITHO_FLOOR_UM / dy))))
-    rows, r_start, r_end = _row_runs(keep)
-    parts = [bars[~touch]]
-    if rows.size:
-        ry1 = ys[r_start] + dy / 2.0
-        ry0 = ys[r_end - 1] - dy / 2.0
-        parts.append(np.stack([hit[rows, 0], hit[rows, 1], ry0, ry1], axis=1))
-    return _concat_rects(parts)
-
-
-def _scanimation_barrier_bar_rects(
-    spec: Any,
-    waterline_y: float,
-    frame_pitch_um: float,
-    n_phases: int,
-    body_art: np.ndarray | None = None,
-    *,
-    y_samp_um: float = 2.0,
-) -> np.ndarray:
-    """FRONT slit-barrier BARS as exact vector rects (60 µm pitch, 45 µm bar).
-
-    The barrier's OPEN slot is ``frame_pitch/n_phases`` (15 µm) and the closed
-    BAR is ``frame_pitch·(1−1/n_phases)`` (45 µm). Bars are vertical, span the
-    water band in y, and repeat at exactly ``frame_pitch`` across the band width
-    — one rect per period. Slot boundaries snap to the SAME period lattice the
-    back interleave uses (both anchored at art-box x0), so a slot's open column
-    lines up over its back ripple lane.
-
-    ``body_art`` (``ZoneMasks.capy_art``) is the capybara silhouette in art-box
-    coords; when given, the comb is CARVED around the animal so no bar prints over
-    it (see :func:`_carve_submerged_from_bars`). A carved bar becomes several
-    shorter rects; the period lattice is untouched.
-    """
-    # WATER FULL WIDTH: bars span the full aperture-width water box; the band's
-    # vertical extent + waterline come from the body square (y matches the animal).
-    art_bbox = _art_box_um(spec)
-    x0, y0, x1, _y1 = _water_box_um(spec)
-    # Water band: normalized y in [waterline_y, 1] → plate y in [y0, y_top].
-    _, y_top = _artbox_norm_to_plate(0.0, waterline_y, art_bbox)
-    band_y0, band_y1 = y0, y_top
-    slot_um = frame_pitch_um / n_phases
-    # Period 0 open slot starts at the band's left edge x0; the bar is the closed
-    # remainder of the period. Emit the bar [x0 + slot, x0 + period] per period.
-    n_periods = int(math.ceil((x1 - x0) / frame_pitch_um)) + 1
-    rects = []
-    for k in range(n_periods):
-        bx0 = x0 + k * frame_pitch_um + slot_um
-        bx1 = x0 + (k + 1) * frame_pitch_um
-        cx0 = max(bx0, x0)
-        cx1 = min(bx1, x1)
-        if cx1 - cx0 <= 1e-9:
-            continue
-        rects.append((cx0, cx1, band_y0, band_y1))
-    if not rects:
-        return np.empty((0, 4), dtype=float)
-    bars = np.asarray(rects, dtype=float)
-    if body_art is None or not body_art.any():
-        return bars
-    return _carve_submerged_from_bars(bars, art_bbox, body_art, y_samp_um)
-
-
-# Slots evaluated per vectorised chunk in _scanimation_back_frame_rects. The flow
-# field is ELEMENTWISE, so a chunk of S slots is one (S,1)×(1,n_y) broadcast whose
-# per-element operands (and their order) are exactly the old per-slot 1-D ones —
-# and every Y-ONLY term (depth, shear, the wake tanh, the centerline gaussian) is
-# then evaluated ONCE per chunk instead of once per slot. Chunked rather than done
-# in one shot so the S×n_y temporaries stay in the low tens of MB.
-_SCAN_SLOT_CHUNK = 256
-
-
-def _scanimation_back_frame_rects(
-    spec: Any,
-    waterline_y: float,
-    frame_pitch_um: float,
-    n_phases: int,
-    body_art: np.ndarray | None = None,
-    *,
-    y_samp_um: float = 2.0,
-) -> np.ndarray:
-    """BACK N-phase interleaved ripple frames as EXACT vector rects.
-
-    For every 60 µm period across the water band, slot k (a 15 µm-wide vertical
-    column, k = 0..N−1) carries ripple phase k. The crest shape for a slot is the
-    analytic flow field (``capyscan._flow_streamline_field`` /
-    ``_flow_amplitude``) evaluated at the slot's CENTER x across a y sample
-    quantized to ``y_samp_um``. Setting this to the 2 µm floor is deliberate: it
-    snaps every crest y-boundary to the floor grid, so the small y-offset between
-    ADJACENT slots' crests (their flow field is sampled at different x) becomes a
-    step of 0 or ≥ 2 µm — never a 1 µm sub-floor notch at the slot boundary. The
-    column is then run-closed/opened so each crest and each gap within a slot is
-    also ≥ 2 µm. Each surviving y-run becomes ONE rect spanning the slot's exact
-    15 µm width; nothing sub-floor survives (F3).
-
-    ``body_art`` (``ZoneMasks.capy_art``) is the capybara silhouette in art-box
-    coords. When given, the crest samples that land on the
-    animal are CARVED before the run close/open, so the interleave stops at the
-    body outline — the ripple band is the water AROUND the capybara, and the
-    submerged body keeps the plain back carrier (which `_build_zone_masks`' carved
-    ``water_band`` leaves in place there). Carving on the sample ladder, ahead of
-    the floor pass, is what keeps a carved crest tip from becoming a sub-floor
-    sliver. The probe is conservative in x (slot edges AND center, any hit clears),
-    so a slot straddling the outline loses that sample rather than half-printing
-    over the animal.
-
-    Memory: one CHUNK of ``_SCAN_SLOT_CHUNK`` slot-columns of ``band_h/y_samp``
-    samples at a time, streamed chunk-by-chunk — never the whole band raster (the
-    blocker's ~3.8M-cell trap). The rect count is bounded by
-    (#slots × #crests-per-slot) ≈ a few ×10³.
-    """
-    from .patterns.artistic import capybara_scanimation as capyscan
-
-    # WATER FULL WIDTH: slots tile the full aperture-width water box; the flow
-    # field's crest shape/wake stays normalized to the body square (art box), so
-    # the wings continue the periodic current past the animal.
-    art_bbox = _art_box_um(spec)
-    wx0, y0, wx1, _wy1 = _water_box_um(spec)
-    _, y_top = _artbox_norm_to_plate(0.0, waterline_y, art_bbox)
-    body_x0 = art_bbox[0]
-    body_side = art_bbox[2] - art_bbox[0]   # body square side (flow normalization)
-    water_w = wx1 - wx0                      # full water band width (x iteration)
-    slot_um = frame_pitch_um / n_phases
-    wavelength = capyscan.RIPPLE_WAVELENGTH_NORM
-
-    # Fine y sample across the water band (normalized, y-down). Band spans
-    # normalized y in [waterline_y, 1]. Sample at y_samp_um plate spacing.
-    band_h_um = y_top - y0
-    n_y = max(2, int(round(band_h_um / y_samp_um)))
-    # Plate y samples top→bottom (descending) so a run index maps to a y-interval.
-    ys_plate = y_top - (np.arange(n_y) + 0.5) * (band_h_um / n_y)
-    # Normalized BODY-square y (y-down) for each sample (water box y == body y).
-    yn = (art_bbox[3] - ys_plate) / body_side
-
-    n_periods = int(math.ceil(water_w / frame_pitch_um)) + 1
-    min_run = max(1, int(round(LITHO_FLOOR_UM / (band_h_um / n_y))))
-    dy = band_h_um / n_y
-
-    # Slot table flattened in (period, phase) order — the SAME order the per-slot
-    # double loop emitted, so the rect SEQUENCE is unchanged. sx0 keeps the old
-    # two-step form (period origin first, then k·slot) so the floats are identical.
-    p_i = np.arange(n_periods, dtype=np.float64)[:, None]
-    k_i = np.arange(n_phases, dtype=np.float64)[None, :]
-    sx0 = (wx0 + p_i * frame_pitch_um) + k_i * slot_um
-    sx1 = (sx0 + slot_um).ravel()
-    sx0 = sx0.ravel()
-    phase_step = np.broadcast_to(k_i, (n_periods, n_phases)).ravel()
-    cx0 = np.maximum(sx0, wx0)
-    cx1 = np.minimum(sx1, wx1)
-    live = np.flatnonzero((cx1 - cx0) > 1e-9)
-
-    # Sample the flow field for phase k at each slot's center x, normalized to the
-    # BODY square (wings fall outside [0,1] → periodic continuation). X is one
-    # column per slot, Y one row of band samples: the broadcast product is the
-    # elementwise field the old per-slot calls computed, slot by slot.
-    yn_row = yn[None, :]
-    parts: list[np.ndarray] = []
-    for c in range(0, live.size, _SCAN_SLOT_CHUNK):
-        sel = live[c : c + _SCAN_SLOT_CHUNK]
-        xc = 0.5 * (sx0[sel] + sx1[sel])
-        xn = ((xc - body_x0) / body_side)[:, None]
-        s = capyscan._flow_streamline_field(
-            xn, yn_row, wavelength, n_phases, phase_step[sel][:, None], waterline_y
-        )
-        f = s - np.floor(s + 0.5)
-        amp = capyscan._flow_amplitude(xn, yn_row, waterline_y)
-        half = 0.16 * amp
-        gold = (np.abs(f) < half) & (amp > 0.05)
-        if body_art is not None:
-            # Carve the animal out of the band (the pattern does the same with
-            # ``crest & water_band``; these samples are all inside the band, so a
-            # silhouette hit here IS the submerged body). Probe both slot edges and
-            # the center so a slot straddling the outline is cleared, not
-            # half-printed.
-            on_body = np.zeros_like(gold)
-            for xs in (sx0[sel], xc, sx1[sel]):
-                on_body |= _sample_art_mask(
-                    body_art, ((xs - body_x0) / body_side)[:, None], yn_row
-                )
-            gold &= ~on_body
-        if not gold.any():
-            continue
-        # Floor BOTH the crest thickness and the gap between crests in each slot
-        # to the 2 µm litho minimum: close any sub-floor y-gap (merge crests that
-        # nearly touch — a printer would bridge them) then drop any run still
-        # thinner than the floor. Guarantees every emitted run is ≥ 2 µm tall AND
-        # every gap ≥ 2 µm, so the merged-geometry DRC finds nothing sub-floor in
-        # the back frames. Row-wise: each slot column is closed/opened alone.
-        gold = _close_and_open_rows(gold, min_run)
-        # Contiguous y-runs, all slots at once. np.nonzero is C-order, so runs come
-        # out slot-major / top→bottom — the old append order exactly.
-        rows, r_start, r_end = _row_runs(gold)
-        if rows.size == 0:
-            continue
-        long_enough = (r_end - r_start) >= min_run   # no-op after OPEN; kept as the gate
-        rows = rows[long_enough]
-        r_start = r_start[long_enough]
-        r_end = r_end[long_enough]
-        if rows.size == 0:
-            continue
-        # Run rows r_start..r_end-1 (top→bottom in plate y). Row i covers
-        # [ys_plate[i]-dy/2, ys_plate[i]+dy/2].
-        ry1 = ys_plate[r_start] + dy / 2.0
-        ry0 = ys_plate[r_end - 1] - dy / 2.0
-        parts.append(np.stack([cx0[sel][rows], cx1[sel][rows], ry0, ry1], axis=1))
-    return _concat_rects(parts)
-
-
-def _bool_runs(mask: np.ndarray) -> list[tuple[int, int]]:
-    """Contiguous True runs of a 1-D bool array → list of (start, end) inclusive.
-
-    Kept as the INDEPENDENT 1-D reference for :func:`_row_runs` (same runs, one
-    row, exclusive→inclusive end): the scanimation builder runs on the row-wise
-    vectorised pair, and this is what a parity test pins them against. Not on any
-    hot path — do not route it through the vectorised form, or the reference stops
-    being independent.
-    """
-    if not mask.any():
-        return []
-    m = mask.astype(np.int8)
-    d = np.diff(np.concatenate([[0], m, [0]]))
-    starts = np.flatnonzero(d == 1)
-    ends = np.flatnonzero(d == -1) - 1
-    return list(zip(starts.tolist(), ends.tolist()))
-
-
-def _row_runs(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-ROW contiguous True runs of a 2-D bool array, all rows at once.
-
-    Returns ``(rows, starts, ends)`` — ``ends`` EXCLUSIVE — in C order, i.e. row
-    ascending then column ascending, which is the order a per-row
-    :func:`_bool_runs` loop would visit them. Padding a False column on each side
-    keeps every run row-local, so the two ``np.nonzero`` results pair up
-    one-for-one within each row.
-    """
-    s_px, l_px = mask.shape
-    padded = np.zeros((s_px, l_px + 2), dtype=np.int8)
-    padded[:, 1:-1] = mask
-    d = np.diff(padded, axis=1)
-    rows, starts = np.nonzero(d == 1)
-    _, ends = np.nonzero(d == -1)
-    return rows, starts, ends
-
-
-def _fill_runs(shape: tuple[int, int], rows: np.ndarray, starts: np.ndarray, ends: np.ndarray) -> np.ndarray:
-    """Bool mask of ``shape`` with ``[starts, ends)`` set on each row.
-
-    Difference-array + cumsum instead of a Python slice loop. The runs handed in
-    are disjoint WITHIN a row (they come from :func:`_row_runs`, where a gap of at
-    least one cell separates consecutive runs), so the two scatter writes never
-    collide and plain fancy indexing is exact. int16 accumulator: the running sum
-    is only ever 0 or 1.
-    """
-    s_px, l_px = shape
-    acc = np.zeros((s_px, l_px + 1), dtype=np.int16)
-    acc[rows, starts] += 1
-    acc[rows, ends] -= 1
-    return np.cumsum(acc, axis=1, dtype=np.int16)[:, :l_px] > 0
-
-
-def _close_and_open_rows(mask: np.ndarray, min_run: int) -> np.ndarray:
-    """Row-wise 1-D CLOSE then OPEN of a 2-D bool array by ``min_run`` samples.
-
-    Same operator as :func:`_close_and_open_1d`, applied independently to every
-    row with no Python run loop: CLOSE fills any False gap shorter than
-    ``min_run`` that is flanked by True on BOTH sides (a run touching either end
-    of the row is never filled), OPEN then drops any True run shorter than
-    ``min_run``. Both passes read their runs from the mask as it stood BEFORE the
-    pass — exactly what the sequential 1-D version did, since its in-place writes
-    could not change the run list it had already extracted.
-    """
-    if min_run <= 1 or mask.size == 0:
-        return mask
-    s_px, l_px = mask.shape
-    out = mask.copy()
-    # CLOSE: short INTERIOR False runs (start > 0 and end < row length).
-    rows, starts, ends = _row_runs(~out)
-    sel = (starts > 0) & (ends < l_px) & ((ends - starts) < min_run)
-    if sel.any():
-        out |= _fill_runs((s_px, l_px), rows[sel], starts[sel], ends[sel])
-    # OPEN: short True runs, including the ones touching a row end.
-    rows, starts, ends = _row_runs(out)
-    sel = (ends - starts) < min_run
-    if sel.any():
-        out &= ~_fill_runs((s_px, l_px), rows[sel], starts[sel], ends[sel])
-    return out
-
-
-def _close_and_open_1d(mask: np.ndarray, min_run: int) -> np.ndarray:
-    """1-D CLOSE then OPEN of a bool array by ``min_run`` samples.
-
-    CLOSE fills any False gap shorter than ``min_run`` (sub-floor gap between two
-    crests → bridged), OPEN drops any True run shorter than ``min_run`` (sub-floor
-    crest tip → removed). Leaves every surviving run and gap ≥ ``min_run`` samples,
-    i.e. ≥ the 2 µm floor.
-
-    Kept as the INDEPENDENT 1-D reference for :func:`_close_and_open_rows`, which
-    is what the scanimation builder uses (every slot column at once) — a parity
-    test pins the two. Not on any hot path; do not reimplement it in terms of the
-    row-wise form, or the reference stops being independent."""
-    if min_run <= 1 or mask.size == 0:
-        return mask
-    m = mask.copy()
-    # CLOSE: fill short False runs that are flanked by True on both sides.
-    inv = ~m
-    for a, b in _bool_runs(inv):
-        if a > 0 and (b + 1) < m.size and (b - a + 1) < min_run:
-            m[a : b + 1] = True
-    # OPEN: drop short True runs.
-    for a, b in _bool_runs(m):
-        if (b - a + 1) < min_run:
-            m[a : b + 1] = False
-    return m
 
 
 def _dilate_zone(mask: np.ndarray, cells: int = 1) -> np.ndarray:
@@ -997,8 +411,8 @@ class PlateFine:
     """One plate's fine geometry, plate-centered (origin = plate center, y up).
 
     ``front_rects`` / ``back_rects`` are axis-aligned ``(N,4)`` [x0,x1,y0,y1] µm
-    rectangles in the PLATE frame (vertical gratings, scanimation slots) —
-    cleaned by the fast ``drc_clean_rects``.
+    rectangles in the PLATE frame (vertical gratings, photo bands, region
+    fills) — cleaned by the fast ``drc_clean_rects``.
 
     ``front_angled`` / ``back_angled`` are angled gratings stored as
     ``(local_rects, angle_deg)`` groups: the rects are axis-aligned EXACT gold
@@ -1200,10 +614,10 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     W, H = spec.width_um, spec.height_um
 
     # Zone-boundary raster pitch. Fine ENOUGH to resolve the finest zone edge
-    # feature (scanimation 15 µm slot, accent), but this is BOUNDARY only — the
-    # periods are exact vector geometry regardless. Cap the grid so the source
-    # masks stay small (well under the lattice budget). ~4 samples on the finest
-    # slot, floored so a huge plate does not explode the source raster.
+    # feature, but this is BOUNDARY only — the periods are exact vector geometry
+    # regardless. Cap the grid so the source masks stay small (well under the
+    # lattice budget), floored so a huge plate does not explode the source
+    # raster. See :func:`zone_pitch_um`.
     pitch = zone_pitch_um(spec, back_period)
 
     zm = _build_zone_masks(spec, pitch)
@@ -1350,61 +764,22 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
         }
     elif is_interlace:
         comb_box = zm.art_box if zm.art_box is not None else (zm.front_art | zm.back_art)
-        comb_zone = _erode_zone(comb_box & ~zm.front_accent, 1)
+        comb_zone = _erode_zone(comb_box, 1)
         if comb_zone.any():
             _emit_grating(
                 comb_zone, pitch, extent, center_period, 0.5, center_axis,
                 -0.25, front_rects_parts, front_angled,
             )
     elif zm.front_art.any():
-        # Exclude the accent zone (it gets the 4.4 µm grating instead). Inset the
-        # carrier away from the accent so the 0° carrier and the 45° accent never
-        # abut (their crossing would be a seam defect); the accent itself is inset
-        # below so a 1-cell gutter sits between the two different-angle fields.
-        art_no_accent = _erode_zone(zm.front_art & ~zm.front_accent, 1)
-        if art_no_accent.any():
+        # Inset 1 cell so the 0° switch carrier does not abut the frame band's
+        # angled leaf gratings at the silhouette boundary (a different-angle seam
+        # would cross into sub-floor wedges).
+        art_zone = _erode_zone(zm.front_art, 1)
+        if art_zone.any():
             _emit_grating(
-                art_no_accent, pitch, extent, center_period, duty, center_axis,
+                art_zone, pitch, extent, center_period, duty, center_axis,
                 0.0, front_rects_parts, front_angled,
             )
-
-    # --- FRONT accent: INTERLEAVED diffraction + moiré (both at 45°) -------
-    # The accent used to be pure 4.4 µm diffraction: it could flash a rainbow
-    # but never shimmer, because its only possible moiré partner (the 22 µm back
-    # carrier) beats with 4.4 µm at 5.5 µm — far below anything an eye resolves.
-    # It now carries BOTH effects, spatially interleaved in sub-acuity bands so
-    # the eye integrates them as one surface (see gratings.band_select for why
-    # interleaving beats nesting the fine grating inside the coarse one).
-    #
-    # Both gratings are written at the SAME 45° axis, so they share one
-    # grating-local frame and the band lattice is a scalar test on local x —
-    # no polygon clipping, and the two sets tile the zone exactly once.
-    if zm.front_accent.any():
-        # Inset the accent too so a 1-cell gutter sits between it and the 0°
-        # carrier (accent zones are many cells wide, so the inset is negligible).
-        accent_zone = _erode_zone(zm.front_accent, 1)
-        if not accent_zone.any():
-            accent_zone = zm.front_accent
-        acc_angle = P._DIFFRACTION_ACCENT_ANGLE_DEG
-        band_pitch = P._INTERLEAVE_BAND_PITCH_UM
-        # Band A: the diffraction grating (rainbow).
-        diff_local = _angled_grating_local_rects(
-            accent_zone, pitch, extent,
-            P._DIFFRACTION_ACCENT_PERIOD_UM, P._DIFFRACTION_ACCENT_DUTY, acc_angle,
-        )
-        diff_local = band_select(diff_local, band_pitch, want_odd=False)
-        if diff_local.shape[0]:
-            front_angled.append((diff_local, acc_angle))
-        # Band B: a moiré louvre at the frame's front period, which beats
-        # against the dedicated back patch emitted below.
-        moire_local = _angled_grating_local_rects(
-            accent_zone, pitch, extent, front_period, duty, acc_angle,
-        )
-        moire_local = band_select(moire_local, band_pitch, want_odd=True)
-        if moire_local.shape[0]:
-            front_angled.append((moire_local, acc_angle))
-
-    is_scanimation = zm.water_band is not None
 
     # --- SINGLE PLY: the carrier moves to the FRONT layer -------------------
     # One sheet of glass, so there is no inner ply to carry the uniform carrier.
@@ -1426,53 +801,30 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
     # --- BACK carrier grating (22 µm) over the whole window ----------------
     if not single_ply and zm.back_window.any():
         # Carrier fills the window MINUS the centerpiece art (art gets its own
-        # phase-π switch carrier); on capybara the water band is scanimation.
-        if is_scanimation:
-            carrier_zone = zm.back_window & ~zm.water_band
-        elif is_interlace:
+        # phase-π switch carrier).
+        if is_interlace:
             # Both silhouettes live on the back as interleaved lanes → clear the
             # plain carrier across their whole union so the lanes read.
             carrier_zone = zm.back_window & ~(zm.front_art | zm.back_art)
         else:
             carrier_zone = zm.back_window & ~zm.back_art
-        # Seam gutter: the carrier (base_angle) abuts the 0° switch art (or, on
-        # capybara, the exact-vector water-band crest field) at a different-angle
-        # boundary. Inset it 2 cells, not 1: the carrier is an ANGLED grating and
-        # its rotated-rectangle lines end in a SLANTED tip. A 1-cell gutter leaves
-        # that tip descending to ~2 µm past the zone edge and raking toward the
-        # abutting field, closing the seam to a sub-floor gap (measured: 15 gaps
-        # 0.02–1.9 µm along the capybara waterline y≈1598.8 µm where crest tops sit
-        # at the band edge, and 2 gaps 1.085 µm on the right plate where the 165°
-        # carrier tip nears the 0° switch carrier). A 2-cell inset pulls the whole
-        # slanted tip clear, opening a ≥2 µm gutter so no carrier line approaches
-        # the neighbour field within the floor. The extra cell is one ~39 µm
-        # boundary-raster step off a rim already inset by the weld margin —
-        # optically invisible, and it only shrinks gold so it cannot add defects.
-        # The accent zone gets its OWN back patch just below (at a small
-        # crossing to the accent's 45° front bands), so keep the main carrier
-        # out of it — two carriers at different angles in one place would beat
-        # against each other as well as against the front.
-        if zm.front_accent.any():
-            carrier_zone = carrier_zone & ~zm.front_accent
+        # Seam gutter: the carrier (base_angle) abuts the 0° switch art at a
+        # different-angle boundary. Inset it 2 cells, not 1: the carrier is an
+        # ANGLED grating and its rotated-rectangle lines end in a SLANTED tip. A
+        # 1-cell gutter leaves that tip descending to ~2 µm past the zone edge and
+        # raking toward the abutting field, closing the seam to a sub-floor gap
+        # (measured: 2 gaps of 1.085 µm where a 165° carrier tip neared the 0°
+        # switch carrier). A 2-cell inset pulls the whole slanted tip clear,
+        # opening a ≥2 µm gutter so no carrier line approaches the neighbour field
+        # within the floor. The extra cell is one ~39 µm boundary-raster step off a
+        # rim already inset by the weld margin — optically invisible, and it only
+        # shrinks gold so it cannot add defects.
         carrier_zone = _erode_zone(carrier_zone, 2)
         # base_angle is a per-face carrier rotation (seed-keyed); non-zero →
         # grating-local rects + angle, else exact axis rects.
         if carrier_zone.any():
             _emit_grating(
                 carrier_zone, pitch, extent, back_period, duty, base_angle,
-                0.0, back_rects_parts, back_angled,
-            )
-
-    # --- BACK patch under the accent (the accent moiré's partner) ----------
-    # Laid at a SMALL crossing to the accent's 45° front bands so the pair beats
-    # at a spacing the eye resolves; the frame's per-species angle fan does not
-    # apply here because the accent is centerpiece geometry, not frame foliage.
-    if not single_ply and zm.front_accent.any():
-        acc_back = _erode_zone(zm.front_accent, 2)
-        if acc_back.any():
-            _emit_grating(
-                acc_back, pitch, extent, back_period, duty,
-                P._DIFFRACTION_ACCENT_ANGLE_DEG + P.ACCENT_MOIRE_OFFSET_DEG,
                 0.0, back_rects_parts, back_angled,
             )
 
@@ -1502,7 +854,7 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
                 b_zone, pitch, extent, center_period, 0.5, center_axis,
                 0.5, back_rects_parts, back_angled,
             )
-    elif zm.back_art.any() and not is_scanimation:
+    elif zm.back_art.any():
         # Inset 1 cell so the 0° switch carrier does not abut the base_angle back
         # carrier at the art silhouette boundary (different-angle seam → wedge
         # crossings). The carrier was already inset off ~back_art above, so this
@@ -1513,72 +865,6 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
                 switch_zone, pitch, extent, center_period, duty, center_axis,
                 0.5, back_rects_parts, back_angled,
             )
-
-    # --- SCANIMATION (capybara) — EXACT vector geometry (blockers 1+2) ------
-    # FRONT: capybara body shimmer (24 µm carrier grating, clipped to the dry
-    #        silhouette via row-span) + slit-barrier BARS over the water band
-    #        (exact 60 µm-pitch / 45 µm-bar vector comb).
-    # BACK:  N=4 interleaved ripple frames — phase k in slot k of every 60 µm
-    #        period, each slot an exact 15 µm-wide column, crest thickness sampled
-    #        finely in y and floored to 2 µm. NONE of this passes through the
-    #        coarse zone raster, so the 15 µm slot survives (was empty / aliased).
-    if is_scanimation:
-        # EFFECTIVE waterline, resolved ONCE in _build_zone_masks from the face's
-        # ``waterline`` param (plates._water_waterline_y) — the same number the
-        # composed preview mask, the fab SVG bake and recipe_data's
-        # ``water_waterline_y`` carry. Taking it from the zone masks (not from
-        # capyscan.WATERLINE_Y, which used to be hardwired here) is what keeps the
-        # rastered body/band zones and these exact vector builders in one frame.
-        # The fallback re-resolves rather than falling back to the constant, so a
-        # future caller that builds ZoneMasks by hand still cannot drift.
-        wl = (
-            zm.waterline_y
-            if zm.waterline_y is not None
-            else P._water_waterline_y(spec.pattern_params)
-        )
-        fp = P.water_scan_fab_pitch_um(spec)
-        nph = P.WATER_SCAN_N_PHASES
-        carrier_um = P.WATER_SCAN_FAB_CARRIER_UM
-        # Front body shimmer: native 24 µm vertical carrier clipped to the dry
-        # capybara silhouette (row-span against the rastered body zone — the
-        # PERIOD is exact vector, only the body boundary is quantized).
-        if zm.capy_body is not None and zm.capy_body.any():
-            # Inset 1 cell so the body shimmer does not abut the barrier bars at
-            # the waterline (both 0° but distinct fields — a gutter avoids a
-            # sub-floor gap where a body stripe nearly meets a bar).
-            body_zone = _erode_zone(zm.capy_body, 1)
-            if body_zone.any():
-                _emit_grating(
-                    body_zone, pitch, extent, carrier_um, duty, 0.0,
-                    0.0, front_rects_parts, front_angled,
-                )
-        # SUBMERGED-BODY CARVE. Both vector builders take the capybara silhouette so
-        # the comb and the interleave stop at the animal: the ripple band is the
-        # water AROUND the capybara and the submerged body keeps the plain carrier
-        # (which the carved ``zm.water_band`` above already leaves in place). Same
-        # silhouette raster + same effective waterline as the zone masks, which is
-        # the same algebra the composed preview carves its band with.
-        body_art = zm.capy_art
-        # Front slit-barrier bars (exact 60/45 vector comb over the water band).
-        front_rects_parts.append(
-            _scanimation_barrier_bar_rects(spec, wl, fp, nph, body_art)
-        )
-        # Back interleaved ripple frames (exact 15 µm slots, analytic crests).
-        back_rects_parts.append(
-            _scanimation_back_frame_rects(spec, wl, fp, nph, body_art)
-        )
-        stats["scanimation"] = {
-            "frame_pitch_um": fp,
-            "slot_um": fp / nph,
-            "barrier_bar_um": fp * (1.0 - 1.0 / nph),
-            "n_phases": nph,
-            # Was the animal carved out of the band? False would mean the comb and
-            # the ripple slots printed over the submerged body (the pre-carve bug).
-            "submerged_body_carved": bool(body_art is not None and body_art.any()),
-            # Recorded so a wafer run's stats show WHICH waterline was baked (it
-            # is now a per-face param, not a module constant).
-            "waterline_y": float(wl),
-        }
 
     # --- concat + per-group rect DRC (fast) --------------------------------
     # drc_clean_rects is a cheap vectorised first pass on axis-aligned geometry
@@ -1871,76 +1157,6 @@ def _rotate_rects_to_polys(local_rects: np.ndarray, angle_deg: float) -> np.ndar
     rx = corners[:, :, 0] * caf - corners[:, :, 1] * saf
     ry = corners[:, :, 0] * saf + corners[:, :, 1] * caf
     return np.stack([rx, ry], axis=2)  # (m,4,2)
-
-
-def _mask_to_row_span_rects(
-    mask: np.ndarray, pitch_um: float, extent_um: tuple[float, float]
-) -> np.ndarray:
-    """A bool mask → column-merged vertical-run rectangles (for vertical-slot
-    fields like the scanimation slots/bars, whose gold IS vertical stripes).
-
-    Fully vectorised: a COLUMN run is a ROW run of the transpose, so we reuse
-    the diff-based run finder on ``mask.T`` (one gold cell per column-run → one
-    tall rectangle) then merge horizontally-adjacent same-band rects. No Python
-    per-column loop.
-    """
-    if mask is None or not mask.any():
-        return np.empty((0, 4), dtype=float)
-    h_px, w_px = mask.shape
-    hx = w_px * pitch_um / 2.0
-    hy = h_px * pitch_um / 2.0
-    # Vertical runs = horizontal runs of the transpose. In transpose space the
-    # "row" index is the ORIGINAL column c, and the run "columns" are ORIGINAL
-    # rows r (top→bottom). Pad + diff per transpose-row.
-    g = mask.T.astype(np.int8)              # (w_px, h_px): [c, r]
-    padded = np.zeros((w_px, h_px + 2), dtype=np.int8)
-    padded[:, 1:-1] = g
-    d = np.diff(padded, axis=1)
-    cols, r_starts = np.nonzero(d == 1)     # cols = original column c
-    _, r_ends = np.nonzero(d == -1)         # exclusive end (original row)
-    if cols.size == 0:
-        return np.empty((0, 4), dtype=float)
-    x0 = cols * pitch_um - hx
-    x1 = x0 + pitch_um
-    # Original rows r_starts..r_ends-1 (y down). y up: top row r_start → y1.
-    y1 = hy - r_starts * pitch_um
-    y0 = hy - r_ends * pitch_um
-    arr = np.stack([x0, x1, y0, y1], axis=1).astype(float)
-    return _merge_adjacent_columns(arr)
-
-
-def _merge_adjacent_columns(rects: np.ndarray) -> np.ndarray:
-    """Merge horizontally-adjacent rects that share [y0,y1] into wider rects
-    (colinear-run merge across columns) — the fewest-polygon representation of a
-    vertical-slot field. Fully vectorised.
-
-    Sort by (y0, y1, x0); a merge run is a maximal block of rows with the SAME
-    (y0,y1) band whose x0 touches the previous x1. A new run starts wherever the
-    band changes OR there is an x-gap; ``np.add.reduceat`` collapses each run to
-    (min x0, max x1, band).
-    """
-    if rects.shape[0] < 2:
-        return rects
-    yb = np.round(rects[:, 2:4], 6)
-    order = np.lexsort((rects[:, 0], yb[:, 1], yb[:, 0]))
-    r = rects[order]
-    yb = np.round(r[:, 2:4], 6)
-    x0 = r[:, 0]
-    x1 = r[:, 1]
-    same_band = (yb[1:, 0] == yb[:-1, 0]) & (yb[1:, 1] == yb[:-1, 1])
-    touch = np.abs(x0[1:] - x1[:-1]) < 1e-6
-    new_run = ~(same_band & touch)
-    starts = np.concatenate([[0], np.flatnonzero(new_run) + 1])
-    # For each run [starts[i], starts[i+1]) collapse to (x0[start], max x1, band).
-    ends = np.concatenate([starts[1:], [r.shape[0]]]) - 1
-    out = np.empty((starts.size, 4), dtype=float)
-    out[:, 0] = x0[starts]
-    # max x1 within each run: since sorted by x0 and touching, x1 is monotone,
-    # so x1 at the run END is the max.
-    out[:, 1] = x1[ends]
-    out[:, 2] = r[starts, 2]
-    out[:, 3] = r[starts, 3]
-    return out
 
 
 def _zone_filled_rect(zone: np.ndarray) -> tuple[int, int, int, int] | None:
