@@ -7,26 +7,18 @@ fine grating's first order, mapped by period — the region_art centrepieces, th
 photo colour zones and the garland's per-family leaf gratings.
 
 Three submodules:
-  * ``gratings`` — parameterized grating GENERATORS. Each returns a numpy bool
-    mask (1 = gold) AND a rect-array (row-span) baker for the fab/SVG path.
-    All are budget-aware: given an extent and period they compute the element
-    count and refuse (or coarsen) below the 400k-lattice cap.
+  * ``gratings`` — the few grating helpers the emitters still share: the
+    row-span baker (``bool_to_row_spans``), the interleave band selector, the
+    beat-delta closed form and the two-ply shimmer pair used by the moiré
+    exemplar. The generator family (linear/radial/chirped/checker masks, the
+    diffraction accent) went with the catalogue on 2026-09-16.
   * ``moire``    — the closed forms (beat period, diffraction onset) and the
     litho floor every other module imports rather than re-declares.
   * ``drc``      — the design-rule check and the metal heal the mask writer runs.
 """
 from __future__ import annotations
 
-from .gratings import (
-    GratingResult,
-    bool_to_row_spans,
-    checker_grating,
-    chirped_grating,
-    grating_line_budget,
-    linear_grating_mask,
-    radial_grating_mask,
-    row_spans_to_verts,
-)
+from .gratings import band_select, beat_delta_um, bool_to_row_spans, shimmer_moire_layers
 from .moire import (
     DIFFRACTION_PERIOD_UM,
     MIN_PERIOD_UM,
@@ -37,14 +29,10 @@ from .moire import (
 
 __all__ = [
     # gratings
-    "GratingResult",
-    "linear_grating_mask",
-    "radial_grating_mask",
-    "chirped_grating",
-    "checker_grating",
+    "band_select",
+    "beat_delta_um",
     "bool_to_row_spans",
-    "row_spans_to_verts",
-    "grating_line_budget",
+    "shimmer_moire_layers",
     # physics
     "beat_period_parallel",
     "beat_period_rotated",

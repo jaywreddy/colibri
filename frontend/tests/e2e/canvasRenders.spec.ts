@@ -14,6 +14,8 @@ import {
 } from './helpers';
 
 test.describe('canvas renders', () => {
+  // Often the first spec to compose the box; a cold compose is ~2 minutes.
+  test.setTimeout(240_000);
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await waitForStudio(page);

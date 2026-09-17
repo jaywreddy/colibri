@@ -470,19 +470,20 @@ test.describe('@effects physical honesty of renderer effects', () => {
     const fZeroAgain = await capture();
     const dControlZero = diffFrames(fZeroGap, fZeroAgain);
 
-    // Gap -> 95%: response must be smaller than the full collapse. The probe
+    // Gap -> 99%: response must be smaller than the full collapse. The probe
     // sits at a SMALL displacement because the pixel response saturates once
-    // the fringe shift exceeds its correlation length, and on the production
-    // stack that length is short: the paraxial gap is 1543 um, so at this 10
-    // deg view a 20% collapse slides the inner layer 37 um — 0.35 of the
-    // garland's 1635 um beat (gain 15.5) — and the literal composite (the
-    // two-layer product formed per sub-sample) reads that as a full fringe
-    // change, the same as the aliased full collapse (13.3 vs 12.5 mad at
-    // 0.8). At 5% the slide is
-    // 9 um, 0.09 of a beat, inside the linear regime. The anti-cheat still
-    // holds: a binary fake (any nonzero collapse -> same frame) reads ~1.0
-    // here and fails, and the lower bound catches a gap that does nothing.
-    await scaleBackPlaneGap(page, 'front', 0.95);
+    // the layer slide exceeds the correlation length of what the probe
+    // resolves. The subject here is the two-ply monogram exemplar: a 65.5 um
+    // carrier on both plies across the 1543 um paraxial gap, and the zoomed
+    // probe resolves the carrier lines themselves. At this 10 deg view a 5%
+    // collapse slides the inner layer 13.6 um — a fifth of a carrier period —
+    // and the literal composite (the two-layer product formed per sub-sample)
+    // reads that as a full change, the same as the aliased full collapse
+    // (14.6 vs 14.4 mad at 0.95). At 1% the slide is 2.7 um, 4% of a period,
+    // inside the linear regime. The anti-cheat still holds: a binary fake
+    // (any nonzero collapse -> same frame) reads ~1.0 here and fails, and the
+    // lower bound catches a gap that does nothing.
+    await scaleBackPlaneGap(page, 'front', 0.99);
     const fPartial = await capture();
     await scaleBackPlaneGap(page, 'front', 1); // restore design gap
     await unzoom();
@@ -518,7 +519,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
     }
     if (!(dPartial.mad < dCollapse.mad * 0.9 && dPartial.mad > 0.02)) {
       failures.push(
-        `response does not scale with the gap (95%-gap mad ${dPartial.mad.toFixed(2)} vs full collapse ${dCollapse.mad.toFixed(2)})`
+        `response does not scale with the gap (99%-gap mad ${dPartial.mad.toFixed(2)} vs full collapse ${dCollapse.mad.toFixed(2)})`
       );
     }
     if (dControl.mad > 0.5) {

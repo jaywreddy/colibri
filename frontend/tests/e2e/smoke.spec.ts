@@ -37,9 +37,11 @@ test.describe('smoke', () => {
     await page.goto('/');
     await waitForStudio(page);
     await expect(page.getByTestId('cut-list')).toBeVisible();
-    // Production defaults: front outer ply 29.1 x 27.5 mm; the art rim is the
-    // inner ply's window, 2.25 mm ply + 1.4 mm fold of 3/8" tape = 3.6 mm.
-    await expect(page.getByTestId('cut-front')).toContainText('27.5');
+    // Production defaults (single plies, 2026-09-16): the front is one
+    // 32.0 x 30.5 mm ply; the art rim is pinned at 3.64 mm — the number the
+    // 15 September plate was written with (boxes.PRODUCTION_ART_RIM_UM).
+    await expect(page.getByTestId('cut-front')).toContainText('32.0');
+    await expect(page.getByTestId('cut-front')).toContainText('30.5');
     await expect(page.getByTestId('keepout-readout')).toContainText('3.6 mm');
   });
 });

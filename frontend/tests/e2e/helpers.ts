@@ -134,7 +134,10 @@ export async function waitForBoxTextures(page: Page): Promise<void> {
       return !!front && (front.image?.width ?? 1) > 1;
     },
     null,
-    { timeout: 60_000 }
+    // A COLD box (every face recomposed, ~80-120 s on this host) is a normal
+    // first run after any spec or version change; the first spec to reach the
+    // box pays it. 60 s was a false failure on canvasRenders after 5b.
+    { timeout: 180_000 }
   );
 }
 

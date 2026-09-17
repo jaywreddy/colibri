@@ -76,7 +76,10 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
   const ov = overlapUm(boxSpec);
   // Bonded: the front art starts at the inner ply's window when that is
   // further in than the foil rim (mirrors assembly.bonded_art_keepout_um).
-  const artRim = boxSpec.bonded ? bondedArtKeepoutUm(boxSpec) : ko;
+  // A PINNED rim (spec.art_rim_um — the production box keeps the 3.64 mm the
+  // plate was written with) wins over both when it is the larger.
+  const derivedRim = boxSpec.bonded ? bondedArtKeepoutUm(boxSpec) : ko;
+  const artRim = Math.max(derivedRim, boxSpec.art_rim_um ?? 0);
   const cuts = cutList(boxSpec);
   const tapeCm = copperTapeLengthCm(boxSpec);
 
@@ -410,8 +413,11 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           Pattern keep-out: <b>{mm1(artRim)} mm</b> per edge
           <br />
           (foil overlap {mm1(ov)} mm + safety {mm1(boxSpec.foil.safety_um)} mm
-          {boxSpec.bonded && artRim > ko
+          {boxSpec.bonded && derivedRim > ko
             ? `; art starts at the inner ply's window, ${mm1(boxSpec.glass.thickness_um)} mm ply + ${mm1(ov)} mm fold`
+            : ''}
+          {(boxSpec.art_rim_um ?? 0) > derivedRim
+            ? `; pinned at ${mm1(boxSpec.art_rim_um!)} mm, the rim the plate was written with`
             : ''}
           )
         </div>
