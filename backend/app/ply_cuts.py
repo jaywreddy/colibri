@@ -5,11 +5,15 @@ now (one written plate per face, diced out of the 5" witness blank), so the
 blank solver, the packer, the vernier combs and the panel GDS writer are gone;
 what the witness plate still needs from that work is the pure geometry:
 
-  * :func:`pair_rects` — the per-face cut list, ``face:F`` (outer ply, full cut
-    dims) and ``face:B`` (inner ply, inset one ply per edge), derived from
-    ``assembly.bonded_cut_list``. The witness plate writes the F ply of each
-    face; the B entry is kept because the cut list is stated per pair and the
-    inner ply is still real glass in the finished box (bare, unwritten).
+  * :func:`face_rects` — the per-face cut list, one rectangle per face,
+    straight off ``assembly.face_cut_dims``. It used to be ``pair_rects``: a
+    12-entry ``face:F`` / ``face:B`` list from ``assembly.bonded_cut_list``,
+    where F was the outer ply at the full cut dims and B the inner ply inset
+    one ply per edge. The inner plies went on 2026-09-16 and the F dims were
+    always ``face_cut_dims`` at the ply thickness, so the pair list had become
+    a wrapper that computed a second, unused rectangle per face and then threw
+    it away. The six written dims are unchanged — that is pinned in
+    ``tests/test_ply_cuts.py``.
   * :func:`id_tick_rects` — the tick-code plate ID that makes a diced plate
     identifiable under a loupe, placed in the interior foil-fold band where the
     tape hides it.
@@ -27,15 +31,16 @@ from dataclasses import dataclass
 import numpy as np
 
 # --- ID tick code -------------------------------------------------------------
-# Face index (1..6 bars) + a B-layer underline, near the bottom edge of the
-# plate, inside the interior foil-fold band.
+# Face index (1..6 bars) near the bottom edge of the plate, inside the interior
+# foil-fold band. (The bonded design underlined the bars on a B ply; there are
+# no B plies.)
 ID_TICK_W_UM = 150.0
 ID_TICK_LEN_UM = 400.0
 ID_TICK_PITCH_UM = 350.0
 
 # The PRODUCTION plate's pinned mark-centre offset lives with the rest of the
 # box constants; re-exported here because the tick geometry is this module's.
-from .production import ID_TICK_OFFSET_UM  # noqa: E402
+from .production import ID_TICK_OFFSET_UM  # noqa: E402,F401
 
 # --- dicing ticks -------------------------------------------------------------
 # Just outside each plate corner, inside the street.
@@ -43,12 +48,10 @@ DICE_TICK_LEN_UM = 400.0
 DICE_TICK_W_UM = 60.0
 DICE_TICK_GAP_UM = 150.0
 
-SUBPLATE_SUFFIXES = ("F", "B")  # F = outer ply (front layer), B = inner ply
-
-
 @dataclass
 class PlateRect:
-    """One ply's cut rectangle, W x H in um, tagged by sub-plate id."""
+    """One face's cut rectangle, W x H in um, tagged by face id (or
+    ``<face>:spareN`` for a spare)."""
 
     face: str
     width_um: float
@@ -88,70 +91,62 @@ class Placement:
         ]
 
 
-def subplate_id(face: str, suffix: str) -> str:
-    return f"{face}:{suffix}"
-
-
-def pair_rects(
+def face_rects(
     width_um: float,
     depth_um: float,
     height_um: float,
     ply_um: float,
     spare_faces: tuple[str, ...] = (),
 ) -> list[PlateRect]:
-    """12 sub-plate rects from the nested-shell cut list, plus one full spare
-    PAIR per entry in ``spare_faces``.
+    """The six face rects of a box, plus one full spare per entry in
+    ``spare_faces``.
 
-    ``face:F`` is the OUTER ply (full cut dims), ``face:B`` the INNER ply (inset
-    one ply per edge — genuinely smaller). Spares are hand-cleave insurance: a
-    face may appear more than once in ``spare_faces`` for multiple spare pairs;
-    each spare's id gains a ``:spareN`` suffix but its GEOMETRY is identical to
-    the original (same masks, same ID ticks — interchangeable at the bench).
-    Sorted longest-edge first, which is the order a shelf packer wants.
+    Spares are hand-cleave insurance: a face may appear more than once in
+    ``spare_faces`` for multiple spares; each spare's id gains a ``:spareN``
+    suffix but its GEOMETRY is identical to the original (same masks, same ID
+    ticks — interchangeable at the bench). Sorted longest-edge first, which is
+    the order a shelf packer wants.
     """
-    from .assembly import bonded_cut_list
+    from .assembly import FACE_IDS, face_cut_dims
 
-    entries = bonded_cut_list(width_um, depth_um, height_um, ply_um)
     by_id: dict[str, tuple[float, float]] = {}
     rects = []
-    for e in entries:
-        sid = subplate_id(e["face"], "F" if e["ply"] == "outer" else "B")
-        by_id[sid] = (e["width_um"], e["height_um"])
-        rects.append(PlateRect(sid, e["width_um"], e["height_um"]))
+    for fid in FACE_IDS:
+        w, h = face_cut_dims(fid, width_um, depth_um, height_um, ply_um)
+        by_id[fid] = (w, h)
+        rects.append(PlateRect(fid, w, h))
     for i, fid in enumerate(spare_faces):
-        for suf in SUBPLATE_SUFFIXES:
-            sid = subplate_id(fid, suf)
-            if sid not in by_id:
-                raise ValueError(f"spare face {fid!r} is not a box face")
-            w, h = by_id[sid]
-            rects.append(PlateRect(f"{sid}:spare{i + 1}", w, h))
+        if fid not in by_id:
+            raise ValueError(f"spare face {fid!r} is not a box face")
+        w, h = by_id[fid]
+        rects.append(PlateRect(f"{fid}:spare{i + 1}", w, h))
     rects.sort(key=lambda r: (max(r.width_um, r.height_um), r.area_um2()), reverse=True)
     return rects
 
 
 def fold_band_offset_um(ply_um: float, fold_um: float) -> float:
-    """Mark-center distance from the STACK (outer ply) edge.
+    """Mark-centre distance from the plate edge, centred in the interior
+    foil-fold band ``[ply, ply + fold]``.
 
-    Centered in the interior foil-fold band [ply, ply + fold] — the ring where
-    BOTH plies have glass and the interior fold hides the marks from inside.
+    Kept because the PRODUCTION offset is pinned to what this returned for the
+    BONDED build (see ``production.ID_TICK_OFFSET_UM``), and a derivation you
+    can still run is worth more than a number with a story attached.
     """
     return ply_um + fold_um / 2.0
 
 
 def id_tick_rects(
     face_index: int,
-    is_back: bool,
-    stack_w_um: float,
-    stack_h_um: float,
+    plate_w_um: float,
+    plate_h_um: float,
     ply_um: float,
     fold_um: float,
     *,
     band_offset_um: float | None = None,
 ) -> np.ndarray:
     """Tick-code plate ID near the bottom edge, inside the foil-fold band:
-    ``face_index + 1`` bars, plus a long underline bar for the B (inner)
-    sub-plate. Diced plates all look alike under a loupe — this keeps the bench
-    build sane. Stack-centered coords, identical on both plies.
+    ``face_index + 1`` bars. Diced plates all look alike under a loupe — this
+    keeps the bench build sane. Plate-centred coords.
 
     ``band_offset_um`` overrides the derived ``fold_band_offset_um(ply, fold)``
     — the production plate passes its PINNED offset (see
@@ -159,7 +154,7 @@ def id_tick_rects(
     n = face_index + 1
     off = (fold_band_offset_um(ply_um, fold_um)
            if band_offset_um is None else float(band_offset_um))
-    cy = -(stack_h_um / 2.0 - off)
+    cy = -(plate_h_um / 2.0 - off)
     total = (n - 1) * ID_TICK_PITCH_UM
     out = []
     for i in range(n):
@@ -168,15 +163,11 @@ def id_tick_rects(
             (cx - ID_TICK_W_UM / 2.0, cx + ID_TICK_W_UM / 2.0,
              cy - ID_TICK_LEN_UM / 2.0, cy + ID_TICK_LEN_UM / 2.0)
         )
-    if is_back:
-        half = (total + ID_TICK_PITCH_UM) / 2.0
-        y0 = cy + ID_TICK_LEN_UM / 2.0 + ID_TICK_W_UM
-        out.append((-half, half, y0, y0 + ID_TICK_W_UM))
     return np.asarray(out, dtype=float)
 
 
 def dice_tick_rects(p: Placement) -> np.ndarray:
-    """L-shaped scribe ticks just OUTSIDE each corner of a placed sub-plate,
+    """L-shaped scribe ticks just OUTSIDE each corner of a placed plate,
     inside the dicing street — blank-frame coords. Doubles as a post-dice
     orientation reference (the L opens toward the plate)."""
     out = []

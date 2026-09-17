@@ -132,10 +132,9 @@ def test_the_area_budget_matches_the_plan():
 
 
 def test_the_production_dies_are_the_panelized_box_plies():
-    """A die on this plate must be cut to the box's own ply dimensions
-    (``ply_cuts.pair_rects``), ONE ply per face (the inner plies are bare
-    glass). Spares are the same die again; the rotated front spare is the
-    front's dims swapped."""
+    """A die on this plate must be cut to the box's own dimensions
+    (``ply_cuts.face_rects``), ONE ply per face. Spares are the same die again;
+    the rotated front spare is the front's dims swapped."""
     from app import ply_cuts as pc
     from app.witness_dies import (SIDE_PHOTOS, SPARE_FACES, SPARE_SIDES, blank_plan, die_dims,
                                   production_cells)
@@ -153,17 +152,17 @@ def test_the_production_dies_are_the_panelized_box_plies():
         assert c.takes_polarity and c.block == "production"
     for face in ("top", "front", "back", "bottom"):
         c, d = cells[f"DIE-{face.upper()}"], die_dims(face)
-        assert (c.w_um, c.h_um) == (d["f_w"], d["f_h"])
+        assert (c.w_um, c.h_um) == (d["w"], d["h"])
     for face, cid, rot in SPARE_FACES:
         c, d = cells[cid], die_dims(face)
-        assert (c.w_um, c.h_um) == ((d["f_h"], d["f_w"]) if rot else (d["f_w"], d["f_h"]))
+        assert (c.w_um, c.h_um) == ((d["h"], d["w"]) if rot else (d["w"], d["h"]))
     d = die_dims("left")
     for _, _, cid, _ in SIDE_PHOTOS:
-        assert (cells[cid].w_um, cells[cid].h_um) == (d["f_w"], d["f_h"])
+        assert (cells[cid].w_um, cells[cid].h_um) == (d["w"], d["h"])
     panel = {r.face: (r.width_um, r.height_um)
-             for r in pc.pair_rects(w_um, d_um, h_um, PLY_UM)}
-    assert panel["top:F"] == (cells["DIE-TOP"].w_um, cells["DIE-TOP"].h_um)
-    assert panel["left:F"] == (cells["DIE-LEFT"].w_um, cells["DIE-LEFT"].h_um)
+             for r in pc.face_rects(w_um, d_um, h_um, PLY_UM)}
+    assert panel["top"] == (cells["DIE-TOP"].w_um, cells["DIE-TOP"].h_um)
+    assert panel["left"] == (cells["DIE-LEFT"].w_um, cells["DIE-LEFT"].h_um)
 
 
 def _cut_crosses(x0, x1, y0, y1, cut_axis, cut_v, lo, hi) -> bool:

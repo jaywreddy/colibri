@@ -64,9 +64,10 @@ describe('defaultBoxSpec (contract defaults)', () => {
     expect(s.width_um).toBe(32000);
     expect(s.depth_um).toBe(32000);
     expect(s.height_um).toBe(35000);
-    // Six single plies (2026-09-16): no bond, 1/4" tape, the art rim pinned at
-    // the 3.64 mm the 15 September plate was written with.
-    expect(s.bonded).toBe(false);
+    // Six single plies (2026-09-16): no bond — the flag and its two-ply math
+    // are gone — 1/4" tape, and the art rim pinned at the 3.64 mm the
+    // 15 September plate was written with.
+    expect('bonded' in s).toBe(false);
     expect(s.art_rim_um).toBe(P.ART_RIM_UM);
     expect(s.glass).toEqual({ thickness_um: 2250, material: 'fused quartz', n: 1.4585 });
     expect(s.foil).toEqual({

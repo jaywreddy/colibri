@@ -234,18 +234,12 @@ def test_golden_fixture_matches_backend() -> None:
         FoilSpec,
         HingeSpec,
         back_window_um,
-        bonded_art_keepout_um,
-        bonded_back_window_um,
-        bonded_cut_list,
-        bonded_keepout_um,
-        bonded_overlap_um,
         cut_list,
         hinge_layout,
         keepout_um,
         overlap_um,
         seam_list,
         validate_assembly,
-        validate_bonded_assembly,
     )
 
     fixture_path = (
@@ -253,12 +247,14 @@ def test_golden_fixture_matches_backend() -> None:
     )
     cases = json.loads(fixture_path.read_text(encoding="utf-8"))["cases"]
     assert len(cases) >= 5
-    assert any(c["spec"].get("bonded") for c in cases), "fixture lost its bonded cases"
+    # The BONDED cases went with the construction on 2026-09-16: there is no
+    # bonded_* math left to pin, and a case that names a flag nothing reads
+    # would be a test of nothing.
+    assert not any("bonded" in c["spec"] for c in cases), "fixture still carries bonded cases"
 
     for case in cases:
         spec = case["spec"]
         exp = case["expected"]
-        bonded = bool(spec.get("bonded", False))
         foil = FoilSpec.from_dict(spec["foil"])
         hinge = HingeSpec.from_dict(spec["hinge"])
         args = (
@@ -270,27 +266,16 @@ def test_golden_fixture_matches_backend() -> None:
 
         raised = False
         try:
-            if bonded:
-                validate_bonded_assembly(*args, foil, hinge)
-            else:
-                validate_assembly(*args, foil, hinge)
+            validate_assembly(*args, foil, hinge)
         except ValueError:
             raised = True
         assert raised == (not exp["valid"]), f"{case['name']}: validity flipped"
         if not exp["valid"]:
             continue
 
-        if bonded:
-            assert bonded_overlap_um(foil, args[3]) == exp["overlap_um"], case["name"]
-            assert bonded_keepout_um(foil, args[3]) == exp["keepout_um"], case["name"]
-            assert bonded_art_keepout_um(foil, args[3]) == exp["art_keepout_um"], case["name"]
-            assert bonded_back_window_um(foil, args[3]) == exp["back_window_um"], case["name"]
-            assert bonded_cut_list(*args) == exp["cut_list"], case["name"]
-        else:
-            assert overlap_um(foil, args[3]) == exp["overlap_um"], case["name"]
-            assert keepout_um(foil, args[3]) == exp["keepout_um"], case["name"]
-            assert back_window_um(foil, args[3]) == exp["back_window_um"], case["name"]
-            assert cut_list(*args) == exp["cut_list"], case["name"]
-        # Seams follow the (outer) shell at the given thickness in BOTH modes.
+        assert overlap_um(foil, args[3]) == exp["overlap_um"], case["name"]
+        assert keepout_um(foil, args[3]) == exp["keepout_um"], case["name"]
+        assert back_window_um(foil, args[3]) == exp["back_window_um"], case["name"]
+        assert cut_list(*args) == exp["cut_list"], case["name"]
         assert {s["id"]: s["length_um"] for s in seam_list(*args)} == exp["seams"], case["name"]
         assert hinge_layout(hinge, spec["width_um"]) == exp["hinge"], case["name"]

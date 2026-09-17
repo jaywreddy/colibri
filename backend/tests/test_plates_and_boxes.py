@@ -271,7 +271,7 @@ def test_default_box_spec_matches_contract():
     # are mirrored term for term by the frontend's defaultBoxSpec(); the two
     # must move together or the live preview stops describing the real part.
     assert (spec.width_um, spec.depth_um, spec.height_um) == (32000.0, 32000.0, 35000.0)
-    assert spec.bonded is False
+    assert not hasattr(spec, 'bonded'), 'the two-ply flag went with its math'
     assert spec.foil.tape_width_um == 6350.0
     assert spec.glass.thickness_um == 2250.0
     assert spec.glass.material == "fused quartz"
@@ -357,11 +357,14 @@ def test_the_ring_fits_a_single_ply_wall():
 
 
 def test_the_single_ply_cut_dims_are_the_dies_that_were_written():
-    """The inner plies leaving must not move a die. A face's OUTER ply was
-    always cut at the PLY thickness, so the single-ply ``face_cut_dims`` and the
-    bonded panelizer's ``face:F`` rect are the same rectangle — 32 x 32 for the
-    lid and base, 32 x 30.5 front and back, 27.5 x 30.5 for the sides, which is
-    what the 2026-09-15 plate was diced to."""
+    """The six dims the 2026-09-15 plate was diced to — 32 x 32 for the lid and
+    base, 32 x 30.5 front and back, 27.5 x 30.5 for the sides.
+
+    This is the pin that let ``ply_cuts.pair_rects`` go (2026-09-17). That
+    function derived a 12-entry ``face:F`` / ``face:B`` list from
+    ``assembly.bonded_cut_list`` and then used only the F rects — which were
+    ``face_cut_dims`` at the ply thickness all along. ``face_rects`` computes
+    exactly that, and these numbers say it computes the same rectangle."""
     from app import ply_cuts as pc
     from app.assembly import FACE_IDS, face_cut_dims
     from app.boxes import default_box_spec
@@ -369,16 +372,17 @@ def test_the_single_ply_cut_dims_are_the_dies_that_were_written():
 
     spec = default_box_spec()
     dims = (spec.width_um, spec.depth_um, spec.height_um)
-    pair = {r.face: (r.width_um, r.height_um)
-            for r in pc.pair_rects(*dims, PLY_UM)}
+    cut = {r.face: (r.width_um, r.height_um)
+           for r in pc.face_rects(*dims, PLY_UM)}
     want = {
         "top": (32000.0, 32000.0), "bottom": (32000.0, 32000.0),
         "front": (32000.0, 30500.0), "back": (32000.0, 30500.0),
         "left": (27500.0, 30500.0), "right": (27500.0, 30500.0),
     }
+    assert set(cut) == set(FACE_IDS), "one rect per face, no sub-plates"
     for fid in FACE_IDS:
         single = face_cut_dims(fid, *dims, PLY_UM)
-        assert single == pair[pc.subplate_id(fid, "F")], fid
+        assert single == cut[fid], fid
         assert single == want[fid], fid
         assert (spec.faces[fid].width_um, spec.faces[fid].height_um) == want[fid], fid
 

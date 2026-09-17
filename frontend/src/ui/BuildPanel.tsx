@@ -1,11 +1,10 @@
 import { defaultBoxSpec, FOIL_TAPE_PRESETS_UM, type FoilFinish } from '../api';
-import { bondedArtKeepoutUm, copperTapeLengthCm, cutList, keepoutUm, overlapUm, FOIL_COLORS } from '../assembly';
+import { copperTapeLengthCm, cutList, keepoutUm, overlapUm, FOIL_COLORS } from '../assembly';
 import { log } from '../logger';
 import { useStore } from '../store';
 import { FACE_LABELS } from './FacesPanel';
 import {
   Button,
-  CheckRow,
   ChipRow,
   Disclosure,
   KIT,
@@ -74,11 +73,9 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
 
   const ko = keepoutUm(boxSpec);
   const ov = overlapUm(boxSpec);
-  // Bonded: the front art starts at the inner ply's window when that is
-  // further in than the foil rim (mirrors assembly.bonded_art_keepout_um).
   // A PINNED rim (spec.art_rim_um — the production box keeps the 3.64 mm the
-  // plate was written with) wins over both when it is the larger.
-  const derivedRim = boxSpec.bonded ? bondedArtKeepoutUm(boxSpec) : ko;
+  // plate was written with) wins over the derived foil rim when it is larger.
+  const derivedRim = ko;
   const artRim = Math.max(derivedRim, boxSpec.art_rim_um ?? 0);
   const cuts = cutList(boxSpec);
   const tapeCm = copperTapeLengthCm(boxSpec);
@@ -173,23 +170,17 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           testId="box-height"
         />
         <SliderRow
-          label={boxSpec.bonded ? 'Ply thickness' : 'Glass thickness'}
+          label="Ply thickness"
           value={boxSpec.glass.thickness_um / 1000}
           min={0.3}
-          // 3.0, not 2.0: the production box is bonded 2.25 mm fused-quartz
-          // plies, which the old ceiling could not even express.
+          // 3.0, not 2.0: the production box is 2.25 mm fused-quartz plies,
+          // which the old ceiling could not even express.
           max={3.0}
           step={0.05}
           unit="mm"
           decimals={2}
           onChange={(mm) => patchGlass({ thickness_um: Math.round(mm * 1000) })}
           testId="glass-thickness"
-        />
-        <CheckRow
-          label="Bonded 2-ply walls (bevel-step corners)"
-          checked={!!boxSpec.bonded}
-          onChange={(bonded) => patchBoxSpec({ bonded })}
-          testId="glass-bonded"
         />
         <SliderRow
           label="Refractive index n"
@@ -413,9 +404,6 @@ export default function BuildPanel({ validationErrors }: { validationErrors: str
           Pattern keep-out: <b>{mm1(artRim)} mm</b> per edge
           <br />
           (foil overlap {mm1(ov)} mm + safety {mm1(boxSpec.foil.safety_um)} mm
-          {boxSpec.bonded && derivedRim > ko
-            ? `; art starts at the inner ply's window, ${mm1(boxSpec.glass.thickness_um)} mm ply + ${mm1(ov)} mm fold`
-            : ''}
           {(boxSpec.art_rim_um ?? 0) > derivedRim
             ? `; pinned at ${mm1(boxSpec.art_rim_um!)} mm, the rim the plate was written with`
             : ''}

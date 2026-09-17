@@ -1291,11 +1291,6 @@ export default function BoxScene() {
     const Dep = mm(spec.depth_um);
     const H = mm(spec.height_um);
     const T = mm(spec.glass.thickness_um);
-    // BONDED (two-ply) construction: T is then the PLY thickness — which is
-    // what the entire outer-shell metalwork below (rims, lid edges, seams,
-    // hinge axis) is cut at, so those formulas hold verbatim; only buildPlate
-    // branches (two slabs, stack surfaces at ±T instead of ±T/2).
-    const bonded = !!spec.bonded;
     // 2x3 fab grid cell size (also drives the flat-layout scale).
     const cellW = Math.max(W, Dep) + 8;
     const cellH = Math.max(H, Dep) + 12;
@@ -1393,30 +1388,10 @@ export default function BoxScene() {
       const h = mm(cut.height_um);
       const rt = ctx.faces[fid];
       const pg = new THREE.Group();
-      // (a) the glass — one slab, or the BONDED two-ply stack.
-      //
-      // Bonded construction (spec.bonded): each face is TWO plies of thickness
-      // T glued face-to-face, the inner ply inset exactly one ply per edge
-      // (the nested-shell cut list — see assembly.ts::bondedCutList). Local
-      // frame: the stack spans z in [-T, +T]; the outer ply [0, T] carries the
-      // front chrome at its inner surface (the bond line), the inner ply
-      // [-T, 0] carries the back chrome on its interior surface. The visible
-      // step at the edges IS the 45-deg-approximating staircase the corners
-      // interleave with.
-      if (bonded) {
-        const outerSlab = new THREE.Mesh(geo(new THREE.BoxGeometry(w, h, T)), rt.glassMat);
-        outerSlab.position.z = T / 2;
-        outerSlab.userData.faceId = fid;
-        pg.add(outerSlab);
-        ctx.raycastTargets.push(outerSlab);
-        const iw = Math.max(1e-3, w - 2 * T);
-        const ih = Math.max(1e-3, h - 2 * T);
-        const innerSlab = new THREE.Mesh(geo(new THREE.BoxGeometry(iw, ih, T)), rt.glassMat);
-        innerSlab.position.z = -T / 2;
-        innerSlab.userData.faceId = fid;
-        pg.add(innerSlab);
-        ctx.raycastTargets.push(innerSlab);
-      } else {
+      // (a) the glass — ONE slab. (The bonded two-ply stack, with its inset
+      // inner ply and its stepped edge, went on 2026-09-16 along with the
+      // nested-shell cut list it was built from.)
+      {
         const slab = new THREE.Mesh(geo(new THREE.BoxGeometry(w, h, T)), rt.glassMat);
         slab.userData.faceId = fid;
         pg.add(slab);
@@ -1443,7 +1418,7 @@ export default function BoxScene() {
       // at the stack surface (its burial only affects parallax against the
       // glass edge, not against the back layer) and place the back plane T/n
       // below it, exactly as in the single-plate build.
-      const surfaceZ = (bonded ? T : T / 2) + EPS_PATTERN_MM;
+      const surfaceZ = T / 2 + EPS_PATTERN_MM;
       outer.position.z = surfaceZ;
       outer.userData.faceId = fid;
       outer.renderOrder = 2;
@@ -1454,9 +1429,8 @@ export default function BoxScene() {
         'plate-inner'
       );
       // TASK 2 — apparent-depth gap. The back gold layer physically sits one
-      // GLASS thickness below the front layer (the far surface of the single
-      // plate, or the bonded stack's interior surface one ply below the bond
-      // line), but refraction lifts its APPARENT position toward the viewer: a
+      // GLASS thickness below the front layer (the far surface of the plate),
+      // but refraction lifts its APPARENT position toward the viewer: a
       // paraxial ray exits the glass as if the back layer were only T/n below
       // the front. Placing the inner plane at that paraxial-equivalent air gap
       // (separation T/n below the outer plane, not the full T) makes the
@@ -1485,14 +1459,11 @@ export default function BoxScene() {
       outer.onBeforeRender = () => {
         rt.shader.uniforms.uInnerGapUm.value = (outer.position.z - inner.position.z) * 1000;
       };
-      // (c) copper foil overlap strips, outer AND inner borders. Bonded: the
-      // outer fold lands on the outer ply's face (its edge = the stack edge),
-      // the interior fold on the INNER ply's face — measured from the inner
-      // ply's own (inset) edge, so that frame is built at the inner dims.
-      const zOut = (bonded ? T : T / 2) + EPS_FOIL_MM;
+      // (c) copper foil overlap strips, outer AND inner borders.
+      const zOut = T / 2 + EPS_FOIL_MM;
       const zIn = -zOut;
-      const iw2 = bonded ? Math.max(1e-3, w - 2 * T) : w;
-      const ih2 = bonded ? Math.max(1e-3, h - 2 * T) : h;
+      const iw2 = w;
+      const ih2 = h;
       const ov = Math.min(overlapMm, Math.min(iw2, ih2) / 2);
       if (ov > 1e-4) {
         if (sceneLayout === 'assembled') {
@@ -1587,7 +1558,7 @@ export default function BoxScene() {
 
       // --- presentation props (cushion + ring) — display only ----------------
       if (useStore.getState().showRing) {
-        addPresentationProps(group, W, Dep, H, bonded ? 2 * T : T, geo, mat);
+        addPresentationProps(group, W, Dep, H, T, geo, mat);
       }
 
       // --- organic solder seam beads + corner junction blobs ----------------
@@ -2254,9 +2225,6 @@ export default function BoxScene() {
         d: boxSpec.depth_um,
         h: boxSpec.height_um,
         glass: boxSpec.glass,
-        // Bonded moves every slab and rim — it MUST rebuild geometry. (It used
-        // to ride along only when thickness changed in the same edit.)
-        bonded: !!boxSpec.bonded,
         foil: {
           tape_width_um: boxSpec.foil.tape_width_um,
           safety_um: boxSpec.foil.safety_um,

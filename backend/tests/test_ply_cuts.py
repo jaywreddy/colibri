@@ -2,58 +2,73 @@
 geometry build. Everything here runs in milliseconds.
 
 These are the numbers the witness plate's dies are cut and identified by:
-``witness_dies.die_dims`` takes its face dimensions from :func:`pair_rects`,
+``witness_dies.die_dims`` takes its face dimensions from :func:`face_rects`,
 ``bench_marks`` its tick code from :func:`id_tick_rects`, and ``dice_ticks``
 its street marks from :func:`dice_tick_rects`.
+
+``face_rects`` replaced ``pair_rects`` on 2026-09-17 with the rest of the
+bonded mechanics. The six written dims did not move — that is pinned in
+``test_plates_and_boxes.py::test_the_single_ply_cut_dims_are_the_dies_that_were_written``.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from app.assembly import FoilSpec, bonded_overlap_um
 from app.patterns.base import LITHO_FLOOR_UM
 from app.ply_cuts import (
     Placement,
     dice_tick_rects,
     ID_TICK_OFFSET_UM,
+    face_rects,
     fold_band_offset_um,
     id_tick_rects,
     mirror_rects,
-    pair_rects,
-    subplate_id,
 )
-from app.witness_geom import PLY_UM as PLY
+from app.production import PLY_UM as PLY
 
-FOLD = bonded_overlap_um(FoilSpec(tape_width_um=9_525.0), PLY)  # 3/8" tape
+FOLD = 1387.5
+"""The BONDED build's per-face foil fold: 3/8 inch tape (9525 um) wrapping a
+stepped edge of three 2.25 mm plies, ``(9525 - 3 * 2250) / 2``. It was
+``assembly.bonded_overlap_um(FoilSpec(tape_width_um=9525), PLY)`` until the
+bonded math was deleted on 2026-09-17; it is written out here because the
+PRODUCTION tick offset below is pinned to what it produced, and a pin with no
+derivation beside it is just a number."""
 
 
 # --- cut rects ----------------------------------------------------------------
 
 
-def test_pair_rects_nested_shell_dims():
-    rects = pair_rects(30_000.0, 30_000.0, 33_000.0, PLY)
-    assert len(rects) == 12
+def test_face_rects_are_the_stained_glass_cut_list():
+    """One rect per face, straight off ``assembly.face_cut_dims``: walls sit ON
+    the bottom plate and the left/right walls fit BETWEEN front and back."""
+    from app.assembly import FACE_IDS
+
+    W, D, H = 30_000.0, 30_000.0, 33_000.0
+    rects = face_rects(W, D, H, PLY)
+    assert len(rects) == 6
     by_id = {r.face: r for r in rects}
-    for fid in ("front", "back", "top", "bottom", "left", "right"):
-        f = by_id[subplate_id(fid, "F")]
-        b = by_id[subplate_id(fid, "B")]
-        # The inner ply is the nested shell: exactly one ply smaller per edge.
-        assert b.width_um == pytest.approx(f.width_um - 2 * PLY)
-        assert b.height_um == pytest.approx(f.height_um - 2 * PLY)
+    assert set(by_id) == set(FACE_IDS)
+    for fid in ("top", "bottom"):
+        assert (by_id[fid].width_um, by_id[fid].height_um) == (W, D)
+    for fid in ("front", "back"):
+        assert by_id[fid].width_um == pytest.approx(W)
+        assert by_id[fid].height_um == pytest.approx(H - 2 * PLY)
+    for fid in ("left", "right"):
+        assert by_id[fid].width_um == pytest.approx(D - 2 * PLY)
+        assert by_id[fid].height_um == pytest.approx(H - 2 * PLY)
 
 
-def test_pair_rects_spares_duplicate_a_pair_exactly():
+def test_face_rects_spares_duplicate_a_face_exactly():
     base = {r.face: (r.width_um, r.height_um)
-            for r in pair_rects(30_000.0, 30_000.0, 33_000.0, PLY)}
-    rects = pair_rects(30_000.0, 30_000.0, 33_000.0, PLY, spare_faces=("front",))
-    assert len(rects) == 14
+            for r in face_rects(30_000.0, 30_000.0, 33_000.0, PLY)}
+    rects = face_rects(30_000.0, 30_000.0, 33_000.0, PLY, spare_faces=("front",))
+    assert len(rects) == 7
     by_id = {r.face: (r.width_um, r.height_um) for r in rects}
     # A spare is the SAME plate again — interchangeable at the bench.
-    assert by_id["front:F:spare1"] == base["front:F"]
-    assert by_id["front:B:spare1"] == base["front:B"]
+    assert by_id["front:spare1"] == base["front"]
     with pytest.raises(ValueError):
-        pair_rects(30_000.0, 30_000.0, 33_000.0, PLY, spare_faces=("lid",))
+        face_rects(30_000.0, 30_000.0, 33_000.0, PLY, spare_faces=("lid",))
 
 
 # --- write transforms ---------------------------------------------------------
@@ -69,20 +84,20 @@ def test_mirror_rects_is_an_involution_and_flips_x():
 # --- bench marks --------------------------------------------------------------
 
 
-def test_id_ticks_encode_face_and_layer():
+def test_id_ticks_encode_the_face():
+    """One bar per face index, in the fold band. (The bonded build underlined
+    the bars on a B ply; there are no B plies, and the underline went with
+    them on 2026-09-17.)"""
     w, h = 30_000.0, 33_000.0
     off = fold_band_offset_um(PLY, FOLD)
     assert off == pytest.approx(PLY + FOLD / 2.0)
     for idx in range(6):
-        f = id_tick_rects(idx, False, w, h, PLY, FOLD)
-        b = id_tick_rects(idx, True, w, h, PLY, FOLD)
-        assert f.shape[0] == idx + 1
-        assert b.shape[0] == idx + 2  # + underline bar
-        for rects in (f, b):
-            widths = np.minimum(rects[:, 1] - rects[:, 0], rects[:, 3] - rects[:, 2])
-            assert widths.min() >= LITHO_FLOOR_UM
-            # Inside the inner ply footprint, in the interior fold band.
-            assert (np.abs(rects[:, 2:]) <= h / 2 - PLY + 1e-6).all()
+        rects = id_tick_rects(idx, w, h, PLY, FOLD)
+        assert rects.shape[0] == idx + 1
+        widths = np.minimum(rects[:, 1] - rects[:, 0], rects[:, 3] - rects[:, 2])
+        assert widths.min() >= LITHO_FLOOR_UM
+        # Inside the foil-fold band, a ply in from the edge.
+        assert (np.abs(rects[:, 2:]) <= h / 2 - PLY + 1e-6).all()
 
 
 def test_the_production_tick_band_offset_is_pinned():
@@ -97,14 +112,14 @@ def test_the_production_tick_band_offset_is_pinned():
     assert ID_TICK_OFFSET_UM == 2943.75
 
     h = 32_000.0
-    ticks = id_tick_rects(0, False, h, h, PLY, 0.0,
+    ticks = id_tick_rects(0, h, h, PLY, 0.0,
                           band_offset_um=ID_TICK_OFFSET_UM)
     cy = (ticks[0][2] + ticks[0][3]) / 2.0
     assert h / 2.0 + cy == pytest.approx(ID_TICK_OFFSET_UM)
     # ...and that is what the plate writer actually emits.
-    plate = bench_marks("front", "F", h, h)
+    plate = bench_marks("front", h, h)
     assert np.allclose(plate[: len(ticks)], id_tick_rects(
-        0, False, h, h, PLY, 0.0, band_offset_um=ID_TICK_OFFSET_UM))
+        0, h, h, PLY, 0.0, band_offset_um=ID_TICK_OFFSET_UM))
     # And where that leaves them on the NEW build: the 1/4" fold reaches
     # 2.05 mm, so the tick is no longer under the copper — it sits in the blank
     # ring between the fold and the 3.6375 mm art rim. Outside the garland,
@@ -115,7 +130,7 @@ def test_the_production_tick_band_offset_is_pinned():
 
 def test_dice_ticks_stay_in_the_street():
     street = 1_000.0
-    p = Placement("front:F", 1_000.0, 2_000.0, 20_000.0, 16_000.0, False)
+    p = Placement("front", 1_000.0, 2_000.0, 20_000.0, 16_000.0, False)
     ticks = dice_tick_rects(p)
     assert ticks.shape[0] == 8  # 4 corners x 2 legs of the L
     for x0, x1, y0, y1 in ticks:
@@ -128,17 +143,22 @@ def test_dice_ticks_stay_in_the_street():
         assert y0 >= p.y0 - street and y1 <= p.y0 + p.height_um + street
 
 
-# --- the bonded flags still survive the API bodies -----------------------------
+# --- the request bodies ---------------------------------------------------------
 
 
-def test_api_body_models_keep_bonded_and_carrier_mode():
-    """``bonded`` and ``carrier_scale_mode`` must survive the request bodies —
-    a regression once shipped a bonded UI box to the backend as bonded=False."""
+def test_api_body_models_keep_carrier_mode_and_ignore_bonded():
+    """``carrier_scale_mode`` must survive the request body — a regression once
+    shipped a UI choice to the backend as the default.
+
+    ``bonded`` must be IGNORED rather than fatal: the flag and its two-ply math
+    went on 2026-09-16, but box manifests cached before then still carry it and
+    reading one back must not raise."""
     from app.api.boxes import BoxSpecBody
     from app.api.plates import PlateSpecBody
+    from app.boxes import BoxSpec
 
-    assert BoxSpecBody(bonded=True).to_spec().bonded is True
-    assert BoxSpecBody().to_spec().bonded is False
+    assert not hasattr(BoxSpecBody(), "bonded")
+    assert not hasattr(BoxSpec.from_dict({"bonded": True}), "bonded")
     p = PlateSpecBody(pattern_slug="monogram-jp", carrier_scale_mode="fixed").to_spec()
     assert p.carrier_scale_mode == "fixed"
     assert PlateSpecBody(pattern_slug="monogram-jp").to_spec().carrier_scale_mode == "gap"

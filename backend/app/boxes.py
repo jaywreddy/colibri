@@ -31,11 +31,9 @@ from .assembly import (
     HingeSpec,
     assembly_summary,
     back_window_um,
-    bonded_assembly_summary,
     face_cut_dims,
     keepout_um,
     validate_assembly,
-    validate_bonded_assembly,
 )
 from .plates import FrameSpec, GlassSpec, PlateSpec, materialize_plate
 # Every number the production box is made of lives in ONE module. What used to
@@ -236,12 +234,6 @@ class BoxSpec:
     # 4 µm. Drives the real fringe spacing + tilt sensitivity of the leaf/back
     # carrier family (the 60 µm switch/comb barrier faces are NOT coupled to it).
     carrier_pitch_um: float = 22.0
-    # BONDED (two-ply) construction: each face is TWO single-side plates glued
-    # face-to-face — ``glass.thickness_um`` is then the PLY thickness (also the
-    # optical parallax gap), the wall is 2x, and cut dims / foil margins follow
-    # the nested-shell math (assembly.bonded_*). Default False = one plate per
-    # face, which is what the production box is since 2026-09-16.
-    bonded: bool = False
     # PINNED art rim (um), overriding the rim ``normalize_face_dims`` would
     # otherwise derive from the foil. ``None`` = derive it, which is what any
     # user-built box does. The PRODUCTION box pins it, because its mask is
@@ -273,7 +265,6 @@ class BoxSpec:
             "hinge": self.hinge.to_dict(),
             "faces": {fid: p.to_dict() for fid, p in self.faces.items()},
             "carrier_pitch_um": self.carrier_pitch_um,
-            "bonded": self.bonded,
             "art_rim_um": self.art_rim_um,
             "metal": self.metal,
             "label": self.label,
@@ -281,7 +272,12 @@ class BoxSpec:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BoxSpec":
-        """Tolerant parse: any missing v2 field falls back to its default."""
+        """Tolerant parse: any missing v2 field falls back to its default.
+
+        A ``bonded`` key is IGNORED. The two-ply construction went on
+        2026-09-16 and its math with it (see assembly.py), but box manifests
+        cached before then still carry the flag — reading one must not raise,
+        and there is nothing left for it to select."""
         glass_data = data.get("glass") or {}
         return cls(
             width_um=float(data.get("width_um", 50000.0)),
@@ -296,7 +292,6 @@ class BoxSpec:
             hinge=HingeSpec.from_dict(data.get("hinge")),
             faces={fid: PlateSpec.from_dict(p) for fid, p in (data.get("faces") or {}).items()},
             carrier_pitch_um=float(data.get("carrier_pitch_um", 22.0)),
-            bonded=bool(data.get("bonded", False)),
             art_rim_um=(
                 float(data["art_rim_um"]) if data.get("art_rim_um") is not None else None
             ),
@@ -317,21 +312,6 @@ class BoxSpec:
             # Pinned rim: the same number on both layers of every face. See
             # BoxSpec.art_rim_um / production.ART_RIM_UM.
             ko = bw = float(self.art_rim_um)
-        elif self.bonded:
-            # Two-ply construction: masks are composed in the OUTER ply frame
-            # (its cut dims come from the nested outer shell at the PLY
-            # thickness). Front art insets by the bonded keep-out from the
-            # outer edge; back art lives on the INNER ply, whose edge is
-            # already one ply in — so, measured in the shared outer frame, its
-            # window insets by ply + the interior foil fold. That guarantees
-            # composed back geometry never overhangs the smaller inner plate.
-            # Front art starts at the LARGER of the foil keep-out and that
-            # back window, so every front feature has the inner ply's carrier
-            # behind it (see assembly.bonded_art_keepout_um).
-            from .assembly import bonded_art_keepout_um, bonded_back_window_um
-
-            ko = bonded_art_keepout_um(self.foil, t)
-            bw = t + bonded_back_window_um(self.foil, t)
         else:
             ko = keepout_um(self.foil, t)
             bw = back_window_um(self.foil, t)
@@ -395,7 +375,6 @@ def default_box_spec() -> BoxSpec:
             n=GLASS_N,
         ),
         foil=FoilSpec(tape_width_um=TAPE_UM),
-        bonded=False,
         art_rim_um=ART_RIM_UM,
     )
     for fid in FACE_IDS:
@@ -468,16 +447,10 @@ def materialize_box(spec: BoxSpec, *, box_id: str | None = None, force: bool = F
         )
 
     spec.normalize_face_dims()
-    if spec.bonded:
-        validate_bonded_assembly(
-            spec.width_um, spec.depth_um, spec.height_um,
-            spec.glass.thickness_um, spec.foil, spec.hinge,
-        )
-    else:
-        validate_assembly(
-            spec.width_um, spec.depth_um, spec.height_um,
-            spec.glass.thickness_um, spec.foil, spec.hinge,
-        )
+    validate_assembly(
+        spec.width_um, spec.depth_um, spec.height_um,
+        spec.glass.thickness_um, spec.foil, spec.hinge,
+    )
 
     BOXES_ROOT.mkdir(parents=True, exist_ok=True)
     bid = box_id or SCRATCH_BOX_ID
@@ -533,16 +506,9 @@ def _assembly_block(spec: BoxSpec) -> dict[str, Any]:
     two disagree, and a cut list that quietly reported the derived number would
     describe a plate nobody wrote. So the pinned value goes in beside it, named,
     rather than overwriting it."""
-    summary = (
-        bonded_assembly_summary(
-            spec.width_um, spec.depth_um, spec.height_um,
-            spec.glass.thickness_um, spec.foil, spec.hinge,
-        )
-        if spec.bonded
-        else assembly_summary(
-            spec.width_um, spec.depth_um, spec.height_um,
-            spec.glass.thickness_um, spec.foil, spec.hinge,
-        )
+    summary = assembly_summary(
+        spec.width_um, spec.depth_um, spec.height_um,
+        spec.glass.thickness_um, spec.foil, spec.hinge,
     )
     if spec.art_rim_um is not None:
         summary["art_rim_um"] = float(spec.art_rim_um)

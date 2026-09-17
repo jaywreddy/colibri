@@ -2,10 +2,10 @@
 
 The 5″ plate is the stock the box is built from (``production.PLY_UM`` of
 ``GLASS_MATERIAL``), so a rectangle of it written with a face's fine geometry
-IS that face's outer ply once it is diced. Every face is ONE written ply
-(2026-09-15: the bonded moiré pairs of the first plate read badly on glass and
-could not be cleaved; the inner plies are now bare quartz, cut from the second
-blank, and carry no plate area). The dies, in dicing rows:
+IS that face once it is diced. Every face is ONE written ply (2026-09-15: the
+bonded moiré pairs of the first plate read badly on glass and could not be
+cleaved; 2026-09-16: the bare inner plies went too, and the box is six single
+butt-jointed plies). The dies, in dicing rows:
 
     32 mm row     DIE-TOP, DIE-TOP-S (spare)   monogram-jp as a single-layer
                   diffraction mapping (region_art) + garland;
@@ -70,7 +70,7 @@ TRAPEZOID_DECOMP = True
 def blank_plan() -> tuple[Any, Any]:
     """``(dims, BoxSpec)`` of the PRODUCTION box (``boxes.default_box_spec``):
     the dies on this plate are that box's plies, cut at its dimensions. ``dims``
-    is the ``(width, depth, height)`` triple the pair rects are derived from.
+    is the ``(width, depth, height)`` triple the cut rects are derived from.
     The plate no longer sizes the box (the old solve packed all twelve plies of
     the largest box onto one blank); the ring sizes the box, and the plate
     carries what fits.
@@ -88,27 +88,26 @@ def blank_plan() -> tuple[Any, Any]:
 
 
 def die_dims(face: str) -> dict[str, float]:
-    """Cut dimensions (µm) of a face's outer (F) and inner (B) plies."""
+    """Cut dimensions (µm) of a face's ply — the box's own cut list."""
     (w_um, d_um, h_um), _ = blank_plan()
     dims = {r.face: (r.width_um, r.height_um)
-            for r in pc.pair_rects(w_um, d_um, h_um, PLY_UM)}
-    fw, fh = dims[pc.subplate_id(face, "F")]
-    bw, bh = dims[pc.subplate_id(face, "B")]
-    return {"f_w": fw, "f_h": fh, "b_w": bw, "b_h": bh}
+            for r in pc.face_rects(w_um, d_um, h_um, PLY_UM)}
+    w, h = dims[face]
+    return {"w": w, "h": h}
 
 
-def bench_marks(face: str, ply: str, stack_w: float, stack_h: float) -> np.ndarray:
-    """Tick-code ID for one ply (``face`` index + 1 bars, underlined on a B
-    ply), under the foil band — stack-centred, METAL sense. The vernier combs
-    of the bonded design are not written: the plate carries single plies and
-    there is nothing behind one to beat against.
+def bench_marks(face: str, plate_w: float, plate_h: float) -> np.ndarray:
+    """Tick-code ID for one face (``face`` index + 1 bars) under the foil band —
+    plate-centred, METAL sense. The vernier combs of the bonded design are not
+    written: the plate carries single plies and there is nothing behind one to
+    beat against.
 
     The band offset is PINNED (``production.ID_TICK_OFFSET_UM``), not
     derived from the box's current foil: these marks are on the written plate."""
     from .assembly import FACE_IDS
 
-    return pc.id_tick_rects(list(FACE_IDS).index(face), ply == "B",
-                            stack_w, stack_h, PLY_UM, 0.0,
+    return pc.id_tick_rects(list(FACE_IDS).index(face),
+                            plate_w, plate_h, PLY_UM, 0.0,
                             band_offset_um=pc.ID_TICK_OFFSET_UM)
 
 
@@ -569,7 +568,7 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
         raise ValueError(f"{face}: the plate writes single plies only; {pspec.pattern_slug} "
                          "is not single_ply (every face of the production box is)")
     d = die_dims(face)
-    fw, fh = d["f_w"], d["f_h"]
+    fw, fh = d["w"], d["h"]
     cw, ch = (fh, fw) if rotated else (fw, fh)
     if abs(cw - w) > 1.0 or abs(ch - h) > 1.0:
         raise ValueError(f"{face}: cell is {w:.0f}x{h:.0f} but the F ply cuts "
@@ -588,7 +587,7 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
     from . import plates as P
     art_box = P.CENTERPIECE_FILL * P._aperture(pspec)   # the centred centrepiece square
 
-    metal_f: list[np.ndarray] = list(fine.front_polys) + [bench_marks(face, "F", fw, fh)]
+    metal_f: list[np.ndarray] = list(fine.front_polys) + [bench_marks(face, fw, fh)]
     cf_f: dict[str, Any] = {}
     drc_f: dict[str, Any] = {}
     _t = T()
@@ -690,7 +689,7 @@ def side_photo_spec(image: str, colour_mode: str, seed: int | None = None) -> An
 def _face_cell(face: str, cid: str, title: str, *, rotated: bool = False,
                pspec: Any | None = None, label: str, level: str, note: str) -> Cell:
     d = die_dims(face)
-    w, h = (d["f_h"], d["f_w"]) if rotated else (d["f_w"], d["f_h"])
+    w, h = (d["h"], d["w"]) if rotated else (d["w"], d["h"])
     return Cell(
         cid=cid, title=title, group="X", w_um=w, h_um=h,
         build=(lambda face=face, pspec=pspec, rotated=rotated:
@@ -731,7 +730,7 @@ def production_cells() -> list[Cell]:
                 if is_photo else f"{ps.pattern_slug} + garland")
         c = _face(face, f"DIE-{face.upper()}", f"{title}: {what}",
                   f"{face.upper()} {ps.pattern_params.get('image', ps.pattern_slug)}", f"{face}",
-                  f"one ply, {d['f_w']/MM:.1f} x {d['f_h']/MM:.1f} mm; "
+                  f"one ply, {d['w']/MM:.1f} x {d['h']/MM:.1f} mm; "
                   + ("line screen with authored colour zones" if is_photo
                      else "single-layer diffraction mapping (colour by region)")
                   + "; mirrored for the chrome-down stack")
@@ -742,7 +741,7 @@ def production_cells() -> list[Cell]:
     d = die_dims("bottom")
     tall.append(_face("bottom", "DIE-BOTTOM", f"base: {psb.pattern_slug}",
                       f"BOTTOM {psb.pattern_slug}", "bottom",
-                      f"one ply, {d['f_w']/MM:.1f} x {d['f_h']/MM:.1f} mm; solid gold, no openings"))
+                      f"one ply, {d['w']/MM:.1f} x {d['h']/MM:.1f} mm; solid gold, no openings"))
     for face, cid, rot in SPARE_FACES:
         ps = spec.faces[face]
         c = _face_cell(face, cid, f"spare {face}: {ps.pattern_slug} + garland", rotated=rot,

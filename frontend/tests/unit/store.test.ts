@@ -28,18 +28,16 @@ describe('store (Ring Box Studio v2)', () => {
     expect(s.width_um).toBe(32000);
     expect(s.depth_um).toBe(32000);
     expect(s.height_um).toBe(35000);
-    expect(s.bonded).toBe(false);
     expect(s.foil.tape_width_um).toBe(6350);
     expect(s.hinge.segments).toBe(5);
   });
 
   it('patchFoil merges and re-stamps keep-out into every face', () => {
-    // Thin single-ply glass first. On the PRODUCTION box the bonded 2.25 mm
-    // plies make the tape wrap a stepped edge that consumes 3p = 6.75 mm, so no
-    // preset tape folds over at all and every keep-out collapses to the bare
-    // safety margin — a correct number, but one that cannot show that the
-    // re-stamp happened at all. Move to a geometry where the tape does fold.
-    useStore.getState().patchBoxSpec({ bonded: false, art_rim_um: null });
+    // Thin glass first, and unpin the art rim: the PRODUCTION box states its
+    // rim (the 3.64 mm the plate was written with), so every face's keep-out
+    // is that number whatever the foil does — a correct value, but one that
+    // cannot show that the re-stamp happened at all.
+    useStore.getState().patchBoxSpec({ art_rim_um: null });
     useStore.getState().patchGlass({ thickness_um: 500 });
     useStore.getState().patchFoil({ tape_width_um: 4763 });
     const s = useStore.getState().boxSpec;

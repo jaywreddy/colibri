@@ -11,10 +11,8 @@ import { describe, it, expect } from 'vitest';
 import { defaultBoxSpec, type BoxSpec } from '../../src/api';
 import {
   backWindowUm,
-  bondedCutList,
   cutList,
   hingeLayout,
-  bondedArtKeepoutUm,
   keepoutUm,
   overlapUm,
   seamSegments,
@@ -29,7 +27,6 @@ type GoldenCase = {
     depth_um: number;
     height_um: number;
     glass_thickness_um: number;
-    bonded?: boolean;
     foil: BoxSpec['foil'];
     hinge: BoxSpec['hinge'];
   };
@@ -37,16 +34,13 @@ type GoldenCase = {
     valid: boolean;
     overlap_um?: number;
     keepout_um?: number;
-    art_keepout_um?: number;
     back_window_um?: number;
     cut_list?: {
       face: string;
-      ply?: 'outer' | 'inner';
       width_um: number;
       height_um: number;
       width_mm: number;
       height_mm: number;
-      inset_um?: number;
     }[];
     seams?: Record<string, number>;
     hinge?: {
@@ -68,7 +62,6 @@ function toBoxSpec(g: GoldenCase['spec']): BoxSpec {
     depth_um: g.depth_um,
     height_um: g.height_um,
     glass: { ...s.glass, thickness_um: g.glass_thickness_um },
-    bonded: g.bonded ?? false,
     foil: { ...g.foil },
     hinge: { ...g.hinge },
   };
@@ -93,32 +86,21 @@ describe('assembly contract golden fixture (shared with backend)', () => {
 
       expect(overlapUm(spec)).toBeCloseTo(c.expected.overlap_um!, 6);
       expect(keepoutUm(spec)).toBeCloseTo(c.expected.keepout_um!, 6);
-      if (c.expected.art_keepout_um !== undefined) {
-        // Bonded front-art rim (assembly.py::bonded_art_keepout_um <-> bondedArtKeepoutUm).
-        expect(bondedArtKeepoutUm(spec)).toBeCloseTo(c.expected.art_keepout_um, 6);
-      }
       // Back-carrier window keep-out — the newest shared formula
       // (assembly.py::back_window_um <-> assembly.ts::backWindowUm).
       expect(backWindowUm(spec)).toBeCloseTo(c.expected.back_window_um!, 6);
 
-      // Bonded cases carry the 12-entry nested cut list (face x outer/inner
-      // ply); single-plate cases the classic 6. Key by face:ply so both fit
-      // one comparison loop.
-      const gotCuts = c.spec.bonded
-        ? bondedCutList(spec).map((x) => ({ ...x, key: `${x.face}:${x.ply}` }))
-        : cutList(spec).map((x) => ({ ...x, key: `${x.face}:single`, inset_um: undefined }));
-      const cuts = new Map(gotCuts.map((x) => [x.key, x]));
+      // Six plates, one per face. (The BONDED cases carried a 12-entry
+      // nested cut list, face x outer/inner ply; they went with the
+      // construction on 2026-09-16.)
+      const cuts = new Map(cutList(spec).map((x) => [x.face as string, x]));
       for (const e of c.expected.cut_list!) {
-        const key = `${e.face}:${e.ply ?? 'single'}`;
-        const got = cuts.get(key)!;
-        expect(got, `cut list missing ${key}`).toBeDefined();
+        const got = cuts.get(e.face)!;
+        expect(got, `cut list missing ${e.face}`).toBeDefined();
         expect(got.width_um).toBeCloseTo(e.width_um, 6);
         expect(got.height_um).toBeCloseTo(e.height_um, 6);
         expect(got.width_mm).toBe(e.width_mm);
         expect(got.height_mm).toBe(e.height_mm);
-        if (e.inset_um !== undefined) {
-          expect(got.inset_um).toBeCloseTo(e.inset_um, 6);
-        }
       }
       expect(cuts.size).toBe(c.expected.cut_list!.length);
 

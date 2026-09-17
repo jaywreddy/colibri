@@ -371,12 +371,6 @@ export type BoxSpec = {
   /** Box-level fabricated grating pitch (μm) — stamped onto every face by
    * stampFaces (mirrors backend normalize_face_dims). Default 22 µm. */
   carrier_pitch_um: number;
-  /** Bonded (two-ply) construction: each face is TWO single-side plates glued
-   * face-to-face. glass.thickness_um is then the PLY (also the optical
-   * parallax gap); the wall is 2x; cut dims / foil margins follow the
-   * nested-shell math. Default false — the production box is six single plies
-   * since 2026-09-16. */
-  bonded?: boolean;
   /** PINNED art rim (um), overriding the rim stampFaces would derive from the
    * foil, on BOTH layers of every face. null/absent = derive it. The production
    * box pins it because its mask is already written — mirrors backend
@@ -634,7 +628,6 @@ export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxS
     hinge: defaultHingeSpec(),
     faces,
     carrier_pitch_um: P.CARRIER_UM,
-    bonded: false,
     art_rim_um: P.ART_RIM_UM,
     metal: 'gold',
     label: '',

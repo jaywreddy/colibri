@@ -25,11 +25,11 @@ import {
  * Written out here rather than taken from `defaultBoxSpec()`: this suite tests
  * the ASSEMBLY FORMULAS against the design contract, and it used to ride on the
  * default box, so the day the default became the PRODUCTION box (32 x 32 x
- * 35 mm, bonded 2.25 mm quartz plies) every pinned number here went red
- * without a single formula changing. The default box's own values are pinned in
+ * 35 mm on 2.25 mm quartz plies) every pinned number here went red without a
+ * single formula changing. The default box's own values are pinned in
  * api.test.ts, where they belong; the golden-fixture suite
  * (assemblyGolden.test.ts) is what cross-checks the formulas against the
- * backend, including the bonded cases.
+ * backend.
  */
 const spec = (): BoxSpec => {
   const s = defaultBoxSpec();
@@ -39,10 +39,7 @@ const spec = (): BoxSpec => {
     depth_um: 50000,
     height_um: 40000,
     glass: { thickness_um: 500, material: 'fused silica', n: 1.46 },
-    // The classic single-ply numbers below assume 1/4" tape (the production
-    // default is now 3/8" for the bonded quartz stack).
     foil: { ...s.foil, tape_width_um: 6350 },
-    bonded: false,
   };
 };
 

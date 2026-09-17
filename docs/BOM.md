@@ -1,14 +1,19 @@
-# Ring Box — Bill of Materials (bonded-pair build)
+# Ring Box — Bill of Materials (single-ply build)
 
-> **Current build (2026-09-15), superseding the numbers below where they
-> differ:** 32 × 32 × 35 mm box, six faces, each a bonded pair of **2.25 mm
-> fused-quartz** plies (4.5 mm walls; 5″ × 0.090″ chrome + resist mask blank,
-> the same stock for the written outer ply and the bare inner ply). Only the
-> OUTER ply of each face is written; the mask carries 11 dies in a **dicing
-> grid** (`app.export_witness`, `DICING.md`) and is cut on a saw — the first
-> plate was hand-cleaved and broke. Copper foil is **3/8″** (decision 7 of
-> `docs/decisions.md`, decision 7 — extracted from `docs/plan.md`): the 6.75 mm three-ply stepped edge leaves
-> 1/4″ tape with no fold. Two blanks per box: one written, one bare.
+> **Current build (2026-09-16), superseding the numbers below where they
+> differ:** 32 × 32 × 35 mm box, six faces, each ONE written **2.25 mm
+> fused-quartz** ply, butt-jointed (2.25 mm walls; 5″ × 0.090″ chrome + resist
+> mask blank). No inner plies and no bonding: a bare inner ply bought nothing
+> but wall thickness, and bonding twelve plies by hand is a step that can only
+> go wrong (decision 12 of `docs/decisions.md`). The mask carries 11 dies in a
+> **dicing grid** (`app.export_witness`, `DICING.md`) and is cut on a saw — the
+> first plate was hand-cleaved and broke. Copper foil is **1/4″** (6.35 mm): a
+> single 2.25 mm ply is a 2.25 mm edge, so the tape folds 2.05 mm onto each
+> face, clear of the 3.64 mm art rim. 3/8″ would fold 3.64 mm — exactly onto
+> the art. **ONE blank per box** (plus spares on the plate), not two.
+>
+> This supersedes decision 7 (3/8″ tape) and the bonded-pair language below,
+> which described the build up to 2026-09-15.
 
 Target build (original plan): ~30.5 × 30.5 × 33.6 mm upright box, six faces, each a BONDED PAIR
 of 1.5 mm soda-lime plies (3 mm walls, nested-shell bevel-step corners —
@@ -95,9 +100,9 @@ requirement.
 
 ## 5 · Already-planned consumables (unchanged)
 
-Copper foil tape **3/8″** (9.525 mm; the 2.25 mm bonded stepped edge consumes
-3 plies = 6.75 mm of tape width and leaves a 1.39 mm fold per face — 1/4″ tape
-is 0.4 mm short of the edge and `validate_bonded_assembly` rejects it), solder
+Copper foil tape **1/4″** (6.35 mm; a single 2.25 mm ply edge leaves a 2.05 mm
+fold per face — see the banner. The 3/8″ tape the BONDED build needed is the
+wrong tape now: on a single ply it folds 3.64 mm, onto the art rim), solder
 + flux, Cr etchant (Cr etch 1020 / CR-7), AZ 400K developer (CMU recipe: dose
 125 on the MLA 150, AZ 400K:DI 1:4 80 s, Cr etch 80 s, Nanostrip 60 °C 20 min).
 
