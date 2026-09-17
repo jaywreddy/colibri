@@ -36,15 +36,6 @@ export type DiffMetrics = {
   corr: number;
 };
 
-/** Read the drawing-buffer size (device pixels, not CSS pixels). */
-export async function drawingBufferSize(page: Page): Promise<{ w: number; h: number }> {
-  return await page.evaluate(() => {
-    const s = (window as any).__studio;
-    const c = s.renderer.domElement as HTMLCanvasElement;
-    return { w: c.width, h: c.height };
-  });
-}
-
 /**
  * Screen-space bounding box (drawing-buffer pixels, bottom-left origin) of
  * one face's pattern plane. Found by traversing the scene for the mesh bound
@@ -315,16 +306,16 @@ export async function scaleBackPlaneGap(
  *       +/-T/2, so the inner plane is inside the slab — and thus keeps its
  *       transmission-backdrop treatment — only while the gap exceeds EPS.
  *
- * 0.12 clears both for the suite's substrate (the default box: T = 500 um,
- * n = 1.46 -> design gap 0.3425 mm, so a 12% gap is 41 um, comfortably above
- * the 30 um containment floor and ~60 depth-buffer steps of separation). The
- * general condition is factor > EPS_PATTERN_MM * n / T; revisit this constant
- * if the effects suite ever runs on a much thinner substrate.
+ * 0.12 clears both for the suite's substrate (the production ply: T = 2250 um,
+ * n = 1.4585 -> design gap 1.543 mm, so a 12% gap is 185 um, far above the
+ * 30 um containment floor and hundreds of depth-buffer steps of separation).
+ * The general condition is factor > EPS_PATTERN_MM * n / T; revisit this
+ * constant if the effects suite ever runs on a much thinner substrate.
  *
  * 12% of the design gap is still REGISTERED for everything measured here: at
- * the scenarios' oblique views it leaves ~7 um of in-plane shift against the
- * 60 um centerpiece barrier period (0.12 period) and ~12% of the carrier
- * reveal's half-period, i.e. the cross-layer effect has collapsed.
+ * the scenarios' oblique views it leaves ~33 um of in-plane shift against the
+ * two-ply garland's 1635 um beat (0.02 of a beat) and against the centerpiece
+ * barrier's lane pitch, i.e. the cross-layer effect has collapsed.
  */
 export const GAP_COLLAPSE_FACTOR = 0.12;
 
@@ -386,49 +377,35 @@ export async function zoomForMicroPatterns(
   };
 }
 
-/** Set a shader uniform on one face (numbers only). Returns the old value. */
-export async function setFaceScalarUniform(
-  page: Page,
-  faceId: string,
-  name: string,
-  value: number
-): Promise<number> {
-  return await page.evaluate(
-    ([fid, n, v]) => {
-      const s = (window as any).__studio;
-      const u = s.faces[fid].shader.uniforms[n];
-      const old = u.value as number;
-      u.value = v;
-      // Uniform pokes bypass React/state — book frames so captures see them.
-      s.requestRender?.();
-      return old;
-    },
-    [faceId, name, value] as const
-  );
-}
-
 /**
  * Assign a pattern slug to one face through the store (triggers the app's
  * debounced regen) and wait until BoxScene logs `face_texture_bound` for the
  * new slug/recipe. This exercises the REAL pipeline: backend mask generation
  * -> manifest -> texture bind.
+ *
+ * `singlePly` is the knob the UI no longer has (every production wall is one
+ * written ply, so the Faces rail dropped the toggle) and the two-ply EXEMPLAR
+ * scenarios do have to reach: passing `false` composes this face as a two-ply
+ * plate, which is the only way the renderer's shading-moiré and barrier
+ * branches get a subject. Slug and ply land in ONE patch so the debounced regen
+ * fires once, not twice.
  */
 export async function assignFacePattern(
   page: Page,
   faceId: string,
   slug: string,
   expectRecipe: string,
-  timeoutMs = 90_000
+  opts: { singlePly?: boolean; timeoutMs?: number } = {}
 ): Promise<void> {
+  const { singlePly, timeoutMs = 90_000 } = opts;
   await page.evaluate(
-    ([fid, sl]) => {
+    ([fid, sl, ply]) => {
       (window as unknown as { __log?: unknown[] }).__log = [];
-      (window as any).__studio.store.getState().patchFace(fid, {
-        pattern_slug: sl,
-        pattern_params: {},
-      });
+      const patch: Record<string, unknown> = { pattern_slug: sl, pattern_params: {} };
+      if (ply !== null) patch.single_ply = ply;
+      (window as any).__studio.store.getState().patchFace(fid, patch);
     },
-    [faceId, slug] as const
+    [faceId, slug, singlePly ?? null] as const
   );
   await page.waitForFunction(
     ([fid, sl, rec]) => {
@@ -467,10 +444,19 @@ export const FACE_IDS = ['front', 'back', 'top', 'bottom', 'left', 'right'] as c
  * the box manifest the store holds.
  *
  * This is the cheap half of the texture-driven axiom: `maskW > 1` proves a
- * real backend mask PNG is bound (the pre-bind placeholder is a 1x1
+ * real backend mask raster is bound (the pre-bind placeholder is a 1x1
  * DataTexture, BoxScene::makeBlankTexture), and `maskMatchesManifest` proves
- * the bound image URL is the one THIS face's manifest declared — the outer
- * plane must carry `files.front_png`, the inner plane `files.back_png`.
+ * the bound URL is the one THIS face's manifest declared — the outer plane must
+ * carry `files.literal_front` (or `front_png` on the procedural exemplars), the
+ * back layer `files.literal_back` / `back_png`.
+ *
+ * The URL half is read from BoxScene's own `boundFront` / `boundBack` record,
+ * NOT from `texture.image.src`. A literal face uploads a DataTexture decoded
+ * from the coverage raster and a DataTexture's image is `{data, width, height}`
+ * with no `src` at all, so the old src comparison could not pass on any face of
+ * the single-ply box — it silently asked a question about `<img>` uploads that
+ * this renderer stopped making. BoxScene writes both fields after the upload
+ * resolves, on both bind paths, which is precisely the fact being asserted.
  *
  * LITERAL faces bind the same axiom to a different pair of slots. Their two
  * layers are composited in ONE pass on the OUTER plane (the eye integrates the
@@ -504,6 +490,17 @@ export type FaceRenderState = {
   maskBackW: number;
   maskMatchesManifest: boolean;
   maskBackMatchesManifest: boolean;
+  /**
+   * Sub-grating period map (`files.period_front`) — the ONLY thing that makes a
+   * literal single-ply wall view-dependent beyond plain metal shading, because
+   * a sub-5 µm colour grating and a 6 µm garland leaf grating are both far below
+   * what a 2048 px raster can carry. `periodDeclared` is what the manifest
+   * shipped, `periodReady` / `periodW` what the outer material actually holds:
+   * declared must imply bound, or the wall renders as flat gold.
+   */
+  periodDeclared: boolean;
+  periodReady: boolean;
+  periodW: number;
   /** substrate the manifest shipped for this face (drives the T/n plane gap). */
   thicknessUm: number | null;
   n: number | null;
@@ -520,25 +517,24 @@ export async function allFaceRenderState(page: Page): Promise<FaceRenderState[]>
   return await page.evaluate((ids) => {
     const s = (window as any).__studio;
     const bm = s.store.getState().boxManifest as any;
-    const imgOf = (mat: any, uniform: string): { w: number; src: string } => {
-      const img = mat?.uniforms?.[uniform]?.value?.image;
-      return {
-        w: Number(img?.width ?? 0),
-        src: typeof img?.src === 'string' ? (img.src as string) : '',
-      };
-    };
-    const declares = (src: string, p: unknown): boolean =>
-      typeof p === 'string' && p.length > 0 && src.length > 0 && src.endsWith(p);
+    const widthOf = (mat: any, uniform: string): number =>
+      Number(mat?.uniforms?.[uniform]?.value?.image?.width ?? 0);
+    /** A recorded bind URL satisfies a manifest-declared path. */
+    const declares = (bound: unknown, p: unknown): boolean =>
+      typeof bound === 'string' &&
+      typeof p === 'string' &&
+      bound.length > 0 &&
+      p.length > 0 &&
+      bound.endsWith(p);
     return (ids as readonly string[]).map((fid) => {
       const rt = s.faces?.[fid];
       const fm = bm?.faces?.[fid] ?? null;
       const literal = !!fm?.recipe_data?.literal;
-      const outer = imgOf(rt?.shader, 'uFront');
       // Where this face's BACK layer actually feeds the pixels: the composite
       // uniform on the outer material (literal) or the inner plane's own mask.
-      const inner = literal
-        ? imgOf(rt?.shader, 'uBackCoverage')
-        : imgOf(rt?.shaderBack, 'uFront');
+      const innerW = literal
+        ? widthOf(rt?.shader, 'uBackCoverage')
+        : widthOf(rt?.shaderBack, 'uFront');
       return {
         face: fid,
         blank: !!fm?.recipe_data?.blank,
@@ -549,14 +545,19 @@ export async function allFaceRenderState(page: Page): Promise<FaceRenderState[]>
         recipeBack: Number(rt?.shaderBack?.uniforms?.uRecipe?.value ?? -1),
         visible: !!rt?.shader?.visible,
         visibleBack: !!rt?.shaderBack?.visible,
-        maskW: outer.w,
-        maskBackW: inner.w,
+        maskW: widthOf(rt?.shader, 'uFront'),
+        maskBackW: innerW,
         // A literal face binds the fabricated-geometry raster instead of the
         // level-coded mask; either is THIS face's declared image.
         maskMatchesManifest:
-          declares(outer.src, fm?.files?.front_png) || declares(outer.src, fm?.files?.literal_front),
+          declares(rt?.boundFront, fm?.files?.front_png) ||
+          declares(rt?.boundFront, fm?.files?.literal_front),
         maskBackMatchesManifest:
-          declares(inner.src, fm?.files?.back_png) || declares(inner.src, fm?.files?.literal_back),
+          declares(rt?.boundBack, fm?.files?.back_png) ||
+          declares(rt?.boundBack, fm?.files?.literal_back),
+        periodDeclared: typeof fm?.files?.period_front === 'string',
+        periodReady: Number(rt?.shader?.uniforms?.uPeriodReady?.value ?? 0) > 0.5,
+        periodW: widthOf(rt?.shader, 'uPeriodMap'),
         thicknessUm:
           typeof fm?.substrate?.thickness_um === 'number'
             ? (fm.substrate.thickness_um as number)
@@ -594,35 +595,49 @@ export async function waitForAllFaceMasks(page: Page, timeoutMs = 30_000): Promi
       if (!s?.faces) return false;
       const bm = s.store?.getState?.().boxManifest;
       if (!bm) return false;
-      const bound = (mat: any, uniform: string, declared: unknown): boolean => {
-        const img = mat?.uniforms?.[uniform]?.value?.image;
-        if (Number(img?.width ?? 0) <= 1) return false;
-        const src = typeof img?.src === 'string' ? (img.src as string) : '';
-        return typeof declared === 'string' && declared.length > 0 && src.endsWith(declared);
+      /**
+       * A layer is bound when BoxScene has recorded the declared URL for it AND
+       * a real (non-placeholder) raster sits in the uniform that reads it. The
+       * URL comes from `boundFront`/`boundBack`, not `image.src`: a literal face
+       * uploads a DataTexture, which has no `src`.
+       */
+      const bound = (
+        recorded: unknown,
+        mat: any,
+        uniform: string,
+        ...declared: unknown[]
+      ): boolean => {
+        if (Number(mat?.uniforms?.[uniform]?.value?.image?.width ?? 0) <= 1) return false;
+        if (typeof recorded !== 'string' || recorded.length === 0) return false;
+        return declared.some(
+          (d) => typeof d === 'string' && d.length > 0 && recorded.endsWith(d)
+        );
       };
       return (ids as readonly string[]).every((fid) => {
         const rt = s.faces[fid];
         const files = bm.faces?.[fid]?.files;
         const literal = !!bm.faces?.[fid]?.recipe_data?.literal;
-        // literal faces may legitimately drop an EMPTY layer (blank / bare inner ply)
-        const boundOr = (mat: any, u: string, a: unknown, b: unknown) =>
-          bound(mat, u, a) || bound(mat, u, b);
         if (literal) {
           const rd = bm.faces?.[fid]?.recipe_data ?? {};
           if (rd.blank) return true; // bare glass: nothing to bind on either layer
           // ONE-PASS COMPOSITE: both layers live on the outer material (uFront =
           // the outer chrome, uBackCoverage = the inner). The inner PATTERN plane
           // is hidden and binds nothing that reaches a pixel, so waiting on it
-          // would wait on a slot the renderer no longer reads.
-          const outerOk = boundOr(rt?.shader, 'uFront', files?.front_png, files?.literal_front);
+          // would wait on a slot the renderer no longer reads. A single-ply face
+          // legitimately drops the back layer entirely (empty raster).
+          const outerOk = bound(
+            rt?.boundFront, rt?.shader, 'uFront', files?.front_png, files?.literal_front
+          );
           const innerOk =
-            rd.single_ply ||
-            boundOr(rt?.shader, 'uBackCoverage', files?.back_png, files?.literal_back);
+            !!rd.single_ply ||
+            bound(
+              rt?.boundBack, rt?.shader, 'uBackCoverage', files?.back_png, files?.literal_back
+            );
           return outerOk && innerOk;
         }
         return (
-          bound(rt?.shader, 'uFront', files?.front_png) &&
-          bound(rt?.shaderBack, 'uFront', files?.back_png)
+          bound(rt?.boundFront, rt?.shader, 'uFront', files?.front_png) &&
+          bound(rt?.boundBack, rt?.shaderBack, 'uFront', files?.back_png)
         );
       });
     },

@@ -77,7 +77,7 @@ const DIFF_LUT_RETRY_MAX_MS = 5000;
  * IDLE_RENDER_MS is the safety valve. Test harnesses and the debug console
  * mutate the scene graph and uniforms directly through window.__studio, outside
  * any React effect that could mark the scene dirty (effectsHelpers'
- * scaleBackPlaneGap / setFaceScalarUniform do exactly this). Those callers all
+ * scaleBackPlaneGap does exactly this). Those callers all
  * render explicitly before reading pixels, but a slow heartbeat means anything
  * that does NOT still shows up promptly, for ~2 fps instead of 60.
  */
@@ -772,8 +772,9 @@ function makePlateShader(blank: THREE.Texture, layer: number): THREE.ShaderMater
       // excluded — scaling it would scale the switch tilt angle, since the T/n
       // plane gap does not scale with it.
       uPatternScale: { value: 1.0 },
-      // Barrier-interlace tilt switch (Task 3): 1 on globe-duo / gear-quill /
-      // colibri-flap, plus the SOLVED lattice phase the backend publishes.
+      // Barrier-interlace tilt switch: 1 on the two-ply exemplar that still has
+      // one (globe-duo-phase), plus the SOLVED lattice phase the backend
+      // publishes. No production wall sets it — every wall is single-ply.
       uSwitchInterlace: { value: 0.0 },
       uSwitchBarrierPhaseUm: { value: 0.0 },
       // LITERAL fabricated-geometry path. 1 = uFront carries a raster of the
@@ -1424,8 +1425,8 @@ export default function BoxScene() {
       // (b) TWO real gold-pattern surfaces — the physical second-surface object.
       // OUTER plane just outside the front face carries the front layer; INNER
       // plane just outside the inner face carries the back layer. They are
-      // separated by the true slab thickness T, so the colibrí↔globe switch, the
-      // leaf moiré, and the gear/quill switch all emerge from the perspective
+      // separated by the true slab thickness T, so a two-ply exemplar's shading
+      // moiré and its barrier interlace both emerge from the perspective
       // projection of these two real surfaces (no in-shader parallax). The back
       // mask is authored in the same uv frame as the front (registers when viewed
       // from OUTSIDE — the primary switch view); from inside it reads as genuine
@@ -1460,9 +1461,9 @@ export default function BoxScene() {
       // the front. Placing the inner plane at that paraxial-equivalent air gap
       // (separation T/n below the outer plane, not the full T) makes the
       // straight-ray parallax the camera sees match the physical Snell rate
-      // (~5.98 µm/deg through 500 µm fused silica at n=1.46), so the switch /
-      // scanimation crossings land at their true tilt angles. The glass slab
-      // geometry is unchanged; only the pattern plane moves.
+      // (~5.98 µm/deg through 500 µm fused silica at n=1.46), so a barrier
+      // switch crosses at its true tilt angle. The glass slab geometry is
+      // unchanged; only the pattern plane moves.
       const nGlass = spec.glass.n > 1.0 ? spec.glass.n : 1.46;
       const outerZ = surfaceZ;
       inner.position.z = outerZ - T / nGlass;
@@ -2671,15 +2672,18 @@ export default function BoxScene() {
                 : rd.fab_center_period_um;
               u.uCenterPeriodUm.value = Number(centerPeriodRd ?? 60.0) || 60.0;
               u.uSwitchAxis.value = ((Number(rd.switch_axis_deg ?? 0) || 0) * Math.PI) / 180;
-              // Barrier-interlace faces (globe-duo, gear-quill, colibri-flap) — Task 3
-              // — plus the SOLVED registration phase, so the preview comb + lanes ride
-              // the same lattice the fab bake and the generators do instead of the old
+              // Barrier-interlace faces (the globe-duo-phase exemplar) plus the
+              // SOLVED registration phase, so the preview comb + lanes ride the same
+              // lattice the fab bake and the generators do instead of the old
               // hardcoded face-edge assumption.
               u.uSwitchInterlace.value = rd.switch_interlace ? 1.0 : 0.0;
               u.uSwitchBarrierPhaseUm.value = Number(rd.switch_barrier_phase_um ?? 0) || 0;
               // Live Pattern Scale (Task 1b) — the store may have changed it
               // before this manifest bound; keep the freshly-bound uniforms in sync.
               u.uPatternScale.value = useStore.getState().patternScale;
+              // The centrepiece ART BOX in uv — the window the barrier interlace
+              // is written inside. `water_art_*` is the backend's legacy key name
+              // for it (plates.py); the water scanimation that named it is gone.
               {
                 const half = (rd.water_art_half_uv ?? [0, 0]) as number[];
                 const ctr = (rd.water_art_center_uv ?? [0.5, 0.5]) as number[];

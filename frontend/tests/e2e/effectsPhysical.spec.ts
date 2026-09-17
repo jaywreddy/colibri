@@ -10,16 +10,24 @@
  * fakes moire procedurally, scrolls a texture over time, or ignores the
  * substrate physics fails here even if a static screenshot looks right.
  *
+ * WHAT RUNS ON WHAT (the full reasoning is in effectsCatalog.ts): the shipping
+ * box is six SINGLE-PLY LITERAL walls, so `literal-sheen-flow`, time-invariance,
+ * illumination, lid and turntable run against the default box untouched, and the
+ * two constructions that need a second written ply — the barrier interlace and
+ * the shading moiré — run against the hidden two-ply exemplars this suite
+ * assigns to the front face.
+ *
  * Three of the four axioms used to be enforced only as RELATIVE pixel deltas,
  * which any view-keyed procedural shader also satisfies. The quantitative gates
  * that close that hole:
- *   - GEOMETRIC (absolute): the inner plane's gap must EQUAL the manifest's
- *     paraxial T/n, not merely be nonzero (moire-parallax-physics).
- *   - TEXTURE-DRIVEN: swapping only the bound mask at a fixed camera and gap
- *     must change the plate pixels, and every plane's bound image must be the
- *     raster its own face manifest declares (moire-fringe-flow).
- *   - ALL SIX FACES run the two-plane foliage_moire recipe on both planes with
- *     real masks, and no face was refused (moire-fringe-flow).
+ *   - GEOMETRIC (absolute): the layer gap must EQUAL the manifest's paraxial
+ *     T/n, not merely be nonzero (two-ply-moire-parallax).
+ *   - TEXTURE-DRIVEN: every face's bound raster must be the one its OWN
+ *     manifest declares, and a face that declares a period map must have it
+ *     bound — that map is the whole of a single-ply wall's sheen
+ *     (literal-sheen-flow).
+ *   - ALL SIX FACES run the foliage_moire recipe with real rasters, and no face
+ *     was refused (literal-sheen-flow).
  *
  * Run: `just test-effects` (Playwright, single worker — heavy process).
  */
@@ -162,6 +170,11 @@ test.describe('@effects physical honesty of renderer effects', () => {
    * the default variant here (GET /{slug}/default, the same variant the spec
    * assigns) leaves the in-test wait covering only the plate compose + bind.
    *
+   * TEST_PATTERNS.moire is deliberately NOT in this list: it is the production
+   * monogram, which the default box already carries on its lid, so its pattern
+   * variant is warm by the time any test runs. What that scenario pays for is
+   * the two-ply PLATE compose, which no pattern pre-warm can cover.
+   *
    * Strictly sequential and strictly before the first `goto`, so this never
    * runs beside a box regen (CLAUDE.md's single-heavy-compute rule). beforeAll
    * can only use worker-scoped fixtures, hence a hand-built request context
@@ -220,22 +233,24 @@ test.describe('@effects physical honesty of renderer effects', () => {
     expect(failures, failures.join('; ')).toHaveLength(0);
   });
 
-  test('@effects moire fringes flow under camera orbit', async ({ page }) => {
-    const outDir = path.join(OUT_ROOT, 'moire-fringe-flow');
+  test('@effects literal walls bind their own rasters and sheen under orbit', async ({
+    page,
+  }) => {
+    const outDir = path.join(OUT_ROOT, 'literal-sheen-flow');
     await fs.mkdir(outDir, { recursive: true });
-    // Post-merge every composed plate runs the two-plane foliage_moire
-    // recipe (id 3): front foliage carrier on the outer plane, uniform back
-    // carrier on the REAL inner plane at the paraxial T/n gap.
+    // Every composed plate runs the foliage_moire recipe (id 3); on the shipping
+    // box every one of them takes its LITERAL branch, compositing the fabricated
+    // chrome raster on the outer plane.
     //
-    // Asserted for ALL SIX faces, on BOTH plane materials — the front face
-    // alone used to stand in for the box, so five walls could have run the
-    // banned single-plane path (or stayed on the 1x1 blank) unnoticed. And
+    // Asserted for ALL SIX faces — the front face alone used to stand in for the
+    // box, so five walls could have stayed on the 1x1 blank unnoticed. And
     // because uRecipe's material-creation default IS foliage_moire, the id on
-    // its own proves nothing: each face must also carry the masks its OWN
-    // manifest declares (outer plane <- files.front_png, inner <-
-    // files.back_png), which is the suite's native texture-driven gate, and
-    // BoxScene's recipe refusal (face_recipe_unsupported -> planes hidden)
-    // must not have fired for any face.
+    // its own proves nothing: each face must also carry the rasters its OWN
+    // manifest declares (files.literal_front / literal_back, or front_png /
+    // back_png on a procedural exemplar), which is the suite's native
+    // texture-driven gate, and BoxScene's recipe refusal
+    // (face_recipe_unsupported -> planes hidden) must not have fired for any
+    // face.
     await waitForAllFaceMasks(page);
     const faceStates = await allFaceRenderState(page);
     const bindFailures: string[] = [];
@@ -273,8 +288,20 @@ test.describe('@effects physical honesty of renderer effects', () => {
       }
       if (!st.maskMatchesManifest || (wantInner && !st.maskBackMatchesManifest)) {
         bindFailures.push(
-          `${st.face}: bound mask URLs are not the manifest's front/back PNGs ` +
-            `(outer ${st.maskMatchesManifest}, back layer ${st.maskBackMatchesManifest})`
+          `${st.face}: bound raster URLs are not the ones this face's manifest ` +
+            `declares (outer ${st.maskMatchesManifest}, back layer ${st.maskBackMatchesManifest})`
+        );
+      }
+      // THE SHEEN SOURCE. A single-ply literal wall has no second layer, so the
+      // period map is the entire non-trivial view-dependent term: it says, per
+      // pixel, the pitch of the sub-grating actually written there. Declared but
+      // unbound renders the wall as flat gold — a silent, plausible-looking loss
+      // of the one effect this box is for, which is exactly the class of failure
+      // a structural check has to catch.
+      if (st.periodDeclared && (!st.periodReady || st.periodW <= 1)) {
+        bindFailures.push(
+          `${st.face}: manifest declares files.period_front but the map is not ` +
+            `bound (uPeriodReady ${st.periodReady}, ${st.periodW}px) — no diffraction sheen`
         );
       }
       const tUm = st.thicknessUm;
@@ -319,49 +346,80 @@ test.describe('@effects physical honesty of renderer effects', () => {
         face: s.face,
         recipe: s.recipe,
         recipeBack: s.recipeBack,
+        literal: s.literal,
+        singlePly: s.singlePly,
         maskPx: [s.maskW, s.maskBackW],
         maskFromManifest: s.maskMatchesManifest && s.maskBackMatchesManifest,
+        periodPx: s.periodDeclared ? s.periodW : null,
       })),
     };
-    console.log('[effects] moire-fringe-flow', JSON.stringify(metrics));
+    console.log('[effects] literal-sheen-flow', JSON.stringify(metrics));
 
     const failures: string[] = [];
-    // (a) fringes actually move between every 5-degree stop
+    // (a) the plate actually changes between every 5-degree stop
     consecutive.forEach((d, i) => {
       if (d.changedFrac < 0.02) {
         failures.push(
-          `fringes frozen between az ${AZ[i]} and ${AZ[i + 1]} (changedFrac ${d.changedFrac.toFixed(4)})`
+          `plate frozen between az ${AZ[i]} and ${AZ[i + 1]} (changedFrac ${d.changedFrac.toFixed(4)})`
         );
       }
     });
     // (b) flow is progressive: the 20-degree pair decorrelates at least as
-    // much as the 5-degree pair (allowing beat-pattern periodicity slack).
+    // much as the 5-degree pair (allowing periodic-response slack).
     if (endToEnd.mad < nearPair.mad * 0.8) {
       failures.push(
         `no progressive flow: end-to-end mad ${endToEnd.mad.toFixed(2)} < near-pair mad ${nearPair.mad.toFixed(2)}`
       );
     }
-    await writeMeta('moire-fringe-flow', outDir, pngs, metrics, failures);
+    await writeMeta('literal-sheen-flow', outDir, pngs, metrics, failures);
     expect(failures, failures.join('; ')).toHaveLength(0);
   });
 
-  test('@effects moire parallax obeys substrate physics (geometric gap)', async ({ page }) => {
-    // The merged renderer derives parallax from GEOMETRY: the back gold
-    // layer lives on a real inner plane at the paraxial air gap T/n below
-    // the outer plane, and fringe motion emerges from perspective across
-    // that gap (the legacy uThicknessUm uniform is dead on the foliage
-    // path — poking it proves nothing). So the substrate test manipulates
+  /**
+   * The SHADING-MOIRÉ exemplar. A moiré needs two written plies to beat against
+   * each other, and every production wall is one ply — a single-ply face
+   * publishes an empty back raster, the composite's B term is identically zero
+   * (plate.frag: `hasBack = uBackCoverageReady > 0.5`), and moving the layer gap
+   * changes nothing, correctly. So this scenario composes the production
+   * monogram with `single_ply: false` and measures the gap physics there.
+   *
+   * That is not a weaker subject than the old default-box run: it is the only
+   * honest one. The same geometry drives the barrier switch below, and the
+   * absolute gap check (0) is what puts every crossing at its true tilt angle.
+   */
+  test('@effects two-ply moire parallax obeys substrate physics (geometric gap)', async ({
+    page,
+  }) => {
+    test.setTimeout(150_000);
+    // The renderer derives parallax from GEOMETRY: the back gold layer lives a
+    // paraxial air gap T/n below the front one, and fringe motion emerges from
+    // perspective across that gap (the legacy uThicknessUm uniform is dead on
+    // this path — poking it proves nothing). So the substrate test manipulates
     // the actual gap at a FIXED oblique camera: the gap must EQUAL the
     // manifest's T/n (the absolute contract, below); collapsing it toward
     // registration must move the fringes; a partial collapse must move them
     // LESS; and re-rendering at the same gap must be pixel-identical
     // (determinism control, run at both the design and the collapsed gap).
-    const outDir = path.join(OUT_ROOT, 'moire-parallax-physics');
+    const outDir = path.join(OUT_ROOT, 'two-ply-moire-parallax');
     await fs.mkdir(outDir, { recursive: true });
 
+    await assignFacePattern(page, 'front', TEST_PATTERNS.moire, 'foliage_moire', {
+      singlePly: false,
+    });
+    await settle(page, 400);
+    // The back layer must have actually arrived, or every metric below is
+    // measuring a single-ply face and the collapse means nothing.
+    const moireState = (await allFaceRenderState(page)).find((s) => s.face === 'front');
+    expect(moireState, 'no render state for the front face').toBeDefined();
+    expect(moireState!.singlePly, 'the moire exemplar composed as single-ply').toBe(false);
+    expect(
+      moireState!.maskBackW,
+      'the two-ply exemplar bound no back raster — nothing to beat against'
+    ).toBeGreaterThan(1);
+
     await faceFrontOn(page, 10, 6); // oblique: real in-plane view component
-    // The shader no longer magnifies the centerpiece pitch (honesty fix), so
-    // the 60 um comb is sub-pixel at the default view and its fringe response
+    // The shader no longer magnifies any fabricated pitch (honesty fix), so the
+    // 65.5 um carrier is sub-pixel at the default view and its fringe response
     // to the gap averages away. Zoom (angle-preserving) until it resolves.
     const unzoom = await zoomForMicroPatterns(page);
     await waitForStableFrame(page, 600);
@@ -378,8 +436,8 @@ test.describe('@effects physical honesty of renderer effects', () => {
     // changes the frame; a partial collapse changes it less; the same gap is
     // deterministic) and passes for ANY monotonic gap — including the
     // pre-paraxial `outerZ - T` bug or a hardcoded constant. The absolute value
-    // is what puts every switch/reveal/scanimation crossing at its true tilt
-    // angle, so pin it: the inner plane sits exactly T/n below the outer plane
+    // is what puts a barrier switch's crossing at its true tilt angle, so pin
+    // it: the inner plane sits exactly T/n below the outer plane
     // (BoxScene: `inner.position.z = outerZ - T / nGlass`, scene units are mm,
     // T = mm(thickness_um)), with n read from THIS face's manifest substrate —
     // the same numbers bound into uThicknessUm/uN. Mirror BoxScene's n<=1 guard
@@ -417,10 +475,10 @@ test.describe('@effects physical honesty of renderer effects', () => {
     // the fringe shift exceeds its correlation length, and on the production
     // stack that length is short: the paraxial gap is 1543 um, so at this 10
     // deg view a 20% collapse slides the inner layer 37 um — 0.35 of the
-    // garland's 1635 um beat (gain 15.5) and 0.27 of the globe barrier's
-    // 135 um lane — and the literal composite (the two-layer product formed
-    // per sub-sample) reads that as a full fringe change, the same as the
-    // aliased full collapse (13.3 vs 12.5 mad at 0.8). At 5% the slide is
+    // garland's 1635 um beat (gain 15.5) — and the literal composite (the
+    // two-layer product formed per sub-sample) reads that as a full fringe
+    // change, the same as the aliased full collapse (13.3 vs 12.5 mad at
+    // 0.8). At 5% the slide is
     // 9 um, 0.09 of a beat, inside the linear regime. The anti-cheat still
     // holds: a binary fake (any nonzero collapse -> same frame) reads ~1.0
     // here and fails, and the lower bound catches a gap that does nothing.
@@ -442,7 +500,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
       expectedGapMm: Number(expectedGapMm.toFixed(6)),
       substrate: { thickness_um: sub!.thicknessUm, n: sub!.n },
     };
-    console.log('[effects] moire-parallax-physics', JSON.stringify(metrics));
+    console.log('[effects] two-ply-moire-parallax', JSON.stringify(metrics));
 
     const failures: string[] = [];
     // (0) the absolute gap IS the paraxial air gap T/n. 1e-4 mm = 0.1 um.
@@ -474,13 +532,7 @@ test.describe('@effects physical honesty of renderer effects', () => {
           `nondeterministic rendering at the state the collapse metric is measured from`
       );
     }
-    await writeMeta(
-      'moire-parallax-physics',
-      outDir,
-      [pngNat, pngZero],
-      metrics,
-      failures
-    );
+    await writeMeta('two-ply-moire-parallax', outDir, [pngNat, pngZero], metrics, failures);
     expect(failures, failures.join('; ')).toHaveLength(0);
   });
 
@@ -497,14 +549,17 @@ test.describe('@effects physical honesty of renderer effects', () => {
    * centerpiece region off recipe_data (barrier period/axis) and the real
    * two-plane gap. The companion 'carrier reveal' test went with its pattern —
    * the physics it pinned (a cross-layer effect that tracks the REAL plane gap)
-   * is what 'moire parallax obeys substrate physics' measures on the shipping box.
+   * is what the two-ply moiré parallax scenario above measures.
    */
   test('@effects barrier interlace swaps A<->B across the barrier axis', async ({ page }) => {
     test.setTimeout(150_000);
     const outDir = path.join(OUT_ROOT, 'barrier-interlace-swap');
     await fs.mkdir(outDir, { recursive: true });
 
-    await assignFacePattern(page, 'front', TEST_PATTERNS.interlace, 'foliage_moire');
+    // single_ply: false is the point — a barrier interlace IS the second ply.
+    await assignFacePattern(page, 'front', TEST_PATTERNS.interlace, 'foliage_moire', {
+      singlePly: false,
+    });
     await settle(page, 400);
     expect(await faceRecipeId(page, 'front')).toBe(3);
 

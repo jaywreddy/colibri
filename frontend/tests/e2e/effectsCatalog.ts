@@ -11,43 +11,58 @@
  * The four honesty axioms, verified across scenarios:
  *   1. View-dependent  — pixels change when the camera direction changes.
  *   2. Time-invariant  — a static camera yields a static frame. No uTime.
- *   3. Texture-driven  — imagery comes from the backend litho masks
- *                        (front/back PNGs), bound per-face from the manifest.
- *   4. Geometric       — the back gold layer renders on a REAL inner plane at
- *                        the paraxial T/n air gap below the outer plane; every
- *                        cross-layer illusion emerges from perspective across
- *                        that gap. Collapsing the gap to zero registers the
- *                        layers (parallax vanishes); a partial collapse moves
- *                        the fringes proportionally less. A screen-space or
- *                        scrolling fake cannot satisfy this.
+ *   3. Texture-driven  — imagery comes from the backend litho rasters
+ *                        (the fabricated-chrome PNGs and the period map),
+ *                        bound per-face from that face's own manifest.
+ *   4. Geometric       — the back gold layer sits at the paraxial T/n air gap
+ *                        below the front one; every cross-layer illusion
+ *                        emerges from perspective across that gap. The scene
+ *                        holds the two layers as real planes at that
+ *                        separation, and a literal face — which composites both
+ *                        in one pass on the outer plane — reads the gap back off
+ *                        that live mesh separation (BoxScene's uInnerGapUm
+ *                        sync), so moving the plane still collapses the effect.
+ *                        Collapsing the gap registers the layers (parallax
+ *                        vanishes); a partial collapse moves the fringes
+ *                        proportionally less. A screen-space or scrolling fake
+ *                        cannot satisfy this.
  */
 
 /**
- * The two-ply EXEMPLARS this suite assigns to the front face, and why they
- * exist at all.
+ * WHAT RUNS ON WHAT.
  *
- * Every production wall is SINGLE-PLY and LITERAL: the backend publishes a
- * raster of the fabricated chrome and the shader samples it, so the moiré and
- * the barrier switch emerge from perspective across the real T/n plane gap with
- * no analytic grating anywhere. The moiré / parallax / time / illumination /
- * lid / turntable scenarios below therefore run against the DEFAULT box exactly
- * as it ships (front = globe-atlantic, see backend/app/boxes.py) — nothing is
- * injected.
+ * Every production wall is SINGLE-PLY and LITERAL: one written ply over a bare
+ * inner ply, published as a raster of the fabricated chrome that the shader
+ * simply samples (plate.frag::runLiteralLayer). Such a face has no second layer
+ * to beat against, so its only view-dependent optics beyond plain metal shading
+ * is the DIFFRACTION SHEEN the period map carries — the sub-5 µm colour
+ * gratings and the 6 µm garland leaf gratings, which are orders of magnitude
+ * below what a 2048 px raster can hold and so arrive as a per-pixel pitch map
+ * instead. The literal-sheen / time / illumination / lid / turntable scenarios
+ * therefore run against the DEFAULT box exactly as it ships (front =
+ * globe-atlantic, see backend/app/boxes.py) — nothing is injected.
  *
- * `interlace` is the one construction a literal single-ply face cannot show,
- * because it needs a second written ply: BOTH images interlaced in the BACK
- * layer under a neutral slit barrier in FRONT (CLAUDE.md's image-switch rule).
- * globe-duo-phase stays registered as a hidden dev exemplar so that branch of
- * plate.frag keeps a subject; it is not a face of the box.
+ * The other two branches of plate.frag are for constructions that NEED a second
+ * written ply, so each has a hidden EXEMPLAR this suite assigns to the front
+ * face and nothing else in the product reaches:
  *
- * The retired entries: `stereo` (globe-rotation-stereo) previewed the deleted
- * single-plane stereo_lenticular recipe, and `reveal` (monogram-carrier-reveal)
- * stood in for the banned phase_shift_overlay. Both patterns went with the
- * catalogue; the physics each was pinning is covered by the moiré-parallax
- * scenario, which scales the real plane gap.
+ *   interlace — BOTH images interlaced in the BACK layer under a neutral slit
+ *               barrier in FRONT (CLAUDE.md's image-switch rule). The
+ *               globe-duo-phase pattern stays registered for exactly this.
+ *   moire     — the shading moiré of a two-ply garland: the same production
+ *               monogram slug, composed with `single_ply: false` so the plate
+ *               gets a back carrier to beat against. Assigning the ply is the
+ *               whole exemplar; there is no separate pattern.
+ *
+ * Retired with the patterns they previewed: `stereo` (globe-rotation-stereo,
+ * the deleted single-plane stereo_lenticular recipe) and `reveal`
+ * (monogram-carrier-reveal, the banned phase_shift_overlay). The physics both
+ * pinned — a cross-layer effect that tracks the REAL plane gap — is what the
+ * two-ply moiré parallax scenario measures.
  */
 export const TEST_PATTERNS = {
   interlace: 'globe-duo-phase',
+  moire: 'monogram-jp',
 } as const;
 
 export type EffectScenario = {
@@ -71,28 +86,31 @@ export const EFFECT_SCENARIOS: Record<string, EffectScenario> = {
       'Pattern texture scrolls on its own',
     ],
   },
-  'moire-fringe-flow': {
-    name: 'moire-fringe-flow',
+  'literal-sheen-flow': {
+    name: 'literal-sheen-flow',
     claim:
-      'The gold moire is produced by sampling the real fabricated-chrome rasters of the two layers across the paraxial T/n plane gap, so orbiting the camera makes the beat fringes flow continuously across the plate.',
+      'Every wall of the shipping box draws the raster of its OWN fabricated chrome, bound from its own manifest, and its diffraction sheen comes from the per-pixel period map of the gratings actually written there — so orbiting the camera makes the gold shift and flash progressively, with no procedural lattice anywhere in the shader.',
     signature:
-      'A sweep of camera azimuths shows the same gold plate with fringe bands at progressively shifted positions; the plate outline and foil frame stay put.',
+      'A sweep of camera azimuths shows the same gold plate — same art, same outline, same foil frame — with its sheen and highlights at progressively different strengths across the design.',
     failModes: [
-      'Fringes frozen while the camera moves (parallax not applied)',
-      'Pattern jumps discontinuously between angles',
-      'Plate shows a procedural stripe pattern unrelated to the mask imagery',
+      'Plate frozen while the camera moves (shading not view-dependent)',
+      'Appearance jumps discontinuously between angles',
+      'Plate shows a synthesized stripe pattern unrelated to the mask imagery',
+      'A wall is still on the 1x1 placeholder, or bound to another face’s raster',
+      'A wall that declares a period map renders without it (flat gold, no sheen)',
     ],
   },
-  'moire-parallax-physics': {
-    name: 'moire-parallax-physics',
+  'two-ply-moire-parallax': {
+    name: 'two-ply-moire-parallax',
     claim:
-      'The fringes are caused by the substrate GEOMETRY: the back gold layer renders on a real inner plane at the paraxial T/n air gap below the outer plane, so at a FIXED oblique view the gap sets the fringe positions. Collapsing the gap to zero registers the layers and moves the fringes; a partial (60%) collapse moves them proportionally less; recapturing at the same gap is pixel-identical.',
+      'On the two-ply exemplar the moire fringes are caused by the substrate GEOMETRY: the back gold layer sits a paraxial T/n air gap below the front layer, so at a FIXED oblique view the gap sets the fringe positions. Collapsing the gap toward registration moves the fringes; a partial collapse moves them proportionally less; recapturing at the same gap is pixel-identical.',
     signature:
-      'Frames at the same oblique camera position at the design gap / gap 0 / 60% gap: the gold plate imagery is the same design but the beat fringes sit at clearly different positions, with the partial collapse moving them less than the full one.',
+      'Frames at the same oblique camera position at the design gap / near-registration / 95% gap: the gold plate imagery is the same design but the beat fringes sit at clearly different positions, with the partial collapse moving them less than the full one.',
     failModes: [
-      'Fringes unchanged when the inner plane is registered to the outer (gap collapse ignored — parallax faked in screen space)',
+      'Fringes unchanged when the inner layer is registered to the outer (gap collapse ignored — parallax faked in screen space)',
       'Response does not scale with the gap (partial collapse moves fringes as much as full)',
       'Same-gap recapture differs (nondeterministic rendering)',
+      'The gap is not the manifest’s own T/n (every crossing angle is wrong by that ratio)',
     ],
   },
   'barrier-interlace-swap': {

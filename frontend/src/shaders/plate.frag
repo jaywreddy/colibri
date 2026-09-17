@@ -76,9 +76,10 @@ uniform float uCenterPeriodUm;     // centerpiece stripe period (um)
 // surfaces separated by the physical slab (outer front at +T/2, inner back at
 // -T/2). Each plane runs THIS shader with uLayer selecting which single layer it
 // draws. There is NO cross-layer texture sampling and NO in-shader parallax for
-// the gratings: every cross-layer illusion (leaf moire, colibri<->globe switch,
-// gear/quill switch) EMERGES from the perspective projection of the two real
-// surfaces, as validated in the two-plane rig. Each plane binds its own mask to
+// the gratings: every cross-layer illusion (the shading moire of a two-ply
+// garland, a barrier-interlace switch) EMERGES from the perspective projection
+// of the two real surfaces, as validated in the two-plane rig. Each plane binds
+// its own mask to
 // uFront; output alpha = the layer's gold coverage so the glass gaps are
 // transparent and the inner plane shows through the outer one.
 // (LITERAL faces are the one exception: both layers are composited on the OUTER
