@@ -915,12 +915,12 @@ def test_plate_svg_central_scaled_to_aperture(isolated_data):
     # invariants that remain worth pinning: current version marker, true-mm
     # physical size, and real geometry that spans the plate (not a stub) yet
     # never overshoots the half-extent.
-    from app.plates import PLATE_SVG_VERSION
+    from app.plates import PLATE_SVG_FINGERPRINT
 
     half_w = spec.width_um / 2.0
     for svg_path in (front_svg, back_svg):
         svg = svg_path.read_text(encoding="utf-8")
-        assert PLATE_SVG_VERSION in svg[:256], f"{svg_path.name}: stale writer version"
+        assert PLATE_SVG_FINGERPRINT in svg[:256], f"{svg_path.name}: stale writer fingerprint"
         # Physical size is explicit mm; user units stay um via the viewBox.
         assert 'width="8.0000mm"' in svg and 'height="8.0000mm"' in svg, svg[:300]
 
@@ -942,15 +942,15 @@ def test_plate_svg_central_scaled_to_aperture(isolated_data):
         )
 
 
-def test_stale_plate_svg_regenerates_on_version_bump(isolated_data):
-    """A cached SVG without the current PLATE_SVG_VERSION marker must be
+def test_stale_plate_svg_regenerates_on_fingerprint_change(isolated_data):
+    """A cached SVG without the current PLATE_SVG_FINGERPRINT marker must be
     rebuilt, not served — formula fixes change output under unchanged spec
     hashes."""
     from app.plates import (
         FrameSpec,
         PLATES_ROOT,
         PlateSpec,
-        PLATE_SVG_VERSION,
+        PLATE_SVG_FINGERPRINT,
         ensure_plate_svg,
         materialize_plate,
     )
@@ -972,7 +972,7 @@ def test_stale_plate_svg_regenerates_on_version_bump(isolated_data):
     assert pair is not None
     front_svg, _ = pair
     text = front_svg.read_text(encoding="utf-8")
-    assert PLATE_SVG_VERSION in text
+    assert PLATE_SVG_FINGERPRINT in text
     assert "stale" not in text
 
 

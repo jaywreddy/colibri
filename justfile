@@ -33,7 +33,7 @@ seed:
 # Backend pytest (Layer 1) — 8 sequential memory-safe chunks
 test-backend flags="":
     cd backend; uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py tests/test_face_kind.py tests/test_production_constants.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py tests/test_face_kind.py tests/test_production_constants.py tests/test_cache_fingerprint.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_showcase_patterns.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_param_validation.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_shimmer_moire.py -q {{flags}}

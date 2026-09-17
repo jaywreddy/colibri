@@ -1,13 +1,23 @@
-# plates cache-version changelog
+# Cache-marker changelog (CLOSED 2026-09-17)
 
-Moved out of `backend/app/plates.py` (now the `backend/app/plates/` package) on 2026-09-16, with the two-ply cleanup:
-the module carried ~90 lines of per-version prose beside the two markers. The
-markers and their CURRENT entry stay in the code, where a bump has to be made
-by hand; everything older is history and lives here.
+**These markers no longer exist.** The three hand-bumped integers and strings
+below were replaced on 2026-09-17 by CONTENT FINGERPRINTS — a digest of each
+cache's module closure plus the bytes of the photo assets, computed at import
+(`backend/app/cache_fingerprint.py`). Nothing is bumped by hand any more, so
+nothing gets added to this file; it is kept because the history explains what
+each cache actually covers, and because `CACHE_EPOCH` is the one manual lever
+that is left.
 
-Both markers are checked on the cache-hit path, so a bump is the only thing
-that invalidates a warm `backend/data/` after a code or constant change (the
-cache keys hash the user spec/params only) — see CLAUDE.md, "cache versions".
+Their last values were `service.PATTERN_GEN_VERSION` 10,
+`plates.PLATE_COMPOSE_VERSION` 27 and `plates.PLATE_SVG_VERSION`
+`plate-svg-v20`. 25 compose bumps and 19 SVG bumps are the argument for the
+change: every one of them was a human remembering, and the bug each one fixed
+was a human forgetting.
+
+The prose below was moved out of `backend/app/plates.py` (now the
+`backend/app/plates/` package) on 2026-09-16 with the two-ply cleanup; the
+last entries, which stayed in the code beside their markers, are folded in
+here.
 
 ## `plates.PLATE_COMPOSE_VERSION`
 
@@ -100,7 +110,23 @@ v23: ``single_ply_leaf_period_um`` (recipe key AND ``period_front``) comes from
     PNG masks are unchanged; recipe_data is not, and it is cached.
 ```
 
-(v26 and later: see `app/plates/compose.py`.)
+v26: the two-ply optics come off the plate (2026-09-16). `_carrier_recipe_data`
+    drops the water-scanimation keys (`water_scan_n`,
+    `water_ripple_wavelength_um`, `water_body_carrier_*`, `water_waterline_y`)
+    and the diffraction-accent keys (`rainbow_period_um`/`_angle_deg`/`_duty`/
+    `_zero_order`, `accent_interleave_pitch_um`, `accent_moire_*`);
+    `_paste_centerpiece` no longer stamps RAINBOW_LEVEL accent patches or the
+    full-width water band, and `_centerpiece_masks` keeps only the two hidden
+    exemplars. The mask PNGs of every PRODUCTION face are unchanged (none of
+    them entered any of those branches) but recipe_data is, and it is cached.
+v27: FaceKind (2026-09-16). The blank/solid/photo/region/two-ply decision moves
+    to `PlateSpec.kind` and `recipe_data` gains `face_kind`. No writer's BRANCH
+    changes — the enum classifies on exactly the inputs the nine slug tests
+    read — so every face's PNGs and SVG are byte-identical; the marker moves
+    because the manifest gained a key.
+
+(LAST hand-bumped value. Replaced 2026-09-17 by
+`plates.compose.PLATE_COMPOSE_FINGERPRINT`.)
 
 ## `plates.PLATE_SVG_VERSION`
 
@@ -157,4 +183,45 @@ v18: a SINGLE-PLY face bakes NO carrier. v12 put a carrier grating in front.svg
     single-ply faces change; every other face's SVG is byte-identical.
 ```
 
-(v20 and later: see `app/plates/svg.py`.)
+v20: the two-ply optics come off the plate (2026-09-16) — the water-scanimation
+    bake and the diffraction-accent OR-in are gone from `_bake_plate_svg`. No
+    production face entered either branch, so every written face's SVG is
+    unchanged; the marker moves so a warm cache cannot serve a pair baked by
+    code that still had them.
+
+(LAST hand-bumped value. Replaced 2026-09-17 by
+`plates.svg.PLATE_SVG_FINGERPRINT`, which is still written into the SVG
+itself — as `plate-svg-cf<epoch>-<digest>` — because a cached SVG pair has no
+manifest of its own.)
+
+
+## `service.PATTERN_GEN_VERSION`
+
+Bumped when the pattern GENERATION path changed its output under an unchanged
+param hash: any generator's geometry (`patterns/**`), the litho floor or other
+shared helpers in `patterns/base.py`, the rasterizer / thumbnail composite, or
+the variant manifest shape. Integers.
+
+```
+v2:  first versioned generation — the litho-floor raise and the slit-lattice
+    barrier registration changed geometry with no key to invalidate it.
+v3:  capybara water band carved to `below & ~capy` (the submerged body keeps its
+    carrier; ripples never print on the animal) — polygons, measured
+    min_feature_um and the min_*_gold_um extras all move.
+v7:  two new registered generators — `blank` (bare glass, empty layers) and
+    `photo-halftone` (a prepared photograph as a line screen with a
+    coverage-space edge fade and an optional colour period field). New slugs
+    alone would not need a bump, but the plate compositor now reads
+    `photo-halftone`'s metadata on the box path and the manifest shape grows the
+    `art_solid` recipe_data key, so a warm `backend/data` must re-derive rather
+    than serve variants written before either existed.
+v10: `monogram-jp` rebuilt as a SINGLE-LAYER DIFFRACTION mapping — the lid is one
+    written ply, so the shading moiré (front silhouette on a carrier, back
+    carrier at a mismatched pitch) is gone and the centrepiece is a map of two
+    regions, one grating period per initial. Params, geometry, both layers,
+    min_feature_um, render_recipe and recipe_data all move, and the motif gained
+    a region map every plate writer now dispatches through.
+```
+
+(LAST hand-bumped value. Replaced 2026-09-17 by
+`service.PATTERN_GEN_FINGERPRINT`.)

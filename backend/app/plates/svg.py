@@ -3,7 +3,7 @@
 ``ensure_plate_svg`` builds the pair lazily on the first export request — the
 polygon/SVG path is ~40x slower than the raster one and the interactive UI
 never needs it. It MUST compose what ``compose._raster_compose_plate`` does;
-``PLATE_SVG_VERSION`` (below) is what invalidates a stale cached SVG when this
+``PLATE_SVG_FINGERPRINT`` (below) is what invalidates a stale cached SVG when this
 module's geometry changes.
 """
 from __future__ import annotations
@@ -15,6 +15,7 @@ from typing import Any
 
 from shapely.geometry import MultiPolygon
 
+from ..cache_fingerprint import PHOTO_ASSETS, PLATE_SVG_CLOSURE, fingerprint
 from ..export_svg import to_svg
 from ..patterns.frames import RectFrame, render_scene_to_image
 from ..service import (
@@ -723,13 +724,17 @@ _SVG_BAKE_KEYS = (
 # reused if they carry the current marker, so a formula fix (e.g. the
 # aperture-scaling fix) invalidates stale files under unchanged spec hashes.
 #
-# The per-version history (v4 .. v19) lives in docs/plates-changelog.md.
-# v20: the two-ply optics come off the plate (2026-09-16) — the water-scanimation
-#     bake and the diffraction-accent OR-in are gone from ``_bake_plate_svg``.
-#     No production face entered either branch, so every written face's SVG is
-#     unchanged; the marker moves so a warm cache cannot serve a pair baked by
-#     code that still had them.
-PLATE_SVG_VERSION = "plate-svg-v20"
+# It used to be a hand-bumped string (last value: "plate-svg-v20"; its v4..v20
+# history is in docs/plates-changelog.md) and is COMPUTED now — see
+# ``cache_fingerprint``. The closure OVERLAPS the compose one on purpose: the
+# rule is that the fab SVG and the preview PNG draw the same geometry
+# (CLAUDE.md), and ``_bake_plate_svg`` reuses compose's masks, so a change there
+# moves both markers.
+#
+# The marker is written into the SVG itself (``_wrap_svg``) rather than into a
+# manifest, because a cached SVG pair is a pair of FILES with no manifest of
+# their own; ``_svg_is_current`` reads it back out of the first 256 bytes.
+PLATE_SVG_FINGERPRINT = f"plate-svg-{fingerprint(PLATE_SVG_CLOSURE, PHOTO_ASSETS)}"
 
 
 def _svg_is_current(svg_path: Path) -> bool:
@@ -737,7 +742,7 @@ def _svg_is_current(svg_path: Path) -> bool:
         head = svg_path.read_text(encoding="utf-8", errors="ignore")[:256]
     except OSError:
         return False
-    return PLATE_SVG_VERSION in head
+    return PLATE_SVG_FINGERPRINT in head
 
 
 def _wrap_svg(width_um: float, height_um: float, groups: list[str]) -> str:
@@ -747,7 +752,7 @@ def _wrap_svg(width_um: float, height_um: float, groups: list[str]) -> str:
     body = "".join(groups)
     return (
         f'<?xml version="1.0" encoding="UTF-8"?>'
-        f'<!--{PLATE_SVG_VERSION}-->'
+        f'<!--{PLATE_SVG_FINGERPRINT}-->'
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'width="{width_um / 1000.0:.4f}mm" height="{height_um / 1000.0:.4f}mm" '
         f'viewBox="{-width_um/2:.2f} {-height_um/2:.2f} {width_um:.2f} {height_um:.2f}">'

@@ -6,7 +6,8 @@ into PIL images (no Shapely on the hot path). Frame polygons are CONCATENATED
 onto the front gold layer where a polygon form is needed (never
 ``unary_union`` — see ``_concat_polygons``).
 
-``PLATE_COMPOSE_VERSION`` lives here because this module is what it covers.
+``PLATE_COMPOSE_FINGERPRINT`` lives here because this module is most of what
+it covers.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from PIL import Image, ImageDraw
 from shapely.geometry import MultiPolygon, Polygon
 
 from .. import region_art as _RA
+from ..cache_fingerprint import PHOTO_ASSETS, PLATE_COMPOSE_CLOSURE, fingerprint
 from ..patterns.base import registry
 from ..patterns.frames import (
     RectFrame,
@@ -447,7 +449,7 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     # it from the fab bundle, but it is NOT debug-only: the fab SVG bake and
     # export_fine's zone masks load it back (``frame_scene_for_plate``) instead
     # of regrowing the band, which is what keeps all three renders of a face
-    # pinned to one scene. Keyed to PLATE_COMPOSE_VERSION by that reader.
+    # pinned to one scene. Keyed to PLATE_COMPOSE_FINGERPRINT by that reader.
     frame_scene = scene.to_dict() if scene is not None else {"segments": [], "flowers": [], "leaves": [], "max_t": 0.0}
     write_json_atomic(out_dir / "scene.json", frame_scene, indent=None)
 
@@ -476,32 +478,19 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
 
 
 
-# Bump when the composed-plate output changes under an unchanged spec hash:
-# ``_raster_compose_plate``, ``_paste_centerpiece``, ``_centerpiece_masks``, the
-# mask level palette (FRAME_LEVEL / ART_LEVEL / FRAME_BUCKET* / RAINBOW_LEVEL),
-# or ``_carrier_recipe_data`` (including the render_recipe the manifest forces
-# and every shader knob it emits). ``plate_hash`` covers spec fields only, so a
-# cached manifest+PNG pair is otherwise served forever after a code or constant
-# change — the same trap PLATE_SVG_VERSION already closes on the fab SVGs. See
-# CLAUDE.md; a mismatch on the hit path is treated as a miss.
+# The composed-plate marker: a digest of every module whose source decides what
+# a cached plate HOLDS — ``_raster_compose_plate``, ``_paste_centerpiece``,
+# ``_centerpiece_masks``, the mask level palette, ``recipe._carrier_recipe_data``
+# (including the render_recipe the manifest forces and every shader knob it
+# emits), the literal rasters published beside the preview PNGs, and the
+# production constants all of them read — plus the bytes of the prepared
+# photographs. ``plate_hash`` covers spec fields only, so a cached manifest+PNG
+# pair is otherwise served forever after a code or constant change.
 #
-# The per-version history (v2 .. v25) lives in docs/plates-changelog.md.
-# v26: the two-ply optics come off the plate (2026-09-16). ``_carrier_recipe_data``
-#     drops the water-scanimation keys (``water_scan_n``,
-#     ``water_ripple_wavelength_um``, ``water_body_carrier_*``,
-#     ``water_waterline_y``) and the diffraction-accent keys
-#     (``rainbow_period_um``/``_angle_deg``/``_duty``/``_zero_order``,
-#     ``accent_interleave_pitch_um``, ``accent_moire_*``); ``_paste_centerpiece``
-#     no longer stamps RAINBOW_LEVEL accent patches or the full-width water band,
-#     and ``_centerpiece_masks`` keeps only the two hidden exemplars. The mask
-#     PNGs of every PRODUCTION face are unchanged (none of them entered any of
-#     those branches) but recipe_data is, and it is cached.
-# v27: FaceKind (2026-09-16). The blank/solid/photo/region/two-ply decision moves
-#     to ``PlateSpec.kind`` and ``recipe_data`` gains ``face_kind``. No writer's
-#     BRANCH changes — the enum classifies on exactly the inputs the nine slug
-#     tests read — so every face's PNGs and SVG are byte-identical; the marker
-#     moves because the manifest gained a key.
-PLATE_COMPOSE_VERSION = 27
+# It used to be a hand-bumped integer (last value: 27; its v2..v27 history is in
+# docs/plates-changelog.md) and is COMPUTED now — see ``cache_fingerprint``. A
+# mismatch on the hit path is treated as a miss, exactly as before.
+PLATE_COMPOSE_FINGERPRINT = fingerprint(PLATE_COMPOSE_CLOSURE, PHOTO_ASSETS)
 
 
 # Plate ids whose ``scene.json`` was written by the compose CURRENTLY running on
@@ -542,7 +531,7 @@ def frame_scene_for_plate(
     """
     fresh = _scene_sidecar_is_fresh(plate_dir.name)
     if fresh or (
-        manifest is not None and manifest.get("compose_version") == PLATE_COMPOSE_VERSION
+        manifest is not None and manifest.get("compose_version") == PLATE_COMPOSE_FINGERPRINT
     ):
         data = read_json_cache(plate_dir / "scene.json")
         if data is not None and "segments" in data:
@@ -569,7 +558,7 @@ def _materialize_plate_locked(spec: PlateSpec, pid: str, force: bool) -> dict[st
     manifest_path = out / "manifest.json"
     if not force:
         cached = read_json_cache(manifest_path)
-        if cached is not None and cached.get("compose_version") == PLATE_COMPOSE_VERSION:
+        if cached is not None and cached.get("compose_version") == PLATE_COMPOSE_FINGERPRINT:
             _log.info("materialize_plate cache_hit id=%s slug=%s", pid, spec.pattern_slug)
             return cached
         if manifest_path.exists():
@@ -579,7 +568,7 @@ def _materialize_plate_locked(spec: PlateSpec, pid: str, force: bool) -> dict[st
                 spec.pattern_slug,
                 "unreadable_manifest"
                 if cached is None
-                else f"compose_version {cached.get('compose_version')!r} != {PLATE_COMPOSE_VERSION}",
+                else f"compose_version {cached.get('compose_version')!r} != {PLATE_COMPOSE_FINGERPRINT}",
             )
 
     # Everything below is the heavy path, so it runs under the process-wide
@@ -613,8 +602,8 @@ def _materialize_plate_locked(spec: PlateSpec, pid: str, force: bool) -> dict[st
         # — the polygon path is ~40× slower than raster and the interactive UI
         # never needs it. Manifest carries empty svg paths until requested.
         # Any pair already in this slot was baked from the geometry we just
-        # replaced (force, or a PLATE_COMPOSE_VERSION bump), and it still carries
-        # the current PLATE_SVG_VERSION marker — so ensure_plate_svg would happily
+        # replaced (force, or a PLATE_COMPOSE_FINGERPRINT change), and it still carries
+        # the current PLATE_SVG_FINGERPRINT marker — so ensure_plate_svg would happily
         # serve it and break the fab-SVG = preview-PNG contract. Drop it.
         for stale_svg in (out / "front.svg", out / "back.svg"):
             stale_svg.unlink(missing_ok=True)
@@ -624,8 +613,8 @@ def _materialize_plate_locked(spec: PlateSpec, pid: str, force: bool) -> dict[st
             "kind": "plate",
             "id": pid,
             # Compose-code marker; a mismatch on the hit path is a miss (plate_hash
-            # covers spec fields only). See PLATE_COMPOSE_VERSION.
-            "compose_version": PLATE_COMPOSE_VERSION,
+            # covers spec fields only). See PLATE_COMPOSE_FINGERPRINT.
+            "compose_version": PLATE_COMPOSE_FINGERPRINT,
             "spec": spec.to_dict(),
             "name": spec.label or central_cls.name,
             "description": central_cls.description,

@@ -4,11 +4,13 @@ Four classes of damage are pinned here, none of them reachable from the other
 test files: those all run against a fresh data root, so a slot written by an
 OLDER build — or by a build that died mid-publish — never exists for them.
 
-  1. **Stale version marker.** Cache keys hash user spec/params ONLY, so the
-     version markers on the hit path (``service.PATTERN_GEN_VERSION``,
-     ``plates.PLATE_COMPOSE_VERSION``) are the only thing that invalidates a
-     warm cache after a code or constant change. A slot carrying an older
-     marker must regenerate in place, not be served.
+  1. **Stale content fingerprint.** Cache keys hash user spec/params ONLY, so
+     the markers on the hit path (``service.PATTERN_GEN_FINGERPRINT``,
+     ``plates.compose.PLATE_COMPOSE_FINGERPRINT``) are the only thing that
+     invalidates a warm cache after a code, constant or asset change. A slot
+     carrying a different marker must regenerate in place, not be served.
+     What MOVES a fingerprint is ``tests/test_cache_fingerprint.py``'s
+     business; what a stale one does to a warm slot is this file's.
   2. **Truncated manifest.** A crash between the payload files and the manifest
      rename must read as a MISS (regenerate over it), never as a permanently
      poisoned slot that raises for every later request.
@@ -109,20 +111,20 @@ def app_client(isolated_data) -> TestClient:
 # ----- 1. stale version markers ----------------------------------------------
 
 
-def test_stale_gen_version_regenerates_the_variant(client: TestClient, isolated_data_root: Path):
-    from app.service import PATTERN_GEN_VERSION
+def test_stale_gen_fingerprint_regenerates_the_variant(client: TestClient, isolated_data_root: Path):
+    from app.service import PATTERN_GEN_FINGERPRINT
 
     body = {"slug": CHEAP_SLUG, "params": CHEAP_PARAMS}
     r = client.post("/patterns/generate", json=body)
     assert r.status_code == 200, r.text
     first = r.json()
-    assert first["gen_version"] == PATTERN_GEN_VERSION
+    assert first["gen_version"] == PATTERN_GEN_FINGERPRINT
     slot = isolated_data_root / first["slug"] / first["variant"]
 
     # Forge the slot a pre-bump build would have left behind: identical params
     # (so the key still hits), older generation code, stale payload.
     manifest = json.loads((slot / "manifest.json").read_text())
-    manifest["gen_version"] = PATTERN_GEN_VERSION - 1
+    manifest["gen_version"] = "cf1-000000000000"
     manifest["stale_marker"] = "pre-bump"
     (slot / "manifest.json").write_text(json.dumps(manifest))
     (slot / "front.png").write_bytes(b"stale bytes, not a png")
@@ -133,18 +135,18 @@ def test_stale_gen_version_regenerates_the_variant(client: TestClient, isolated_
     # The variant hash covers params only, so the slot is the same one — the
     # point is that it was rebuilt, not re-served.
     assert fresh["variant"] == first["variant"]
-    assert fresh["gen_version"] == PATTERN_GEN_VERSION
+    assert fresh["gen_version"] == PATTERN_GEN_FINGERPRINT
     assert "stale_marker" not in fresh, "the stale manifest was served verbatim"
     on_disk = json.loads((slot / "manifest.json").read_text())
-    assert on_disk["gen_version"] == PATTERN_GEN_VERSION
+    assert on_disk["gen_version"] == PATTERN_GEN_FINGERPRINT
     assert "stale_marker" not in on_disk
     assert (slot / "front.png").read_bytes()[:8] == PNG_MAGIC, (
-        "payload PNGs must be rewritten on a version-mismatch regenerate"
+        "payload PNGs must be rewritten on a fingerprint-mismatch regenerate"
     )
     _assert_no_tmp(slot)
 
 
-def test_stale_compose_version_regenerates_the_plate(isolated_data, monkeypatch):
+def test_stale_compose_fingerprint_regenerates_the_plate(isolated_data, monkeypatch):
     from app import plates as P
     from app.plates import compose as PC
 
@@ -162,24 +164,24 @@ def test_stale_compose_version_regenerates_the_plate(isolated_data, monkeypatch)
     first = P.materialize_plate(spec)
     pid = first["id"]
     slot = P.PLATES_ROOT / pid
-    assert first["compose_version"] == P.PLATE_COMPOSE_VERSION
+    assert first["compose_version"] == P.PLATE_COMPOSE_FINGERPRINT
     assert keys == [f"plate:{pid}"], "compose must serialize on the plate's cache id"
 
     manifest = json.loads((slot / "manifest.json").read_text())
-    manifest["compose_version"] = P.PLATE_COMPOSE_VERSION - 1
+    manifest["compose_version"] = "cf1-000000000000"
     manifest["stale_marker"] = "pre-bump"
     (slot / "manifest.json").write_text(json.dumps(manifest))
     (slot / "front.png").write_bytes(b"stale bytes, not a png")
 
     fresh = P.materialize_plate(spec)
     assert fresh["id"] == pid
-    assert fresh["compose_version"] == P.PLATE_COMPOSE_VERSION
+    assert fresh["compose_version"] == P.PLATE_COMPOSE_FINGERPRINT
     assert "stale_marker" not in fresh, "the stale manifest was served verbatim"
     on_disk = json.loads((slot / "manifest.json").read_text())
-    assert on_disk["compose_version"] == P.PLATE_COMPOSE_VERSION
+    assert on_disk["compose_version"] == P.PLATE_COMPOSE_FINGERPRINT
     assert "stale_marker" not in on_disk
     assert (slot / "front.png").read_bytes()[:8] == PNG_MAGIC, (
-        "composed PNGs must be rewritten on a compose-version regenerate"
+        "composed PNGs must be rewritten on a compose-fingerprint regenerate"
     )
     # The cache-HIT path holds the lock too, so a second request cannot start a
     # compose into a slot another thread is still publishing.
@@ -191,7 +193,7 @@ def test_stale_compose_version_regenerates_the_plate(isolated_data, monkeypatch)
 
 
 def test_truncated_variant_manifest_is_a_miss(client: TestClient, isolated_data_root: Path):
-    from app.service import PATTERN_GEN_VERSION
+    from app.service import PATTERN_GEN_FINGERPRINT
 
     body = {"slug": CHEAP_SLUG, "params": CHEAP_PARAMS}
     r = client.post("/patterns/generate", json=body)
@@ -211,7 +213,7 @@ def test_truncated_variant_manifest_is_a_miss(client: TestClient, isolated_data_
     assert r2.status_code == 200, r2.text
     fresh = r2.json()
     assert fresh["variant"] == first["variant"]
-    assert fresh["gen_version"] == PATTERN_GEN_VERSION
+    assert fresh["gen_version"] == PATTERN_GEN_FINGERPRINT
     assert json.loads(manifest_path.read_text())["variant"] == first["variant"]
     _assert_no_tmp(slot)
 
@@ -238,7 +240,7 @@ def test_truncated_plate_manifest_is_a_miss_not_a_500(app_client: TestClient, is
     # ...and the next generate rebuilds over it.
     fresh = P.materialize_plate(spec)
     assert fresh["id"] == pid
-    assert fresh["compose_version"] == P.PLATE_COMPOSE_VERSION
+    assert fresh["compose_version"] == P.PLATE_COMPOSE_FINGERPRINT
     r2 = app_client.get(f"/plates/{pid}")
     assert r2.status_code == 200, r2.text
     assert r2.json()["id"] == pid

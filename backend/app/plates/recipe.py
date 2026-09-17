@@ -497,7 +497,7 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         "region_art": kind is FaceKind.REGION,
         # WHICH of the five constructions wrote this plate (FaceKind), decided
         # once on the spec and published so a reader of the manifest does not
-        # have to re-derive it from the slug. Part of PLATE_COMPOSE_VERSION.
+        # have to re-derive it from the slug. Inside the compose fingerprint's closure.
         "face_kind": kind.value,
         # SINGLE PLY: one sheet of glass, so there is no second plane for a
         # carrier to beat against — CARRIER_COV = 0 for every photo-halftone

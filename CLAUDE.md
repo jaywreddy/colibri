@@ -18,7 +18,7 @@
   Manual equivalent, from `backend/`, one at a time:
   ```
   uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
-  uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py tests/test_face_kind.py tests/test_production_constants.py -q
+  uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py tests/test_face_kind.py tests/test_production_constants.py tests/test_cache_fingerprint.py -q
   uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q
   uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_showcase_patterns.py -q
   uv run --extra dev pytest tests/test_param_validation.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_shimmer_moire.py -q
@@ -90,15 +90,23 @@
   same aperture-scaled geometry as `plates/compose.py::_raster_compose_plate`.
   Bump `PLATE_SVG_VERSION` whenever SVG compose geometry changes so stale
   cached SVGs regenerate.
-- **cache versions:** cache keys hash user spec/params ONLY, so a version bump
-  is the only thing that invalidates a warm `backend/data/` after a code or
-  constant change. Three markers, all checked on the cache-hit path:
-  `plates.svg.PLATE_SVG_VERSION` (fab SVG geometry),
-  `plates.compose.PLATE_COMPOSE_VERSION` (`_raster_compose_plate`,
+- **cache fingerprints:** cache keys hash user spec/params ONLY, so a marker on
+  the hit path is the only thing that invalidates a warm `backend/data/` after a
+  code, constant or asset change. The three markers are COMPUTED, not bumped
+  (`app/cache_fingerprint.py`): each is a digest of its cache's module closure
+  plus the bytes of the prepared photos —
+  `plates.svg.PLATE_SVG_FINGERPRINT` (fab SVG geometry),
+  `plates.compose.PLATE_COMPOSE_FINGERPRINT` (`_raster_compose_plate`,
   `_paste_centerpiece`, `_centerpiece_masks`, the mask level palette,
-  `recipe._carrier_recipe_data`), and `service.PATTERN_GEN_VERSION`
-  (pattern generators, `patterns/base.py`, the rasterizer, manifest shape).
-  Bump the ones your change touches in the same commit.
+  `recipe._carrier_recipe_data`, the literal rasters) and
+  `service.PATTERN_GEN_FINGERPRINT` (pattern generators, `patterns/base.py`,
+  the rasterizer, manifest shape). The digest is over a normalized `ast.dump`:
+  comments, blank lines and REFLOWED docstrings are free, everything else —
+  a constant, an expression, a reworded docstring — moves the marker and
+  regenerates that cache once. There is nothing to remember and nothing to
+  bump; when you ADD a module that writes cached bytes, add it to the closure.
+  `CACHE_EPOCH` is the manual lever for what no closure can see (a Pillow
+  resampling change, a cache-poisoning bug) — bump it and say why.
 - **Units:** micrometers (um) everywhere in code, specs, manifests, and the API.
   mm appears only in UI display and in derived `_mm` cut-list fields.
 - **the plates package:** `app/plates/` is six modules in dependency order —

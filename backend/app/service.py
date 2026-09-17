@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .cache_fingerprint import PATTERN_GEN_CLOSURE, PHOTO_ASSETS, fingerprint
 from .export_svg import to_svg
 from .patterns.base import ParamSpec, registry
 from .rasterize import (
@@ -130,32 +131,19 @@ def cache_lock(key: str) -> threading.Lock:
 heavy_compute_gate = threading.BoundedSemaphore(1)
 
 
-# Bump when the pattern GENERATION path changes its output under an unchanged
-# param hash: any generator's geometry (``patterns/**``), the litho floor or
-# other shared helpers in ``patterns/base.py``, the rasterizer / thumbnail
-# composite, or the manifest shape below (``extra`` / ``recipe_data`` keys). The
-# variant hash covers user params only, so without this a warm ``backend/data``
-# serves pre-change PNGs and recipe_data forever. Same contract as
-# ``plates.PLATE_COMPOSE_VERSION`` and ``plates.PLATE_SVG_VERSION``; see CLAUDE.md.
-# v2: first versioned generation — the litho-floor raise and the slit-lattice
-#     barrier registration changed geometry with no key to invalidate it.
-# v3: capybara water band carved to `below & ~capy` (the submerged body keeps
-#     its carrier; ripples never print on the animal) — polygons, measured
-#     min_feature_um and the min_*_gold_um extras all move.
-# v7: two new registered generators — ``blank`` (bare glass, empty layers) and
-#     ``photo-halftone`` (a prepared photograph as a line screen with a
-#     coverage-space edge fade and an optional colour period field). New slugs
-#     alone would not need a bump, but the plate compositor now reads
-#     ``photo-halftone``'s metadata on the box path and the manifest shape grows
-#     the ``art_solid`` recipe_data key, so a warm ``backend/data`` must
-#     re-derive rather than serve variants written before either existed.
-# v10: ``monogram-jp`` rebuilt as a SINGLE-LAYER DIFFRACTION mapping — the lid
-#      is one written ply, so the shading moiré (front silhouette on a carrier,
-#      back carrier at a mismatched pitch) is gone and the centrepiece is a map
-#      of two regions, one grating period per initial. Params, geometry, both
-#      layers, min_feature_um, render_recipe and recipe_data all move, and the
-#      motif gained a region map every plate writer now dispatches through.
-PATTERN_GEN_VERSION = 10
+# The pattern GENERATION marker: a digest of every module whose source decides
+# what a cached variant HOLDS — any generator's geometry (``patterns/**``), the
+# shared helpers and the litho floor in ``patterns/base.py``, the rasterizer and
+# thumbnail composite, and the manifest shape below — plus the bytes of the
+# prepared photographs. The variant hash covers user params only, so without a
+# marker a warm ``backend/data`` serves pre-change PNGs and recipe_data forever.
+#
+# It used to be a hand-bumped integer (last value: 10; its v2..v10 history is in
+# docs/plates-changelog.md) and is COMPUTED now — see ``cache_fingerprint`` for
+# what moves it, what does not, and the ``CACHE_EPOCH`` escape hatch. Same
+# contract as ``plates.compose.PLATE_COMPOSE_FINGERPRINT`` and
+# ``plates.svg.PLATE_SVG_FINGERPRINT``; see CLAUDE.md.
+PATTERN_GEN_FINGERPRINT = fingerprint(PATTERN_GEN_CLOSURE, PHOTO_ASSETS)
 
 
 def _params_hash(params: dict[str, Any]) -> str:
@@ -266,8 +254,8 @@ def list_variants(slug: str) -> list[str]:
 
 def _variant_stale_reason(cached: dict[str, Any], cls: type) -> str | None:
     """Why a cached variant manifest may not be served, or None if it is current."""
-    if cached.get("gen_version") != PATTERN_GEN_VERSION:
-        return f"gen_version {cached.get('gen_version')!r} != {PATTERN_GEN_VERSION}"
+    if cached.get("gen_version") != PATTERN_GEN_FINGERPRINT:
+        return f"gen_version {cached.get('gen_version')!r} != {PATTERN_GEN_FINGERPRINT}"
     if cached.get("render_recipe") != cls.render_recipe:
         return f"render_recipe {cached.get('render_recipe')!r} != {cls.render_recipe!r}"
     return None
@@ -342,8 +330,8 @@ def _materialize_locked(
         # SVG is built on demand (see ensure_pattern_svg) — eager to_svg cost
         # ~4-8 s per cold variant and nothing at runtime ever fetched the files.
         # Any pair left over in this slot was vectorized from the geometry we just
-        # replaced (this branch also runs on force and on a PATTERN_GEN_VERSION
-        # bump), so drop it instead of advertising stale vectors.
+        # replaced (this branch also runs on force and on a fingerprint
+        # change), so drop it instead of advertising stale vectors.
         for stale_svg in (out / "front.svg", out / "back.svg"):
             stale_svg.unlink(missing_ok=True)
 
@@ -360,7 +348,7 @@ def _materialize_locked(
         # the box's selected metal (the masks are metal-agnostic graylevel
         # codes; the palette is the chip's only colour choice). The GOLD output
         # is byte-identical to what this always wrote, so warm caches stay
-        # valid and PATTERN_GEN_VERSION does not move; the extra chips are
+        # valid and the gen fingerprint's closure does not see them; the extra chips are
         # additive, and the read-only thumbnail route composes them lazily for
         # variants cached before this existed.
         thumb = make_thumbnail(front_png, back_png, size=256)
@@ -379,8 +367,8 @@ def _materialize_locked(
             "slug": slug,
             "variant": variant,
             # Generation-code marker; a mismatch on the hit path is a miss (the
-            # variant hash covers user params only). See PATTERN_GEN_VERSION.
-            "gen_version": PATTERN_GEN_VERSION,
+            # variant hash covers user params only). See PATTERN_GEN_FINGERPRINT.
+            "gen_version": PATTERN_GEN_FINGERPRINT,
             "name": cls.name,
             "description": cls.description,
             "tags": cls.tags,

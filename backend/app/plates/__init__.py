@@ -32,11 +32,11 @@ dependency order, and this file is a pure facade over them:
     photo    the photo-halftone centrepiece: screen inputs, band stamping,
              photo_band_rects / photo_colour_band_periods
     compose  the masks, the centrepiece paste, _raster_compose_plate and the
-             cached materialize_plate; PLATE_COMPOSE_VERSION
+             cached materialize_plate; PLATE_COMPOSE_FINGERPRINT
     literal  the LITERAL rasters — fabricated chrome sampled as coverage, and
              the period map the renderer binds
     svg      the FAB SVG: ensure_plate_svg / _bake_plate_svg;
-             PLATE_SVG_VERSION
+             PLATE_SVG_FINGERPRINT
 
 The split was a pure move — every body line came across verbatim, and the
 plate rasters, the fab SVGs and the witness mask are byte-identical across it.
@@ -114,7 +114,7 @@ from .compose import (  # noqa: F401
     _centerpiece_masks,
     _paste_centerpiece,
     _raster_compose_plate,
-    PLATE_COMPOSE_VERSION,
+    PLATE_COMPOSE_FINGERPRINT,
     _fresh_scene,
     _scene_sidecar_is_fresh,
     frame_scene_for_plate,
@@ -146,7 +146,7 @@ from .svg import (  # noqa: F401
     _bake_plate_svg,
     _publish_svg_pair,
     _SVG_BAKE_KEYS,
-    PLATE_SVG_VERSION,
+    PLATE_SVG_FINGERPRINT,
     _svg_is_current,
     _wrap_svg,
     _group,
