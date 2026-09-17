@@ -441,17 +441,23 @@ class PlateFine:
 
 def zone_pitch_um(spec: Any, back_period_um: float | None = None) -> float:
     """The zone-BOUNDARY raster pitch of a plate's fine bake: fine enough to
-    resolve the finest zone edge (a scanimation slot, the carrier), capped by
-    the lattice budget so a big plate keeps a small source raster. One
-    function, so ``build_plate_fine`` and :func:`single_layer_region_rects`
-    (the fab SVG's copy of the centrepiece) quantise the same boundaries."""
+    resolve the finest zone edge (the carrier), capped by the lattice budget so
+    a big plate keeps a small source raster. One function, so
+    ``build_plate_fine`` and :func:`single_layer_region_rects` (the fab SVG's
+    copy of the centrepiece) quantise the same boundaries.
+
+    The ideal term used to take the MINIMUM of the carrier and a scanimation
+    frame slot (``water_scan_fab_pitch_um / N``), which went with the two-ply
+    optics on 2026-09-16. On every face of the production box the budget term
+    binds anyway — 48-53 um against a ~16 um ideal — so dropping the slot leaves
+    the pitch, and the mask, unchanged."""
     from . import plates as P
     from .patterns._helpers import MAX_LATTICE_CELLS
 
     if back_period_um is None:
         back_period_um = float(P._carrier_recipe_data(spec)["fab_back_period_um"])
     W, H = spec.width_um, spec.height_um
-    ideal = min(P.water_scan_fab_pitch_um(spec) / P.WATER_SCAN_N_PHASES, back_period_um) / 4.0
+    ideal = back_period_um / 4.0
     budget_pitch = math.sqrt(W * H / (0.9 * MAX_LATTICE_CELLS))
     return max(ideal, budget_pitch)
 

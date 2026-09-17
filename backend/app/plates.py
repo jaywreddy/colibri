@@ -6,11 +6,9 @@ A ``PlateSpec`` is the user-level recipe for one glass plate:
 
 The runtime path is ``materialize_plate`` -> ``_raster_compose_plate``: the
 cached central-pattern PNGs and a RasterPen-rendered frame composite straight
-into PIL images (no Shapely on the hot path). ``compose_plate`` is the
-polygon-space equivalent, kept for tests; it CONCATENATES the frame polygons
-onto the front gold layer (never ``unary_union`` — see ``_concat_polygons``).
-The back layer is untouched — frames are decorative metallization on the
-viewer-facing side.
+into PIL images (no Shapely on the hot path). Frame polygons are CONCATENATED
+onto the front gold layer where a polygon form is needed (never
+``unary_union`` — see ``_concat_polygons``).
 
 SVGs are NOT built at materialize time: ``ensure_plate_svg`` builds the fab
 pair lazily on first export request (the polygon/SVG path is ~40× slower
@@ -39,14 +37,12 @@ from PIL import Image, ImageDraw
 from shapely.geometry import MultiPolygon, Polygon
 
 from .export_svg import to_svg
-from .patterns.base import GeneratedPattern, Substrate, ensure_multipolygon, registry
+from .patterns.base import registry
 from .patterns.frames import (
     RectFrame,
     Scene,
     generate_frame,
     render_scene_to_image,
-    render_scene_to_svg,
-    scene_to_multipolygon,
 )
 from .patterns.effects.gratings import beat_delta_um
 from .patterns.frames.api import FrameParams
@@ -77,7 +73,7 @@ def _concat_polygons(*sources: MultiPolygon) -> MultiPolygon:
     polygons appear twice — ``ImageDraw.polygon`` paints them with the same
     gold color and the result is visually identical. Skipping ``unary_union``
     on tens of thousands of small polygons (a dense frame's stroke buffer
-    output) is what keeps compose_plate inside GEOS memory budgets.
+    output) is what keeps the polygon path inside GEOS memory budgets.
     """
     geoms: list[Polygon] = []
     for src in sources:
@@ -304,24 +300,25 @@ def _band_um(spec: PlateSpec) -> float:
 # decode in plate.frag (frameAngleFromLevel) + the fab bake in ensure_plate_svg.
 FRAME_LEVEL = 110   # legacy alias / vine + fallback frame level (bucket 1)
 ART_LEVEL = 255     # 1.0 in the shader
-# Diffraction rainbow accent graylevel. Slots into the free gap between the
-# frame-bucket top (166 = 0.651) and ART_LEVEL (255): the shader carves a third
-# window RAINBOW = [0.72, 0.86) (RAINBOW_MIN/ART_MIN in plate.frag) and, when
-# `rainbow_level` is present in recipe_data, treats these pixels as gold grating
-# PLUS a travelling spectral sheen (preview stand-in for a real sub-5 µm fan).
-# In fab (ensure_plate_svg) the same pixels are OR-ed with a 4.4 µm 45° grating
-# from effects.gratings.diffraction_accent_grating. Small designed accent zones
-# only (steam-curl tips, gear hub, monogram flourish tips) —
-# keep them tiny so the sub-5 µm feature count stays inside the lattice budget.
+# DIFFRACTIVE graylevel. Slots into the free gap between the frame-bucket top
+# (166 = 0.651) and ART_LEVEL (255): the shader carves a third window
+# RAINBOW = [0.72, 0.86) (RAINBOW_MIN/ART_MIN in plate.frag) and treats these
+# pixels as gold that also carries a fine sub-grating, so they flash spectral
+# colour rather than plain specular metal.
+#
+# On the production box this level marks the two single-layer constructions the
+# faces actually use: a ``region_art`` centrepiece's DIFFRACTIVE regions
+# (``_paste_centerpiece``) and a photo screen's COLOURED bands
+# (``_photo_band_stamp``). The period behind each such pixel is not in the mask
+# PNG at all — it rides ``period_front.png`` (see ``_literal_period_raster``),
+# which is what lets one graylevel stand for a whole ladder of periods.
+#
+# (Until 2026-09-16 the same level also marked small hand-placed "diffraction
+# accent" patches — a gear hub, steam-curl tips — cut out of a two-ply
+# centrepiece silhouette and OR-ed with a fixed 4.4 µm 45° grating at bake time.
+# Those faces are gone with the two-ply optics; the level now means exactly
+# "this gold carries a sub-grating, look up its period".)
 RAINBOW_LEVEL = 200
-# Fab accent-grating parameters, imported (never copied) so recipe_data and the
-# baked mask always quote the same grating — see the rainbow_* keys below.
-from .patterns.effects.gratings import (  # noqa: E402
-    DIFFRACTION_ACCENT_ANGLE_DEG as _DIFFRACTION_ACCENT_ANGLE_DEG,
-    DIFFRACTION_ACCENT_DUTY as _DIFFRACTION_ACCENT_DUTY,
-    DIFFRACTION_ACCENT_PERIOD_UM as _DIFFRACTION_ACCENT_PERIOD_UM,
-    INTERLEAVE_BAND_PITCH_UM as _INTERLEAVE_BAND_PITCH_UM,
-)
 
 # Frame-band angle-bucket palette. Levels live strictly inside the shader's
 # frame window (FRAME_MIN·255 = 51 .. RAINBOW_MIN·255 ≈ 183.6) so they still classify
@@ -562,10 +559,14 @@ CENTER_SWITCH_AXIS_DEG = 0.0       # vertical stripes -> +X switch axis
 # at the 500 um baseline and 63.5 um on the 1.5 mm stock this box is built from.
 # Pinning delta instead would let the beat follow the carrier up by that same
 # 2.9x and put one and a half bands on the lid.
+#
+# HIDDEN EXEMPLAR (2026-09-16): no production face is two-ply, so this path is
+# only entered by ``monogram-jp`` composed with ``single_ply=False`` — the one
+# shading-moiré exemplar kept so the construction stays exercised. On the
+# production lid the same slug is a ``region_art`` centrepiece and never reads
+# ``fab_center_period_um`` at all.
 CENTERPIECE_BEAT_UM = 1635.0
-SHIMMER_MOIRE_SLUGS = frozenset(
-    {"monogram-jp", "inscription-line", "jamon-tray", "food-pair-chirp"}
-)
+SHIMMER_MOIRE_SLUGS = frozenset({"monogram-jp"})
 # FAB centerpiece stripe period. The A<->B (colibrí<->globe) switch happens
 # after parallax walks HALF a period; at t=500 µm, n=1.46 the parallax is
 # ~5.98 µm/deg, so a 60 µm period switches at ~5° tilt — squarely inside the
@@ -575,31 +576,6 @@ SHIMMER_MOIRE_SLUGS = frozenset(
 # in this separate fab period, exactly like the frame preview/fab period split.
 FAB_CENTER_PERIOD_UM = 60.0
 
-# Water SCANIMATION (capybara back face). The centerpiece back-art region (the
-# water band) is animated by the shader's N-phase water-scan path instead of the
-# 2-phase colibrí/globe switch: travelling wavelets whose phase advances with
-# the substrate parallax so the crests flow sideways as the box rocks. N phases
-# and the ripple wavelength are surfaced to the shader; a full N-phase cycle
-# maps to the same comfortable hand-tilt sweep the standalone pattern targets.
-WATER_SCAN_N_PHASES = 4
-# Crest spacing as a FRACTION of the ART-BOX width (the 0.86·aperture square the
-# capybara/water live in), NOT the whole plate. The shader normalizes the μm
-# wavelength against the art-box width so preview spacing matches the baked fab.
-# 0.14 → ~7 legible streamlines across the band (the r3 vision default; keep in
-# lock-step with capybara_scanimation.RIPPLE_WAVELENGTH_NORM).
-WATER_RIPPLE_WAVELENGTH_FRAC = 0.14
-# There is deliberately NO preview-only phase-advance pitch here. A
-# WATER_PHASE_PITCH_PREVIEW_UM = 97 µm constant used to be published as
-# ``water_phase_pitch_preview_um`` and documented (with a "Verified:" claim) as
-# the divisor that walks the ripple phase in the shader — but the two-plane
-# rewrite had already made the phase emerge GEOMETRICALLY, no line of GLSL ever
-# read the uniform, and the shader has since dropped it (see plate.frag's
-# water-scanimation FLOW RATE note). The flow rate is set by geometry: the outer
-# comb reveals the next 1/N lane after center_period/N µm of substrate parallax
-# (15 µm at the fab 60 µm pitch, N=4 → ~2.5°/phase through the T/n gap), which is
-# also the fab timing. Retune it via the barrier pitch or N — a preview-only
-# timing constant is exactly the procedural fake the renderer-honesty rule bans.
-WATER_SCAN_SLUG = "capybara-scanimation"
 # Barrier-interlace tilt-switch slugs (Task 3). These faces abandon the
 # phase-offset construction (A on front, B on back, half-period shift) for a TRUE
 # lenticular/Poemotion BARRIER INTERLACE: both silhouettes live on the BACK layer
@@ -614,9 +590,11 @@ WATER_SCAN_SLUG = "capybara-scanimation"
 # shader draws the lanes/barrier procedurally (uSwitchInterlace); the fab SVG +
 # fine GDS bake the same architecture at fab pitches (see ensure_plate_svg /
 # export_fine), and the standalone generators mirror it (full-field comb there).
-SWITCH_INTERLACE_SLUGS = frozenset(
-    {"globe-duo-phase", "gear-quill-switch", "colibri-flap-phase"}
-)
+#
+# HIDDEN EXEMPLAR (2026-09-16): no production face is a barrier switch either.
+# ``globe-duo-phase`` is the one kept so the construction — and the registration
+# solved in ``_barrier_plate_lattice`` / ``_barrier_masks`` — stays exercised.
+SWITCH_INTERLACE_SLUGS = frozenset({"globe-duo-phase"})
 # BARE GLASS. A face whose slug is this gets NO frame, NO carrier and NO
 # centerpiece on either layer — the production box's back and bottom are plain
 # quartz on purpose (see patterns/blank.py). Every writer tests the slug once:
@@ -635,25 +613,6 @@ SOLID_SLUG = "solid-gold"
 # stamps the bands, and ``photo_band_rects`` is the exact vector form both fab
 # writers bake. See patterns/bitmap/photo.py for the tone model.
 PHOTO_SLUG = "photo-halftone"
-# Fab (SVG/GDS) barrier-grid parameters — the standalone builder's defaults
-# (60 µm slit pitch, N=4 → 15 µm slot, 24 µm body-shimmer carrier). These bake
-# the REAL slit barrier + interleaved ripple frames into the box back plate.
-WATER_SCAN_FAB_PITCH_UM = 60.0
-WATER_SCAN_FAB_CARRIER_UM = 24.0
-
-# --- diffraction / moiré interleave in the accent zone ------------------------
-# The accent used to be PURE 4.4 µm diffraction, so it could flash a rainbow but
-# never shimmer, while the moiré louvre lived only in the frame band — two
-# effects at two scales in two places that never met. The accent zone now
-# carries BOTH, spatially interleaved in sub-acuity bands (see
-# effects.gratings.INTERLEAVE_BAND_PITCH_UM for why interleaving beats nesting).
-#
-# Both front gratings are written at the SAME 45° accent axis so they share one
-# grating-local frame and the band lattice is a scalar test in it; the moiré
-# then comes from the PITCH difference against a dedicated back patch laid under
-# the accent at a small crossing, rather than from the frame's per-species fan.
-ACCENT_MOIRE_OFFSET_DEG = 2.5   # accent back patch vs its 45° front bands
-# ---------------------------------------------------------------------------
 
 # --- glass-derived fab periods ------------------------------------------------
 # The 60 µm barrier periods above are TILT targets, not absolute pitches: the
@@ -665,10 +624,10 @@ ACCENT_MOIRE_OFFSET_DEG = 2.5   # accent back patch vs its 45° front bands
 # bake scales the barrier/scanimation periods with the spec's real gap and the
 # ~5° crossing is preserved for ANY glass. Snapped to 0.5 µm; exactly the
 # legacy constants at the baseline, so every existing 500 µm plate hash keeps
-# byte-identical geometry. The FINE-pitch families (22 µm louvre carrier, 24 µm
-# body shimmer, 4.4 µm rainbow) deliberately do NOT scale: on thick stock their
-# reveals tighten into sub-degree refraction shimmer — a chosen look, and the
-# 2 µm litho floor is the binding constraint in the other direction.
+# byte-identical geometry. The FINE-pitch families (the 22 µm louvre carrier,
+# the 4-6 µm diffractive ladders) deliberately do NOT scale: on thick stock
+# their reveals tighten into sub-degree refraction shimmer — a chosen look, and
+# the 2 µm litho floor is the binding constraint in the other direction.
 BASE_PARALLAX_GAP_UM = 500.0 / 1.46
 
 
@@ -692,38 +651,6 @@ def fab_center_period_um(spec: "PlateSpec") -> float:
     return _snap_half_um(FAB_CENTER_PERIOD_UM * parallax_period_scale(spec))
 
 
-def water_scan_fab_pitch_um(spec: "PlateSpec") -> float:
-    """The scanimation frame pitch for THIS spec's glass (~2.5°/phase)."""
-    return _snap_half_um(WATER_SCAN_FAB_PITCH_UM * parallax_period_scale(spec))
-
-
-def _water_waterline_y(params: dict[str, Any] | None) -> float:
-    """Effective capybara waterline for a face — art-box normalized y, 0 = top.
-
-    The generator exposes it as the tunable ``waterline`` ParamSpec (0.4–0.85,
-    default ``WATERLINE_Y``); every plate-side consumer used to hardwire the
-    constant instead, so a face that set the param got its water band, calm patch
-    and depth shear baked at 0.66 anyway — and the preview shader, freezing the
-    same constant, had nothing to read. ONE resolver now feeds all three (the
-    centerpiece mask, the fab SVG bake, and the ``water_waterline_y`` the shader
-    binds), so mask and preview cannot drift.
-
-    Out-of-range/non-numeric values fall back to the default rather than raising:
-    the API validates against the ParamSpec (``service.validate_params``) but
-    direct callers do not, and the flow field divides by ``1 - waterline_y``.
-    """
-    from .patterns.artistic.capybara_scanimation import WATERLINE_Y
-
-    try:
-        value = float((params or {}).get("waterline", WATERLINE_Y))
-    except (TypeError, ValueError):
-        return WATERLINE_Y
-    # NaN-safe by construction (every comparison against NaN is False).
-    if not 0.0 < value < 1.0:
-        return WATERLINE_Y
-    return value
-
-
 def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     """Per-plate moiré-carrier knobs the shader + fab path both read.
 
@@ -733,10 +660,10 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     keeps each face's carrier visually distinct without changing the physics.
 
     The CENTERPIECE carrier: a finer vertical stripe carrier with a ±X switch
-    axis. On the barrier-interlace faces (SWITCH_INTERLACE_SLUGS) the shader
+    axis. On the barrier-interlace face (SWITCH_INTERLACE_SLUGS) the shader
     draws the neutral comb + interleaved lanes at this pitch instead; on the
-    front-only shimmer faces (monogram/inscription/food/jamón) it is the
-    procedural glimmer carrier.
+    shading-moiré face (SHIMMER_MOIRE_SLUGS) it is the glimmer carrier. Both
+    are two-ply exemplars — no production face reads either.
     """
     base_angle = (spec.frame.seed * 17.0) % 180.0
     # User-tunable grating pitch drives the REAL back carrier + leaf louvre
@@ -756,9 +683,7 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     # stock (a no-op at the baseline itself, scale = 1). "fixed" keeps the
     # literal pitch — on thick stock the reveals compress into sub-degree
     # refraction shimmer (a per-face aesthetic choice). Floored at the 4 µm
-    # carrier litho limit for very thin stock. The capybara BODY shimmer
-    # (WATER_SCAN_FAB_CARRIER_UM below) deliberately stays FIXED in both modes:
-    # it is a sparkle accent, not a phase-coded reveal.
+    # carrier litho limit for very thin stock.
     if getattr(spec, "carrier_scale_mode", "gap") != "fixed":
         carrier_pitch = max(4.0, _snap_half_um(carrier_pitch * parallax_period_scale(spec)))
     front_pitch = carrier_pitch * FRONT_GRATING_RATIO
@@ -768,22 +693,17 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     # as finer fringes.
     preview_carrier = carrier_pitch * PREVIEW_PITCH_MAGNIFY
     preview_front = preview_carrier * FRONT_GRATING_RATIO
-    # Water scanimation: only the capybara back face turns it on (N>0). Every
-    # other face emits N=0, so the shader's water-scan branch is a no-op and the
-    # centerpiece keeps its own path (barrier interlace or legacy 2-phase
-    # shimmer) — pixel-identical.
-    is_water = spec.pattern_slug == WATER_SCAN_SLUG
-    water_n = WATER_SCAN_N_PHASES if is_water else 0
-    # Art-box registration for the flow wake. The centerpiece is a SQUARE of side
+    # ART-BOX registration. The centerpiece is a SQUARE of side
     # (CENTERPIECE_FILL·aperture) centered on the plate; on a non-square plate it
     # maps to different uv half-extents per axis. The shader transforms face-uv →
-    # art-box uv with these so the wake (body center, calm patch) lands on the
-    # capybara, and normalizes the μm crest wavelength against the art-box width.
+    # art-box uv with these so the centerpiece constructions (today: the barrier
+    # comb of the switch exemplar) are gated to the art box rather than stretched
+    # across the whole face. The recipe KEY NAMES are ``water_art_*``, which is
+    # where they come from — they were introduced for the capybara scanimation's
+    # flow wake and outlived it; the renderer binds them by those names.
     art_side_um = CENTERPIECE_FILL * _aperture(spec)
     art_half_w_uv = (0.5 * art_side_um / spec.width_um) if spec.width_um > 0 else 0.0
     art_half_h_uv = (0.5 * art_side_um / spec.height_um) if spec.height_um > 0 else 0.0
-    water_ripple_um = WATER_RIPPLE_WAVELENGTH_FRAC * art_side_um if is_water else 0.0
-    waterline_y = _water_waterline_y(spec.pattern_params)
 
     # Centerpiece fill. All three consumers -- the preview shader, the SVG bake
     # (ensure_plate_svg) and the fine export -- read exactly these two fields,
@@ -900,72 +820,20 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
         # lattice when the budget raster forces a coarser one.
         "switch_interlace_period_um": fab_center_period_um(spec),
         "switch_barrier_phase_um": 0.0,
-        # Water scanimation (capybara back face). N>0 makes the shader render an
-        # N-phase travelling-ripple flow over the back-art (water) region of the
-        # centerpiece; N=0 leaves the 2-phase colibrí/globe switch untouched.
-        "water_scan_n": water_n,
-        "water_ripple_wavelength_um": water_ripple_um,
-        # (No ``water_phase_pitch_preview_um``: the preview-only phase-advance
-        # pitch it carried was never read by any shader line and the uniform is
-        # gone — the ripple phase advances geometrically off center_period/N. See
-        # the note where WATER_PHASE_PITCH_PREVIEW_UM used to be defined.)
-        #
-        # Capybara BODY shimmer carrier: the period the fab path actually bakes
-        # over the dry animal (WATER_SCAN_FAB_CARRIER_UM, 24 µm) — its own field
-        # because it is NOT the frame carrier the preview had been reusing
-        # (carrier_period_um / its magnified twin), so the two disagreed by the
-        # 22-vs-24 µm gap on the one region the user looks at. True period plus a
-        # magnified preview twin, same split as the frame pair. 0 elsewhere.
-        "water_body_carrier_period_um": WATER_SCAN_FAB_CARRIER_UM if is_water else 0.0,
-        "water_body_carrier_preview_um": (
-            WATER_SCAN_FAB_CARRIER_UM * PREVIEW_PITCH_MAGNIFY if is_water else 0.0
-        ),
-        # EFFECTIVE waterline (art-box normalized y, 0 = top) — the split the
-        # composed mask and the fab bake actually use, resolved from the face's
-        # ``waterline`` pattern param (see _water_waterline_y). The shader had
-        # frozen it as a const (FLOW_WATERLINE 0.66) while the param moved the
-        # baked band, calm patch and depth shear, so the preview stopped
-        # depicting its own litho mask at the range ends. Emitted
-        # UNCONDITIONALLY, like switch_barrier_phase_um: it is a pure number, a
-        # consumer that reads it cannot drift from it, and 0.0 on a non-water
-        # face would be a division trap for anything reading it before the
-        # uWaterScanN>0 gate.
-        "water_waterline_y": waterline_y,
-        # Art-box uv rect (see above): the shader maps face-uv → art-box uv so the
-        # flow wake registers to the capybara, and sizes the crest wavelength off
-        # the art-box width. (halfW, halfH, centerX, centerY); center is the plate
-        # center because the centerpiece paste is plate_w//2 / plate_h//2.
+        # ART-BOX uv rect (see above). The key names are historical — they were
+        # introduced for the capybara scanimation's flow wake, which is gone —
+        # but the RECT is not: it is how the renderer gates a centerpiece
+        # construction to the art box. (halfW, halfH), then (centerX, centerY);
+        # the centre is the plate centre because the centerpiece paste is
+        # plate_w//2 / plate_h//2.
         "water_art_half_uv": [float(art_half_w_uv), float(art_half_h_uv)],
         "water_art_center_uv": [0.5, 0.5],
-        # Diffraction rainbow accent level. The shader lights ONLY pixels at
-        # exactly this graylevel, so faces whose centerpiece has no accent zone
-        # render identically — safe to emit unconditionally. Drives the spectral
-        # sheen in preview + the 4.4 µm 45° grating OR-in during fab bake.
+        # DIFFRACTIVE graylevel. The shader lights ONLY pixels at exactly this
+        # level, so a face whose centerpiece writes none renders identically —
+        # safe to emit unconditionally. The PERIOD behind each such pixel rides
+        # ``period_front.png`` (see RAINBOW_LEVEL and _literal_period_raster),
+        # not this manifest: one level, a whole ladder of periods.
         "rainbow_level": float(RAINBOW_LEVEL),
-        # The FABRICATED accent grating, published so the preview's spectral
-        # sheen is computed from the same numbers the mask is written with.
-        # Until this existed the shader was given only `rainbow_level` and
-        # hardcoded its own 45 deg + a tuned hue ramp, so changing the fab
-        # period produced a BIT-IDENTICAL preview — the on-screen rainbow could
-        # not report anything true about the plate. Sourced from
-        # effects.gratings (the same constants diffraction_accent_grating bakes
-        # with), never re-declared here, so the two cannot drift.
-        "rainbow_period_um": float(_DIFFRACTION_ACCENT_PERIOD_UM),
-        "rainbow_angle_deg": float(_DIFFRACTION_ACCENT_ANGLE_DEG),
-        "rainbow_duty": float(_DIFFRACTION_ACCENT_DUTY),
-        # Zeroth-order share of the accent grating's return, eta_0 = duty^2 for
-        # a lamellar amplitude grating. Inside the accent zone the metal does
-        # NOT behave like plain gold: only this fraction stays in the specular
-        # (zeroth) order, and the remainder is what becomes the diffracted
-        # rainbow. The renderer scales its ordinary body/specular/env terms by
-        # this in the accent zone so the spectrum REPLACES that energy instead
-        # of being painted on top of a full-strength metal.
-        "rainbow_zero_order": float(_DIFFRACTION_ACCENT_DUTY ** 2),
-        # Interleave parameters — the SAME numbers the fab bake uses, so the
-        # preview draws the construction that is actually written.
-        "accent_interleave_pitch_um": float(_INTERLEAVE_BAND_PITCH_UM),
-        "accent_moire_period_um": float(front_pitch),
-        "accent_moire_offset_deg": float(ACCENT_MOIRE_OFFSET_DEG),
         # Fab (SVG/GDS) — true fine gratings baked as clipped rect arrays. These
         # are the user-tunable pitch (== carrier_period_um / slit_period_um): the
         # fab path (ensure_plate_svg, export_fine.build_plate_fine) reads these,
@@ -981,31 +849,6 @@ def _carrier_recipe_data(spec: PlateSpec) -> dict[str, Any]:
     }
 
 
-# In-process cache of (slug, params-hash) -> GeneratedPattern. The full
-# materialize() path persists PNG/SVG/JSON to disk for the standalone
-# /patterns endpoints; here we just need the shapely polygons quickly. A
-# composed plate that re-uses the same central pattern across frame edits
-# is the common case, so even a tiny LRU keeps the dev loop responsive.
-_central_cache: dict[str, GeneratedPattern] = {}
-_CENTRAL_CACHE_MAX = 24
-
-
-def _generate_central_cached(cls: type, params: dict[str, Any]) -> GeneratedPattern:
-    key = cls.slug + ":" + hashlib.sha1(
-        json.dumps(params, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()[:10]
-    hit = _central_cache.get(key)
-    if hit is not None:
-        return hit
-    if len(_central_cache) >= _CENTRAL_CACHE_MAX:
-        # Drop one arbitrary entry — exact LRU isn't worth the bookkeeping
-        # at this cache size.
-        _central_cache.pop(next(iter(_central_cache)))
-    result = cls.generate(**params)
-    _central_cache[key] = result
-    return result
-
-
 def _aperture(spec: PlateSpec) -> float:
     """Side length (μm) of the square central aperture inside the frame band.
 
@@ -1015,23 +858,6 @@ def _aperture(spec: PlateSpec) -> float:
     band = _band_um(spec)
     aw, ah = spec.active_dims()
     return max(0.0, min(aw, ah) - 2.0 * band)
-
-
-def _aperture_width_um(spec: PlateSpec) -> float:
-    """Horizontal width (μm) of the clean window inside the frame band.
-
-    ``_aperture`` is the SQUARE side (``min(W, H) − band``) that sizes the
-    centerpiece motif; on a non-square face its width is height-limited. The
-    WATER FULL WIDTH band must instead span the whole window edge-to-edge
-    horizontally, so it uses this WIDTH-axis aperture (``active_w − 2·band``)
-    — wider than ``_aperture`` on a wide face, equal on a square one. Preview
-    (`_paste_centerpiece`), the fab bake (`ensure_plate_svg`), and the fine
-    export (`export_fine._water_box_um`) all size the water band off this so
-    the three stay in lock-step.
-    """
-    band = _band_um(spec)
-    aw, _ah = spec.active_dims()
-    return max(0.0, aw - 2.0 * band)
 
 
 def _centerpiece_masks(
@@ -1046,8 +872,13 @@ def _centerpiece_masks(
     data-directed rather than hard-wiring one pattern into the plate compositor.
 
     ``params`` carries the face's ``pattern_params`` for slugs whose silhouette
-    depends on them (the inscription's editable date/text); slugs with a fixed
-    silhouette ignore it.
+    depends on them; slugs with a fixed silhouette ignore it.
+
+    TWO SLUGS REACH THIS (2026-09-16), and both are hidden two-ply exemplars:
+    ``globe-duo-phase`` (the barrier switch) and ``monogram-jp`` composed with
+    ``single_ply=False`` (the shading moiré). Every PRODUCTION face answers
+    earlier — blank/photo/solid below, or a ``region_art`` centrepiece, which
+    ``_paste_centerpiece`` handles before it ever calls this.
     """
     params = params or {}
     if slug in (BLANK_SLUG, PHOTO_SLUG, SOLID_SLUG):
@@ -1059,22 +890,6 @@ def _centerpiece_masks(
         # The photo's own geometry is a LINE SCREEN, not a silhouette — it comes
         # from ``_photo_band_stamp`` (preview) / ``photo_band_rects`` (fab).
         return None
-    if slug == "colibri-flap-phase":
-        # Wing-flap A/B tilt switch: the SAME hummingbird in two wing poses —
-        # A = pose "up" (hover V), B = pose "down" (mid-downstroke + trailing
-        # speed slivers). Body, head, beak, neck, tail and feet are
-        # pixel-registered between poses (colibri._draw_colibri only swaps the
-        # wing set). The slug is in SWITCH_INTERLACE_SLUGS, so this (A, B)
-        # pair feeds the BARRIER INTERLACE: both poses interleaved in
-        # alternating back lanes under the neutral front comb, reading as ONE
-        # bird beating its wings — not two birds.
-        from .patterns.motifs import colibri
-
-        n = max(64, int(n_px))
-        return (
-            colibri.colibri_silhouette((1.0, 1.0), n_grid=n, pose="up"),
-            colibri.colibri_silhouette((1.0, 1.0), n_grid=n, pose="down"),
-        )
     if slug == "globe-duo-phase":
         # Duo-globe A/B tilt switch: front = orthographic globe centered on
         # CALIFORNIA (phase 0), back = orthographic globe centered on COLOMBIA
@@ -1111,92 +926,13 @@ def _centerpiece_masks(
             star_lonlat=COL_STAR_LONLAT,
         )
         return (front, back)
-    if slug == "gear-quill-switch":
-        # Engineer↔historian A/B tilt switch: front = gear (phase 0), back =
-        # open book + quill (phase π). Mirrors the colibrí/globe branch exactly
-        # — the shader's centerpiece phase-switch reveals one motif per tilt.
-        from .patterns.motifs.lab.gear_quill import (
-            gear_silhouette,
-            quill_book_silhouette,
-        )
-
-        n = max(64, int(n_px))
-        return (
-            gear_silhouette((1.0, 1.0), n_grid=n),
-            quill_book_silhouette((1.0, 1.0), n_grid=n),
-        )
-    if slug == "food-pair-chirp":
-        # Coffee cup + arepa, front-only glimmer (back empty, like monogram-jp).
-        # The plate compositor fills the whole silhouette with the shared shader
-        # carrier; the chirped-steam wave lives in the standalone pattern's
-        # baked front polygons (fab path) — the shared preview shader renders a
-        # uniform shimmer over the scene, which reads as gently steaming metal.
-        import numpy as np
-
-        from .patterns.motifs.lab.food_pair import (
-            food_bodies_silhouette,
-            food_steam_silhouette,
-        )
-
-        n = max(64, int(n_px))
-        front = food_bodies_silhouette((1.0, 1.0), n_grid=n) | food_steam_silhouette(
-            (1.0, 1.0), n_grid=n
-        )
-        back = np.zeros_like(front)
-        return (front, back)
-    if slug == "capybara-scanimation":
-        # Serene capybara half-submerged on a waterline + a water SCANIMATION
-        # that FLOWS on tilt, delivered right on the box plate:
-        #   FRONT centerpiece art = the capybara ABOVE the waterline (the dry,
-        #     still animal) — reads as a solid gold silhouette that shimmers.
-        #   BACK  centerpiece art = the WATER BAND (below the waterline, spanning
-        #     the aperture width) MINUS the submerged body — this marks the
-        #     region where the shader's N-phase water scanimation draws
-        #     travelling ripples. The foliage_moire shader runs the water-scan
-        #     path (uWaterScanN>0) over the back-art region, advancing the ripple
-        #     phase by the substrate parallax so the crests visibly travel as the
-        #     box rocks. The fab SVG path (ensure_plate_svg) bakes the true slit
-        #     barrier + interleaved ripple frames from the standalone builder.
-        import numpy as np
-
-        from .patterns.motifs.lab import capybara
-
-        n = max(64, int(n_px))
-        capy = capybara.capybara_silhouette((1.0, 1.0), n_grid=n)
-        rows = (np.arange(n)[:, None] / n)  # y in 0..1, y-down (Pillow order)
-        # Honour the face's tunable waterline — the mask, the fab bake and the
-        # recipe_data the shader reads all resolve it here (_water_waterline_y).
-        below = np.broadcast_to(rows >= _water_waterline_y(params), capy.shape)
-        # Dry capybara (above waterline) on the FRONT; water band (below the
-        # line, not covered by the submerged body) on the BACK. This carve is the
-        # convention: the ripple band is the water AROUND the animal, and the
-        # submerged body keeps the plain carrier. Both fab writers now build their
-        # band with the same algebra at the same waterline —
-        # ``capybara_scanimation._capybara_and_water`` returns ``below & ~capy``,
-        # which is what ``ensure_plate_svg`` and ``export_fine`` consume.
-        front = capy & ~below
-        water_band = below & ~capy
-        return (front, water_band)
-    if slug == "jamon-tray":
-        # Jamón ibérico on its jamonero, FRONT-only glimmer (back empty, exactly
-        # like monogram-jp / food-pair-chirp). The whole silhouette carries the
-        # shared shader carrier and shimmers on tilt; there is no second image to
-        # switch to, so the back art is all-False. (The standalone pattern bakes
-        # the real uniform front carrier for the fab path.)
-        import numpy as np
-
-        from .patterns.motifs.lab.jamon import jamon_silhouette
-
-        n = max(64, int(n_px))
-        front = jamon_silhouette((1.0, 1.0), n_grid=n)
-        back = np.zeros_like(front)
-        return (front, back)
     if slug == "monogram-jp":
         # Interlocked cursive J+P monogram on the FRONT face; the BACK face gets
         # no centerpiece art (all-False), so the back reads as plain carrier and
-        # the monogram *shimmers* on tilt (front-only glimmer). A tilt-SWITCH
-        # J<->P variant is feasible: render the two glyphs into separate masks
-        # (front=J, back=P) instead of unioning — see monogram.py for the split.
+        # the monogram *shimmers* on tilt — the shading-moiré exemplar
+        # (SHIMMER_MOIRE_SLUGS). The PRODUCTION lid is the same slug on ONE ply,
+        # where the monogram is a region_art colour mapping instead and never
+        # reaches here.
         import numpy as np
 
         from .patterns.motifs import monogram
@@ -1205,93 +941,7 @@ def _centerpiece_masks(
         front = monogram.monogram_silhouette((1.0, 1.0), n_grid=n)
         back = np.zeros_like(front)
         return (front, back)
-    if slug == "inscription-line":
-        # Hidden bottom inscription: cursive line on the FRONT face, empty BACK
-        # (front-only shimmer, like the monogram). The line's text is composed
-        # from the face's editable params (initials/separator/year); the drawn
-        # heart flourish lands in the ♥-separator gap. Falls back to the class
-        # defaults for any param the face didn't override.
-        import numpy as np
-
-        from .patterns.artistic.inscription_line import InscriptionLine
-        from .patterns.motifs import inscription
-
-        d = {**InscriptionLine.defaults(), **params}
-        text = InscriptionLine.compose_text(
-            d.get("initials", "J & P"),
-            d.get("separator", "·"),
-            int(d.get("year", 2026)),
-        )
-        want_heart = bool(d.get("heart", True)) or str(
-            d.get("separator", "")
-        ).strip() == InscriptionLine.HEART_SEP
-
-        n = max(64, int(n_px))
-        front = inscription.inscription_silhouette(
-            (1.0, 1.0), n_grid=n, text=text, heart=want_heart
-        )
-        back = np.zeros_like(front)
-        return (front, back)
     return None
-
-
-# --- diffraction rainbow accent zones ---------------------------------------
-# Each accent zone is a SMALL patch of the centerpiece the confirmed plan calls
-# out (steam-curl tips, gear hub, monogram flourish tips). The
-# zone is defined in the same normalized 0..1 art box the motif silhouette uses
-# (y-DOWN, matching the Pillow motifs), as a centered ellipse / rect, then AND-ed
-# with the art silhouette so only gold pixels inside the shape become accent.
-# Painting these at RAINBOW_LEVEL (instead of ART_LEVEL) makes the shader add a
-# spectral sheen there and the fab bake OR-in a real 4.4 µm 45° grating.
-#
-# Returns (side, side) bool for the FRONT centerpiece art or None if the slug
-# has no designed accent (so pre-accent behaviour is byte-identical). Kept
-# front-only: every plan accent lives on the front silhouette — which is exactly
-# why the barrier-interlace faces get NO accent at all (see the guard below).
-def _front_accent_zone(slug: str, art: "np.ndarray") -> "np.ndarray | None":
-    import numpy as np
-
-    if slug in SWITCH_INTERLACE_SLUGS:
-        # Diffraction accents are incompatible with a barrier-interlace face by
-        # construction. The accent is cut from the FRONT art, and on these faces
-        # the front art is switch channel A (gear-quill-switch's hub ellipse is
-        # a piece of the gear); the front mask does NOT move with tilt, so any
-        # feature shaped from A is a static residual of image A visible at every
-        # angle — so A could never fully vanish when B is gated in. That is the
-        # precise residual SWITCH_INTERLACE_SLUGS and CLAUDE.md's image-switch
-        # rule exist to eliminate. One guard for every consumer: the preview
-        # stamp, ensure_plate_svg, and export_fine all read this helper.
-        return None
-    h, w = art.shape
-    ys = (np.arange(h)[:, None] + 0.5) / h  # 0..1, y-down
-    xs = (np.arange(w)[None, :] + 0.5) / w
-
-    def _ellipse(cx: float, cy: float, rx: float, ry: float) -> "np.ndarray":
-        return ((xs - cx) / rx) ** 2 + ((ys - cy) / ry) ** 2 <= 1.0
-
-    if slug == "food-pair-chirp":
-        # Steam-curl TIPS: a thin band across the top of the steam column above
-        # the cup (the cup sits left; steam rises to ~y<0.30).
-        zone = (xs > 0.18) & (xs < 0.42) & (ys < 0.30)
-    elif slug == "gear-quill-switch":
-        # Gear HUB: the central boss/bore of the centered gear.
-        zone = _ellipse(0.5, 0.5, 0.11, 0.11)
-    elif slug == "monogram-jp":
-        # No accent. The monogram is ONE shading moiré: its front carrier
-        # (witness_geom.BOX_MONO_UM, 68.23 um) beats against the back carrier
-        # (BOX_CARRIER_UM, 65.5 um) at BOX_BEAT_UM over the whole silhouette.
-        # (The 105.38/99 um pair this note used to quote was the gap-SCALED
-        # carrier; the faces run carrier_scale_mode "fixed" since 2026-09-10.) The
-        # old "flourish tips" patches (two ellipses at the swash ends) cut a
-        # 4.4 um rainbow grating into the letters with their own back patch,
-        # and read as two arbitrary grey strips on the lid rather than as part
-        # of the letters — and the back patch eroded away under the thin
-        # swashes, leaving holes in the back carrier. One effect, uniformly.
-        return None
-    else:
-        return None
-    z = zone & art
-    return z if z.any() else None
 
 
 # --- photo-halftone centerpiece ---------------------------------------------
@@ -1508,11 +1158,14 @@ def _paste_centerpiece(
     plate_w: int,
     plate_h: int,
 ) -> None:
-    """Paint the colibrí (front) + globe (back) centerpiece into the aperture.
+    """Paint the centerpiece into the aperture.
 
     The centerpiece is a square of side ``CENTERPIECE_FILL × aperture`` centered
-    on the plate. Front gets the colibrí at ART_LEVEL; back gets the globe at
-    ART_LEVEL. Both are clamped to their layer's keep-out later by the rim zero.
+    on the plate. Three constructions, in the order every writer tests them:
+    a ``region_art`` colour map (the production lid and front), a photo LINE
+    SCREEN (the three photo sides), or — on the two hidden two-ply exemplars —
+    a pair of silhouettes from ``_centerpiece_masks`` at ART_LEVEL, front and
+    back. All are clamped to their layer's keep-out later by the rim zero.
     """
     import numpy as np
 
@@ -1580,134 +1233,22 @@ def _paste_centerpiece(
             return np.asarray(m) > 127
         return art
 
-    def _paste(
-        dst: Image.Image,
-        art: "np.ndarray",
-        with_accent: bool,
-        box: tuple[int, int] | None = None,
-    ) -> None:
-        # Resize the motif to exactly side_px if the motif grid differs (unless a
-        # pre-sized mask + explicit box is supplied, e.g. the full-width water).
-        a = art if box is not None else _resize_to_side(art)
-        # Paint ART_LEVEL where the silhouette covers, RAINBOW_LEVEL in any
-        # designed accent zone (a subset of the art, computed at THIS grid so it
-        # aligns with `a`). A per-pixel graylevel stamp (not a flat paste) so the
-        # two levels survive; where the stamp is 0 the frame/window underneath
-        # stays intact (paste mask = the stamp).
+    def _paste(dst: Image.Image, art: "np.ndarray") -> None:
+        # Resize the motif to exactly side_px if the motif grid differs.
+        a = _resize_to_side(art)
+        # Paint ART_LEVEL where the silhouette covers. A per-pixel graylevel
+        # stamp (not a flat paste) so the level survives; where the stamp is 0
+        # the frame/window underneath stays intact (paste mask = the stamp).
         lvl = np.where(a, ART_LEVEL, 0).astype(np.uint8)
-        if with_accent:
-            accent = _front_accent_zone(spec.pattern_slug, a)
-            if accent is not None:
-                lvl[accent] = RAINBOW_LEVEL
         stamp = Image.fromarray(lvl, "L")
         # Binary paste mask (NOT the graylevel itself — an "L" mask alpha-blends,
         # which would drag RAINBOW_LEVEL 200 down to ~157). We want a hard stamp
         # of the graylevel wherever the art covers, frame/window intact elsewhere.
         pmask = Image.fromarray((a.astype(np.uint8) * 255), "L")
-        dst.paste(stamp, box=(box if box is not None else (x0, y0)), mask=pmask)
+        dst.paste(stamp, box=(x0, y0), mask=pmask)
 
-    # Accent stamp only on the non-interlace faces: on a barrier-switch face the
-    # FRONT plane must carry no image-shaped feature at all, so the preview must
-    # not paint RAINBOW_LEVEL over channel-A geometry either (the shader reads
-    # that level as gold + spectral sheen on the front plane). _front_accent_zone
-    # refuses these slugs too — this makes the intent visible at the paste.
-    _paste(
-        front,
-        front_art,
-        with_accent=spec.pattern_slug not in SWITCH_INTERLACE_SLUGS,
-    )
-
-    if spec.pattern_slug == WATER_SCAN_SLUG:
-        # WATER FULL WIDTH: the capybara body stays in the centered art square,
-        # but the water band must span the whole window edge-to-edge (the full
-        # WIDTH-axis aperture, `_aperture_width_um`, NOT the square `_aperture`
-        # that sizes the body) — open current flanking the animal on both sides.
-        # Build a full-width water band at the square's y-registration (so the
-        # waterline lines up with the body) and paste it as the BACK art. The
-        # shader's flow-field art box stays keyed to the square (see
-        # _carrier_recipe_data art_half_*_uv), so the body wake stays registered
-        # and the widened wings just continue the periodic streamline current.
-        back_sq = _resize_to_side(back_art)  # square water = (below & ~capy)
-        aperture_px = max(side_px, int(round(_aperture_width_um(spec) / pitch_um)))
-        col_off = (aperture_px - side_px) // 2
-        rows = np.arange(side_px)[:, None] / side_px  # 0..1 y-down over the square
-        _wl = _water_waterline_y(spec.pattern_params)
-        below = np.broadcast_to(rows >= _wl, (side_px, aperture_px))
-        water_full = np.array(below, dtype=bool)  # open water everywhere below line
-        # Carve the submerged body out of the central square columns (reuse the
-        # square back-art, which is already `below & ~capy`).
-        water_full[:, col_off : col_off + side_px] = back_sq
-        wx0 = cx - aperture_px // 2
-        _paste(back, water_full, with_accent=False, box=(wx0, y0))
-        # TASK 1a: also mark the water band on the FRONT mask at ART_LEVEL. The
-        # front (outer) plane physically carries the SLIT BARRIER comb over the
-        # water; the preview shader draws that comb procedurally at exact fab size
-        # but needs the water-band ZONE from its own mask level. The dry capybara
-        # (above the waterline) and the water band (below) are disjoint, so the
-        # shader tells them apart by the art-box waterline: body → shimmer carrier,
-        # water → the 60/15/45 slit comb. Same square y-registration as the body.
-        _paste(front, water_full, with_accent=False, box=(wx0, y0))
-    else:
-        _paste(back, back_art, with_accent=False)
-
-
-def compose_plate(spec: PlateSpec) -> GeneratedPattern:
-    """Run the central pattern + frame and return the union as polygons.
-
-    NOTE: kept around for tests and the SVG export path. The runtime
-    materialize_plate uses the raster compositor (`_compose_plate_raster`)
-    which is far faster for the dense-frame common case.
-    """
-    if spec.pattern_slug not in registry:
-        raise KeyError(f"Unknown pattern: {spec.pattern_slug}")
-
-    central_cls = registry[spec.pattern_slug]
-    merged_params = {**central_cls.defaults(), **spec.pattern_params}
-
-    aperture = _aperture(spec)
-    if aperture <= 0:
-        raise ValueError(
-            f"Aperture is non-positive ({aperture}μm) for plate "
-            f"{spec.width_um}×{spec.height_um}μm with band {_band_um(spec)}μm — "
-            "shrink the frame band or grow the plate."
-        )
-
-    central = _generate_central_cached(central_cls, merged_params)
-
-    # Frame is generated on the inset active rect so vines stop at the
-    # weld boundary. The polygons come out in *active-rect coords* (origin
-    # at active-rect center, which happens to be the same as plate center
-    # since the inset is symmetric), so they drop into the plate frame
-    # without any translation.
-    active_w, active_h = spec.active_dims()
-    rect = RectFrame(width_um=active_w, height_um=active_h)
-    frame_params = spec.frame.to_frame_params()
-    scene = generate_frame(rect, frame_params)
-    frame_mask = scene_to_multipolygon(scene, rect, frame_params)
-
-    central_front = ensure_multipolygon(central.front)
-    central_back = ensure_multipolygon(central.back)
-    combined_front = _concat_polygons(central_front, frame_mask)
-
-    return GeneratedPattern(
-        front=combined_front,
-        back=central_back,
-        extent_um=(spec.width_um, spec.height_um),
-        pixel_pitch_um=central.pixel_pitch_um,
-        min_feature_um=central.min_feature_um,
-        substrate=Substrate(
-            thickness_um=spec.glass.thickness_um,
-            material=spec.glass.material,
-            n=spec.glass.n,
-        ),
-        extra={
-            **central.extra,
-            "central_pattern": spec.pattern_slug,
-            "aperture_um": aperture,
-        },
-        recipe_data={**central.recipe_data, "frame_scene": scene.to_dict()},
-        extra_layers=central.extra_layers,
-    )
+    _paste(front, front_art)
+    _paste(back, back_art)
 
 
 def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
@@ -1717,21 +1258,18 @@ def _raster_compose_plate(spec: PlateSpec, out_dir: Path) -> dict[str, Any]:
     intensity so the shader's ``foliage_moire`` recipe can run both effects at
     once (see plate.frag runFoliageMoire):
 
-    FRONT  = a perimeter FOLIAGE FRAME (colonize band, value ``FRAME_LEVEL``)
-             wrapping the four edges, PLUS the COLIBRÍ silhouette centerpiece
-             (value ``ART_LEVEL``) filling the aperture inside the band. Solid
-             silhouettes only — the fine gold grating that glimmers inside them
-             is drawn procedurally in the shader / baked in the SVG, so the PNG
-             carries no grating (no raster aliasing rings).
-    BACK   = a uniform CARRIER window (value ``FRAME_LEVEL``) spanning the whole
-             EXPOSED face (``back_dims`` — foil overlap only), PLUS the GLOBE
-             silhouette centerpiece (value ``ART_LEVEL``) in the same aperture,
-             half-carrier-period phase-shifted from the colibrí by the shader.
-
-    Tilt one way → the colibrí phase emerges in the centerpiece; tilt the other
-    → the globe; head-on they interlace. Everywhere the front grating beats
-    against the back carrier for the moiré shimmer, so the frame foliage
-    glimmers too.
+    FRONT  = a perimeter FOLIAGE FRAME (colonize band, value ``FRAME_LEVEL``,
+             carrying the per-motif angle-bucket palette) wrapping the four
+             edges, PLUS the CENTERPIECE (``ART_LEVEL`` for solid gold,
+             ``RAINBOW_LEVEL`` where it carries a sub-grating) filling the
+             aperture inside the band. Zone codes only — the fine gold grating
+             that flashes inside them is written in the fab bake and sampled by
+             the renderer off the literal rasters, so the PNG carries no
+             grating (no raster aliasing rings).
+    BACK   = empty on a SINGLE-PLY face (the production box is all six). On a
+             two-ply exemplar it is a uniform CARRIER window (``FRAME_LEVEL``)
+             spanning the whole EXPOSED face (``back_dims`` — foil overlap
+             only), plus that construction's back silhouette at ``ART_LEVEL``.
 
     Returns the *partial* manifest dict (files + extras + recipe data); the
     caller stamps the spec/labels and writes manifest.json.
@@ -2171,88 +1709,19 @@ def _write_literal_rasters(spec: PlateSpec, out_dir: Path, pid: str) -> dict[str
 # cached manifest+PNG pair is otherwise served forever after a code or constant
 # change — the same trap PLATE_SVG_VERSION already closes on the fab SVGs. See
 # CLAUDE.md; a mismatch on the hit path is treated as a miss.
-# v2: first versioned compose — wave 1 changed compose geometry and recipe_data
-#     (front water band, barrier registration, litho floor) with no key to
-#     invalidate the caches it had already written.
-# v3: recipe_data publishes the solved barrier registration
-#     (switch_interlace_period_um / switch_barrier_phase_um) for the preview
-#     shader; the mask PNGs are unchanged (the barrier lives in the fab bake, see
-#     PLATE_SVG_VERSION v6).
-# v4: recipe_data publishes the EFFECTIVE capybara waterline
-#     (``water_waterline_y``) and the composed centerpiece mask honours the
-#     ``waterline`` pattern param instead of the module constant, so the shader's
-#     water/body split follows the mask it is drawing. Mask PNGs move only on a
-#     face that actually sets the param (default-param output is unchanged).
-# v5: recipe_data drops the dead ``water_phase_pitch_preview_um`` key (and its
-#     WATER_PHASE_PITCH_PREVIEW_UM constant) — no shader line ever read it and the
-#     uniform is gone. recipe_data is part of the cached manifest, so a warm cache
-#     would otherwise keep serving the key forever; a consumer added later against
-#     a stale manifest would find it on some faces and not others. Mask PNGs are
-#     unchanged by this bump.
-# v6: the capybara water band drops the submerged body in the PATTERN too
-#     (``_capybara_and_water``), so capybara-scanimation's generated masks — and
-#     with them the ``min_feature_um`` / ``central_extra`` (``min_back_gold_um``,
-#     ``min_front_gold_um``, …) this manifest copies out of ``central_cls.metadata``
-#     — move. The composed PNGs do NOT: ``_paste_centerpiece`` /
-#     ``_centerpiece_masks`` already carved the band and the plate pitch is keyed to
-#     the pattern's unchanged ``pixel_pitch_um``. Without the bump a warm plate slot
-#     keeps advertising the pre-carve measured minimums next to a re-baked SVG.
-# v13: FrameSpec grows ``motif_scale`` — a motif-only size dial threaded into
-#     the wreath grower (leaf/bloom/understory/corner-sprig sizes AND their
-#     station spacing along the vine; band width and vine gauge untouched). The
-#     default 1.0 is bit-identical to v12's geometry, but the field is part of
-#     the frame recipe the compose path bakes, so warm slots must re-derive
-#     rather than serve a manifest that predates the knob.
-# v14: the PRODUCTION box lands — three new compose behaviours and three new
-#     recipe_data keys. BLANK faces (``BLANK_SLUG``) emit nothing on either
-#     layer; SINGLE-PLY faces (``PlateSpec.single_ply``) move the uniform
-#     carrier onto the FRONT mask over the back window minus the art box and
-#     leave the back empty; PHOTO faces (``PHOTO_SLUG``) stamp line-screen bands
-#     at ART_LEVEL / RAINBOW_LEVEL instead of a silhouette. ``_carrier_recipe_data``
-#     grows ``blank`` / ``art_solid`` / ``single_ply`` unconditionally, so even a
-#     face whose PNGs are unchanged must re-derive rather than serve a manifest
-#     that predates the keys.
-# v15: RENDER IT LITERALLY. Every composed face publishes coverage rasters of
-#     its actual DRC-healed chrome (``literal_front``/``literal_back``, plus
-#     ``period_front`` where a halftone carries colour sub-gratings) and stamps
-#     ``recipe_data['literal']``. The manifest SHAPE changed — new ``files``
-#     keys and a new recipe_data key — and the payload PNGs do not exist beside
-#     a v14 manifest at all, so a warm slot must re-derive rather than serve a
-#     manifest whose renderer contract it cannot satisfy.
-# v16: the literal rasters become EXACT coverage. v15 filled the rings with a 2×
-#     supersampled PIL polygon draw, whose boundary-inclusive, phase-QUANTISED
-#     fill fattened every line by a whole sample: a 50%-duty carrier rastered at
-#     0.532 and the 5 µm colour bands at 0.71 with 46% of their texels pinned to
-#     255, i.e. the preview showed the colour zones as near-solid gold and the
-#     whole plate too heavy. ``literal_raster.layer_coverage`` now accumulates
-#     the analytic area instead (see that module). ``period_front`` picks each
-#     texel's band by overlap AREA rather than by paint order. Every
-#     ``literal_*``/``period_front`` PNG on disk is therefore wrong under a v15
-#     manifest and must be re-derived.
-# v17-v22: the PLATE FOR WRITING (2026-09-10) — one entry, because the six bumps
-#     were one design landing in stages and no cache survived any of them.
-#     (a) literal rasters exact, continued: the literal bake is the ACTUAL healed
-#     chrome for every face, so a composed face's PNGs and its ``files`` entries
-#     both move. (b) The lid's monogram carries NO diffraction accent — one
-#     shading moiré over the whole silhouette instead of two flourish-tip
-#     patches — so ``monogram-jp`` masks change on both layers. (c) SINGLE-PLY
-#     faces drop the carrier entirely (``photo.CARRIER_COV`` = 0): the front mask
-#     is the picture and the leaf garland on bare glass, the back stays empty,
-#     and the picture's edge fade now dissolves to glass rather than to a 50%
-#     field. (d) The leaf fill knob (``SINGLE_PLY_LEAF_FILL`` = "hue") and the
-#     period ladder arrive with the recipe key ``single_ply_leaf_period_um`` and
-#     a ``period_front`` map over the leaves. (e) The box's own dials move under
-#     every face: the art rim starts at the inner ply's window
-#     (``assembly.bonded_art_keepout_um``), the band is a fixed 2.4 mm, and the
-#     faces run ``carrier_scale_mode`` "fixed" at the eye-sized 65.5 µm carrier —
-#     all of which land in the frame geometry and in ``_carrier_recipe_data``.
-# v23: ``single_ply_leaf_period_um`` (recipe key AND ``period_front``) comes from
-#     ONE helper, ``single_ply_leaf_period_um(spec)``, and under the shipping
-#     "hue" fill that is the LADDER'S MEAN. v17-v22 advertised the 10 µm "lines"
-#     constant in the manifest while writing the 4.15-6.02 µm ladder, so the
-#     renderer drew a sheen at twice the period of the gold in front of it. The
-#     PNG masks are unchanged; recipe_data is not, and it is cached.
-PLATE_COMPOSE_VERSION = 25
+#
+# The per-version history (v2 .. v25) lives in docs/plates-changelog.md.
+# v26: the two-ply optics come off the plate (2026-09-16). ``_carrier_recipe_data``
+#     drops the water-scanimation keys (``water_scan_n``,
+#     ``water_ripple_wavelength_um``, ``water_body_carrier_*``,
+#     ``water_waterline_y``) and the diffraction-accent keys
+#     (``rainbow_period_um``/``_angle_deg``/``_duty``/``_zero_order``,
+#     ``accent_interleave_pitch_um``, ``accent_moire_*``); ``_paste_centerpiece``
+#     no longer stamps RAINBOW_LEVEL accent patches or the full-width water band,
+#     and ``_centerpiece_masks`` keeps only the two hidden exemplars. The mask
+#     PNGs of every PRODUCTION face are unchanged (none of them entered any of
+#     those branches) but recipe_data is, and it is cached.
+PLATE_COMPOSE_VERSION = 26
 
 
 # Plate ids whose ``scene.json`` was written by the compose CURRENTLY running on
@@ -2883,22 +2352,22 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
                 spec.pattern_slug,
             )
 
-    def _center_masks() -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
-        """Full-grid (front_art, back_art, front_accent) bools for the aperture.
+    def _center_masks() -> "tuple[np.ndarray, np.ndarray]":
+        """Full-grid ``(front_art, back_art)`` bools for the aperture.
 
-        Data-directed by the pattern slug (colibrí/globe, gear/quill, capybara,
-        food, monogram, inscription — whatever ``_centerpiece_masks`` returns),
-        so the fab pair matches the preview centerpiece. ``front_accent`` is the
-        subset of the FRONT art that carries the sub-5 µm diffraction grating.
+        Data-directed by the pattern slug (whatever ``_centerpiece_masks``
+        returns), so the fab pair matches the preview centerpiece. Empty for a
+        production face: those are blank, solid, photo or region_art, none of
+        which fills a silhouette with a carrier.
         """
         empty = np.zeros((fh, fw), dtype=bool)
         if side_px <= 0 or is_region:
             # a region centrepiece has no silhouette to fill with a carrier:
             # its exact rects are concatenated below (single_layer_region_rects)
-            return empty, empty.copy(), empty.copy()
+            return empty, empty.copy()
         masks = _centerpiece_masks(spec.pattern_slug, side_px, spec.pattern_params)
         if masks is None:
-            return empty, empty.copy(), empty.copy()
+            return empty, empty.copy()
         from PIL import Image as _Image
 
         def _place(art: "np.ndarray") -> "np.ndarray":
@@ -2915,102 +2384,13 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             m[ya:yb, xa:xb] = art[ya - y0 : yb - y0, xa - x0 : xb - x0]
             return m, art
 
-        front_full, front_side = _place(masks[0])
+        front_full, _front_side = _place(masks[0])
         back_full, _ = _place(masks[1])
-        # Accent zone at the SAME resolution the art was placed at (front_side),
-        # then re-place so it lands on the full grid exactly under the art.
-        accent_zone = _front_accent_zone(spec.pattern_slug, front_side)
-        if accent_zone is None:
-            accent_full = np.zeros((fh, fw), dtype=bool)
-        else:
-            accent_full, _ = _place(accent_zone)
-        return front_full, back_full, accent_full
+        return front_full, back_full
 
-    # Centerpiece art (front + back) and the front diffraction-accent subset,
-    # placed on the full fab grid once so both layers share them.
-    front_art, back_art, front_accent = _center_masks()
-
-    # --- Water SCANIMATION fab geometry (capybara back face) ----------------
-    # For the capybara face the back centerpiece is not a phase-π stripe globe:
-    # it is a barrier-grid water scanimation. Bake the STANDALONE builder's real
-    # geometry into the aperture so front.svg/back.svg carry (a) the capybara
-    # shimmer + a slit barrier over the water, and (b) the N interleaved ripple
-    # frames. Both are full-grid bool overrides consumed below (None for every
-    # other slug, so their fab output is byte-identical).
-    # CAVEAT: the builder is sampled at the plate's coarse budget pitch, so the
-    # 60/15/45 µm barrier geometry ALIASES here and the interleave can degenerate
-    # to empty (see `water_scan_empty`). This path is preview-grade like the rest
-    # of the coarse bake; the period-exact scanimation rects live in export_fine.
-    water_front_extra: "np.ndarray | None" = None
-    water_back: "np.ndarray | None" = None
-    water_band_placed: "np.ndarray | None" = None
-    # True when the interleave returned NOTHING at this raster pitch (the coarse
-    # budget pitch leaves <1 cell per 15 µm slot, so `_interleave_phases`'
-    # atomic-slot floor rejects every slot). Consumed by the BACK block, which
-    # then keeps the plain carrier across the band instead of clearing it.
-    water_scan_empty = False
-    if spec.pattern_slug == WATER_SCAN_SLUG and side_px > 0:
-        from .patterns.artistic import capybara_scanimation as _capyscan
-
-        # WATER FULL WIDTH: build the water band / slit comb / interleave across
-        # the full WIDTH-axis aperture (`_aperture_width_um`, edge-to-edge of the
-        # window) while the capybara body + flow wake stay in the centered
-        # CENTERPIECE_FILL square (open current flanks the animal).
-        b = _capyscan._build(
-            extent_um=CENTERPIECE_FILL * aperture,
-            frame_pitch_um=water_scan_fab_pitch_um(spec),
-            n_phases=WATER_SCAN_N_PHASES,
-            carrier_period_um=WATER_SCAN_FAB_CARRIER_UM,
-            waterline_y=_water_waterline_y(spec.pattern_params),
-            n_grid=side_px,
-            water_extent_um=_aperture_width_um(spec),
-        )
-        # FRONT: capybara body shimmer + slit-barrier bars over the water band.
-        # ``b["water_band"]`` is the CARVED band (``below & ~capy``, the same
-        # algebra `_centerpiece_masks` uses for the preview), so the bars stop at
-        # the animal's outline instead of striping across the submerged body.
-        barrier_bars = (~b["barrier"]) & b["water_band"]
-        front_side = b["capy_shimmer"] | barrier_bars
-        # BACK: interleaved ripple frames (all N phases packed into 1/N slots).
-        back_side = b["back_water"]
-        if not back_side.any():
-            # 60 µm frame pitch / 4 phases = a 15 µm slot, i.e. ~0.2 cells at the
-            # coarse budget pitch: `_interleave_phases`' litho-floor coverage test
-            # fails for every slot and the mask comes back all-False. Do NOT clear
-            # the carrier for it — an empty "animated region" would print as bare
-            # glass across the full-width water band (~30 mm on the default box).
-            water_scan_empty = True
-            _log.warning(
-                "water scanimation interleave EMPTY at raster pitch %.3g µm "
-                "(frame pitch %.3g µm / %d phases = %.3g µm slot); back.svg keeps "
-                "the plain carrier across the water band and carries NO "
-                "scanimation — true-pitch geometry comes from export_fine "
-                "(plate=%s)",
-                pitch,
-                water_scan_fab_pitch_um(spec),
-                WATER_SCAN_N_PHASES,
-                water_scan_fab_pitch_um(spec) / WATER_SCAN_N_PHASES,
-                plate_id,
-            )
-
-        def _place_side(side_mask: "np.ndarray") -> "np.ndarray":
-            w_px = side_mask.shape[1]
-            m = np.zeros((fh, fw), dtype=bool)
-            x0 = cxg - w_px // 2
-            y0 = cyg - side_px // 2
-            xa = max(0, x0); ya = max(0, y0)
-            xb = min(fw, x0 + w_px); yb = min(fh, y0 + side_px)
-            m[ya:yb, xa:xb] = side_mask[ya - y0 : yb - y0, xa - x0 : xb - x0]
-            return m
-
-        water_front_extra = _place_side(front_side)
-        _mask_rim(water_front_extra, spec.weld_margin_um, pitch)
-        water_back = _place_side(back_side)
-        # Full-width water BAND (below waterline, edge-to-edge, submerged body
-        # carved out) so the back carrier can be cleared across the whole band, not
-        # just the body square — and, because of the carve, NOT under the animal:
-        # the submerged body keeps the plain carrier, exactly as the preview shows.
-        water_band_placed = _place_side(b["water_band"])
+    # Centerpiece art (front + back), placed on the full fab grid once so both
+    # layers share it.
+    front_art, back_art = _center_masks()
 
     # --- FRONT: perimeter foliage frame (grating) + centerpiece -------------
     active_w, active_h = spec.active_dims()
@@ -3050,45 +2430,30 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             ang = base_front + (b - 0.5 * (frame_count - 1)) * frame_span
             g = _grating_grid(fw, fh, pitch, front_period, duty, ang)
             frame_grating |= in_bucket & g
-        # Centerpiece front layer. Two constructions:
-        #   * barrier-interlace (SWITCH_INTERLACE_SLUGS): a NEUTRAL slit comb
-        #     (60 µm pitch, open duty 0.5 → one 30 µm lane) over the FULL
+        # Centerpiece front layer. Three constructions:
+        #   * barrier-interlace (SWITCH_INTERLACE_SLUGS — the hidden switch
+        #     exemplar): a NEUTRAL slit comb (open duty 0.5) over the FULL
         #     centerpiece art box — the CENTERPIECE_FILL square, NOT the union
         #     of the silhouettes. A union-clipped comb is itself a static front
         #     image (its envelope is the union, which never moves with tilt —
         #     the measured ~0.31 front residual), and physically the comb must
         #     cover every column any back lane can slide under within the first
-        #     zone (≥ p/2 beyond the union), so the full art-box square is the
-        #     clean choice — same treatment the capybara water band gets (bars
-        #     across the whole band). Comb AND lanes come from the one lattice
-        #     solved above (``_barrier_plate_lattice`` / ``_barrier_masks``), so
-        #     every open slit straddles an A|B lane boundary head-on to the cell
-        #     and ± tilt reveals A or B cleanly; the solved phase is published as
-        #     ``switch_barrier_phase_um`` for the preview shader to draw the same
-        #     lattice instead of its own constant.
-        #   * water scanimation (capybara): NOTHING here — the dry body's only
-        #     grating is the 24 µm shimmer OR-ed in with `water_front_extra`
-        #     below. Filling `front_art` with the centerpiece carrier as well
-        #     would superimpose two 50 %-duty gratings at different periods over
-        #     the same body (~75 % gold), destroying both the duty and the
-        #     shimmer contrast.
-        #   * legacy phase-switch (front-only shimmer faces): the FRONT
-        #     silhouette filled with the vertical switch carrier (phase 0).
-        # Will the sub-5 µm diffraction accent actually be baked further down? The
-        # physics needs pitch ≤ period/4, which the coarse budget pitch almost
-        # never allows. Decided HERE because the constructions below carve the
-        # accent zone out of their comb/carrier on the premise that the fine
-        # grating fills it back in — when the fine bake is skipped, that carve-out
-        # is BARE GLASS (a ~7 mm hole through the gear hub, ellipses through the
-        # monogram flourishes) where the preview PNG paints gold. So the carve-out
-        # happens only when the grating that replaces it really follows.
-        from .patterns.effects.gratings import (
-            DIFFRACTION_ACCENT_PERIOD_UM,
-            diffraction_accent_grating,
-        )
-
-        accent_max_pitch = DIFFRACTION_ACCENT_PERIOD_UM / 4.0
-        accent_fine_ok = pitch <= accent_max_pitch
+        #     zone (>= p/2 beyond the union), so the full art-box square is the
+        #     clean choice. Comb AND lanes come from the one lattice solved
+        #     above (``_barrier_plate_lattice`` / ``_barrier_masks``), so every
+        #     open slit straddles an A|B lane boundary head-on to the cell and
+        #     +/- tilt reveals A or B cleanly; the solved phase is published as
+        #     ``switch_barrier_phase_um`` for the preview shader to draw the
+        #     same lattice instead of its own constant.
+        #   * photo / region_art (every written production face): NOTHING from
+        #     the raster path. Their geometry is EXACT vector — the line screen
+        #     (``photo_band_rects``) and the region gratings
+        #     (``single_layer_region_rects``) — concatenated after the raster
+        #     below. Filling a silhouette with the centerpiece carrier as well
+        #     would superimpose a second 50 %-duty grating on geometry that is
+        #     already carrying the effect.
+        #   * shading moire (SHIMMER_MOIRE_SLUGS — the other exemplar): the
+        #     FRONT silhouette filled with the vertical carrier (phase 0).
         if is_interlace:
             art_box = np.zeros((fh, fw), dtype=bool)
             bx0 = by0 = bx1 = by1 = 0
@@ -3102,58 +2467,18 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             # Opaque bars of the solved lattice (``barrier_comb`` is a column
             # mask; its complement is the open slit, centred on an A|B boundary).
             art_carrier = art_box & barrier_comb[None, :]
-        elif water_front_extra is not None or is_photo or is_region:
-            # Nothing from the raster path. The capybara's grating is the exact
-            # vector comb OR-ed in below; the photo's is the exact line screen
-            # concatenated after the raster (see ``photo_band_rects``). In both
-            # cases filling a silhouette with the centerpiece carrier as well
-            # would superimpose a second 50 %-duty grating on geometry that is
-            # already carrying the effect.
+        elif is_photo or is_region:
             art_carrier = np.zeros((fh, fw), dtype=bool)
         else:
             center_grating = _grating_grid(fw, fh, pitch, center_period, duty, center_axis)
             art_carrier = front_art & center_grating
-        if accent_fine_ok:
-            art_carrier &= ~front_accent
         if is_interlace:
-            # Front plane of a barrier switch: image-free comb or nothing. Checked
-            # AFTER the accent carve-out so a future accent regression (or any
-            # other silhouette leaking into the comb) is caught, not just the
-            # construction above. front_accent is empty here by _front_accent_zone.
+            # Front plane of a barrier switch: image-free comb or nothing, so
+            # any silhouette leaking into the comb is caught here.
             _check_front_comb_pure(
                 art_carrier, (by0, by1, bx0, bx1), plate_id, spec.pattern_slug
             )
         front_grid = (sil & frame_grating) | art_carrier
-        # Water scanimation: OR-in the capybara body shimmer + slit-barrier bars
-        # over the water band (real barrier-grid geometry, not the stripe carrier).
-        # This is the body's ONLY grating — the centerpiece-carrier branch above
-        # deliberately contributes nothing on this face.
-        if water_front_extra is not None:
-            front_grid |= water_front_extra
-        # Diffraction rainbow accent: OR-in a true 4.4 µm 45° grating clipped to
-        # the accent zone. The physics REQUIRES the sub-5 µm period, so it needs
-        # a raster pitch fine enough to resolve it (≥4 samples/period, i.e.
-        # pitch ≤ period/4 ≈ 1.1 µm). At the coarse budget pitch this SVG bake
-        # runs at (~19-82 µm) the 4.4 µm period aliases into baked noise, so we
-        # SKIP the accent group here rather than write garbage — the accent zones
-        # still live in the PNG masks (RAINBOW_LEVEL 200) for preview and are
-        # emitted by the fine-pitch writer at the native period. See
-        # effects.gratings.diffraction_accent_grating's integrator note. When it is
-        # skipped the zone keeps the surrounding comb/carrier (accent_fine_ok
-        # above): a missing spectral sheen is cosmetic, a hole is a scrapped plate.
-        if front_accent.any():
-            if accent_fine_ok:
-                front_grid |= diffraction_accent_grating(front_accent, pitch)
-            else:
-                _log.info(
-                    "skipping diffraction accent bake: raster pitch %.3g µm > "
-                    "period/4 = %.3g µm (period %.3g µm would alias); accent "
-                    "zones keep the surrounding carrier here and remain in the "
-                    "PNG masks + fine-pitch export",
-                    pitch,
-                    accent_max_pitch,
-                    DIFFRACTION_ACCENT_PERIOD_UM,
-                )
         # SINGLE PLY: nothing extra on this layer. One sheet has no second plane
         # for a carrier to beat against, so (2026-09-10) the face writes the
         # photograph and the leaf gratings on bare glass and NOTHING else — the
@@ -3183,7 +2508,7 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
                 front_polys = _concat_polygons(front_polys, rects_to_multipolygon(rr))
         front_group = _group("frame+centerpiece", _strip_svg_body(to_svg(front_polys, (W, H), background=None)))
 
-    # --- BACK: uniform carrier grating + globe centerpiece (phase π) --------
+    # --- BACK: uniform carrier grating + centerpiece (phase pi) -------------
     # Empty on a single-ply face: there is no inner ply, and the carrier that
     # would live here is already on the front layer above.
     back_group = ""
@@ -3206,33 +2531,14 @@ def _bake_plate_svg(plate_id: str) -> tuple[Path, Path] | None:
             interleave = (front_art & even_lane) | (back_art & ~even_lane)
             back_grid = (win & carrier_grating & ~union_art) | (win & interleave)
         else:
-            # Back centerpiece art filled with the vertical switch carrier, shifted
-            # by half a period (phase π) so it interlaces with the front art. Empty
-            # for front-only-shimmer patterns (monogram/inscription/food/capybara),
-            # in which case the back is a clean uniform carrier window.
+            # Back centerpiece art filled with the vertical carrier, shifted by
+            # half a period (phase pi). Empty on the shading-moire exemplar, in
+            # which case the back is a clean uniform carrier window.
             center_grating_pi = _grating_grid(
                 fw, fh, pitch, center_period, duty, center_axis, phase=0.5
             )
             # The back art overrides the carrier inside the aperture.
             back_grid = (win & carrier_grating & ~back_art) | (back_art & center_grating_pi)
-        # Water scanimation: the back-art region is the WATER BAND, filled with
-        # the N interleaved ripple frames (a genuine scanimation) rather than the
-        # phase-π stripe globe. Clear the plain-carrier fill inside the water band
-        # and OR-in the real ripple geometry (clipped to the back window rim). The
-        # band excludes the submerged body, so that clear-out does NOT strip the
-        # carrier from under the animal and the interleave cannot print on it —
-        # unless the interleave came back empty at this raster pitch, in which case
-        # the band keeps the carrier (clearing it would erase gold for nothing).
-        if water_back is not None and not water_scan_empty:
-            band = water_band_placed if water_band_placed is not None else back_art
-            back_grid = (win & carrier_grating & ~band) | (win & water_back)
-        elif water_scan_empty:
-            # Degenerate interleave at this raster pitch (warned above). Keep the
-            # plain carrier across the WHOLE back window — including the band —
-            # rather than clearing ~30 mm of gold for an empty mask, and skip the
-            # phase-π stripe fill the generic else-branch would have put in the
-            # band square (that architecture was never the capybara's).
-            back_grid = win & carrier_grating
         back_polys = raster_to_polygons(back_grid, pitch, (W, H))
         back_group = _group("carrier+centerpiece", _strip_svg_body(to_svg(back_polys, (W, H), background=None)))
 
@@ -3301,53 +2607,14 @@ _SVG_BAKE_KEYS = (
 # Bump when the SVG compose geometry changes: cached plate SVGs are only
 # reused if they carry the current marker, so a formula fix (e.g. the
 # aperture-scaling fix) invalidates stale files under unchanged spec hashes.
-# v4: barrier-interlace front comb spans the full art box (was union-gated).
-# v5: coarse-bake honesty — effective periods stamped in the manifest, skipped
-#     diffraction-accent zones keep the surrounding carrier instead of becoming
-#     bare-glass holes, the capybara body carries only its 24 µm shimmer (no
-#     superimposed centerpiece carrier), and a degenerate water interleave keeps
-#     the plain carrier across the band instead of erasing it. Also in v5:
-#     barrier-interlace faces emit NO front diffraction accent at all (a
-#     silhouette-shaped front feature can never vanish under tilt), so the
-#     gear-quill-switch hub grating is gone from front.svg.
-# v6: barrier registration carried onto the plate path — the front comb and the
-#     back A|B lanes are cut from ONE cell-exact lattice (_barrier_plate_lattice /
-#     _barrier_masks) instead of two float-phased gratings that lose registration
-#     to sampling, so the baked comb period equals the baked interlace period and
-#     every open-slit centre lands on a channel boundary. Interlace face geometry
-#     shifts by up to a cell and the baked barrier period snaps to a multiple of
-#     four raster cells (recorded in svg_bake_barrier_*).
-# v7: the water scanimation bakes at the face's EFFECTIVE waterline
-#     (_water_waterline_y) instead of the module constant, so a face that sets
-#     the ``waterline`` param gets a band/wake matching its preview mask. Only
-#     such faces change; default-param geometry is byte-identical.
-# v8: the water band EXCLUDES the submerged capybara. The band the bake consumes
-#     (``_capybara_and_water``'s ``water_band``) is now ``below & ~capy`` — the
-#     composed preview's convention — so front.svg no longer lays slit-barrier
-#     bars across the animal, back.svg no longer interleaves ripple crests under
-#     it, and the plain back carrier is kept over the submerged body instead of
-#     being cleared for the band. Only the capybara face changes.
-# v12: production-box faces. A BLANK face bakes two empty documents; a
-#     SINGLE-PLY face bakes the carrier grating into front.svg (over the back
-#     window MINUS the art box) and an EMPTY back.svg; a PHOTO face bakes the
-#     line-screen bands and their colour sub-gratings as exact rectangles at the
-#     art box, front layer only — vector geometry that never passes through the
-#     coarse budget raster, so it is period-exact even here.
-# v13-v17: the PLATE FOR WRITING (2026-09-10), one entry for the five bumps of a
-#     single design. The frame band moves on EVERY face — the art rim now starts
-#     at the inner ply's window (``assembly.bonded_art_keepout_um``) and the band
-#     is a fixed 2.4 mm at motif_scale 0.68 — and the carrier bakes at the
-#     eye-sized 65.5 µm fixed pitch instead of the gap-scaled one. The lid bakes
-#     no diffraction accent (one shading moiré over the whole monogram), and a
-#     single-ply photo face bakes the leaf gratings of the chosen fill
-#     (``SINGLE_PLY_LEAF_FILL``) rather than a common-pitch louvre.
-# v18: a SINGLE-PLY face bakes NO carrier. v12 put a carrier grating in front.svg
-#     over the back window minus the art box; compose stopped painting it and
-#     ``export_fine.build_plate_fine`` never wrote it, so the fab SVG was the only
-#     path still emitting ~500 mm² of gold that the mask does not have — the
-#     exact drift "fab SVG = preview PNG" (CLAUDE.md) exists to catch. Only
-#     single-ply faces change; every other face's SVG is byte-identical.
-PLATE_SVG_VERSION = "plate-svg-v19"
+#
+# The per-version history (v4 .. v19) lives in docs/plates-changelog.md.
+# v20: the two-ply optics come off the plate (2026-09-16) — the water-scanimation
+#     bake and the diffraction-accent OR-in are gone from ``_bake_plate_svg``.
+#     No production face entered either branch, so every written face's SVG is
+#     unchanged; the marker moves so a warm cache cannot serve a pair baked by
+#     code that still had them.
+PLATE_SVG_VERSION = "plate-svg-v20"
 
 
 def _svg_is_current(svg_path: Path) -> bool:
