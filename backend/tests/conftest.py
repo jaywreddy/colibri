@@ -54,11 +54,16 @@ def isolated_data(
     Patches the modules that snapshot DATA_ROOT-derived paths at import time
     so reads land where service.materialize writes.
     """
-    from app import boxes, plates, service
+    from app import boxes, service
+    from app.plates import spec as plate_spec
 
     monkeypatch.setattr(service, "DATA_ROOT", shared_pattern_cache)
-    monkeypatch.setattr(plates, "DATA_ROOT", shared_pattern_cache)
-    monkeypatch.setattr(plates, "PLATES_ROOT", tmp_path / "plates")
+    # app.plates.spec is where the roots are DEFINED; every submodule reads
+    # them through the module object and the package forwards ``PLATES_ROOT``
+    # to it (see app/plates/__init__.py::__getattr__), so patching here is the
+    # one place that moves them for readers and writers alike.
+    monkeypatch.setattr(plate_spec, "DATA_ROOT", shared_pattern_cache)
+    monkeypatch.setattr(plate_spec, "PLATES_ROOT", tmp_path / "plates")
     monkeypatch.setattr(boxes, "BOXES_ROOT", tmp_path / "boxes")
     return tmp_path
 

@@ -1,6 +1,6 @@
-# plates.py cache-version changelog
+# plates cache-version changelog
 
-Moved out of `backend/app/plates.py` on 2026-09-16, with the two-ply cleanup:
+Moved out of `backend/app/plates.py` (now the `backend/app/plates/` package) on 2026-09-16, with the two-ply cleanup:
 the module carried ~90 lines of per-version prose beside the two markers. The
 markers and their CURRENT entry stay in the code, where a bump has to be made
 by hand; everything older is history and lives here.
@@ -100,7 +100,7 @@ v23: ``single_ply_leaf_period_um`` (recipe key AND ``period_front``) comes from
     PNG masks are unchanged; recipe_data is not, and it is cached.
 ```
 
-(v26 and later: see `plates.py`.)
+(v26 and later: see `app/plates/compose.py`.)
 
 ## `plates.PLATE_SVG_VERSION`
 
@@ -157,4 +157,4 @@ v18: a SINGLE-PLY face bakes NO carrier. v12 put a carrier grating in front.svg
     single-ply faces change; every other face's SVG is byte-identical.
 ```
 
-(v20 and later: see `plates.py`.)
+(v20 and later: see `app/plates/svg.py`.)

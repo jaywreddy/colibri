@@ -86,20 +86,30 @@
   production face carries one; `globe-duo-phase` is the hidden exemplar that
   keeps the construction built, and `app/sim2d.py::switch_metrics` measures it
   on the real generated geometry (`tests/test_barrier_registration.py`).
-- **fab SVG = preview PNG:** `plates.py::ensure_plate_svg` must compose the
-  same aperture-scaled geometry as `_raster_compose_plate`. Bump
-  `PLATE_SVG_VERSION` whenever SVG compose geometry changes so stale cached
-  SVGs regenerate.
+- **fab SVG = preview PNG:** `plates/svg.py::ensure_plate_svg` must compose the
+  same aperture-scaled geometry as `plates/compose.py::_raster_compose_plate`.
+  Bump `PLATE_SVG_VERSION` whenever SVG compose geometry changes so stale
+  cached SVGs regenerate.
 - **cache versions:** cache keys hash user spec/params ONLY, so a version bump
   is the only thing that invalidates a warm `backend/data/` after a code or
   constant change. Three markers, all checked on the cache-hit path:
-  `plates.PLATE_SVG_VERSION` (fab SVG geometry), `plates.PLATE_COMPOSE_VERSION`
-  (`_raster_compose_plate`, `_paste_centerpiece`, `_centerpiece_masks`, the mask
-  level palette, `_carrier_recipe_data`), and `service.PATTERN_GEN_VERSION`
+  `plates.svg.PLATE_SVG_VERSION` (fab SVG geometry),
+  `plates.compose.PLATE_COMPOSE_VERSION` (`_raster_compose_plate`,
+  `_paste_centerpiece`, `_centerpiece_masks`, the mask level palette,
+  `recipe._carrier_recipe_data`), and `service.PATTERN_GEN_VERSION`
   (pattern generators, `patterns/base.py`, the rasterizer, manifest shape).
   Bump the ones your change touches in the same commit.
 - **Units:** micrometers (um) everywhere in code, specs, manifests, and the API.
   mm appears only in UI display and in derived `_mm` cut-list fields.
+- **the plates package:** `app/plates/` is six modules in dependency order —
+  `spec` (the specs, FaceKind, plate_hash, PLATES_ROOT), `recipe` (mask level
+  palette, grating constants, `_carrier_recipe_data`), `photo` (the halftone
+  centrepiece), `compose` (masks, paste, `_raster_compose_plate`,
+  `materialize_plate`), `literal` (the fabricated-chrome rasters) and `svg`
+  (the fab SVG). `__init__.py` is a pure facade re-exporting all of them, so
+  `from app import plates as P` still resolves every name; import the submodule
+  directly in new code. `PLATES_ROOT` is read through `spec` (never bound by
+  value) because the test fixtures repoint it.
 - **Caches:** `backend/data/` is a disposable on-disk cache — pattern variants
   (`data/<slug>/<variant>/`), composed plates (`data/plates/<hash>/`), boxes
   (`data/boxes/<id>/`). Safe to delete; everything regenerates lazily. Every
@@ -112,6 +122,6 @@
   single-heavy-compute rule. New cache writers must use all of it.
 - **Geometry perf:** no `unary_union` / whole-geometry GEOS booleans on hot
   paths — concatenate parts and clip with `crop_parts`. The why lives in
-  docstrings: `app/plates.py::_concat_polygons`,
+  docstrings: `app/plates/compose.py::_concat_polygons`,
   `app/patterns/_helpers.py::crop_parts`,
   `app/patterns/frames/shapely_pen.py::ShapelyPen.finish`.

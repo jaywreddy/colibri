@@ -146,13 +146,17 @@ def test_stale_gen_version_regenerates_the_variant(client: TestClient, isolated_
 
 def test_stale_compose_version_regenerates_the_plate(isolated_data, monkeypatch):
     from app import plates as P
+    from app.plates import compose as PC
 
     # The per-plate compute lock is asserted here rather than in its own test:
     # proving materialize_plate takes it needs a real compose, and this test
     # already pays for two (CLAUDE.md — no spare heavy composes on this host).
+    # The spy goes on ``plates.compose``, the module that OWNS materialize_plate
+    # and reads ``cache_lock`` as its own global: patching the package facade
+    # would bind a name nothing calls.
     keys: list[str] = []
-    real_lock = P.cache_lock
-    monkeypatch.setattr(P, "cache_lock", lambda key: (keys.append(key), real_lock(key))[1])
+    real_lock = PC.cache_lock
+    monkeypatch.setattr(PC, "cache_lock", lambda key: (keys.append(key), real_lock(key))[1])
 
     spec = _cheap_plate_spec(seed=901)
     first = P.materialize_plate(spec)
