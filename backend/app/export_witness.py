@@ -22,13 +22,13 @@ and inside a row the dies sit side by side with full-height vertical streets:
 
 ``layout`` places the cells that way and returns the cut list (``dicing``) in
 millimetres from the plate centre; ``write_dicing_md`` writes it out for the
-saw operator and ``write_map_svg`` draws it. Streets are ``GUTTER_UM`` wide
+saw operator and ``write_map_svg`` draws it. Streets are ``STREET_UM`` wide
 (1 mm: a 0.3 mm blade with room for its wander); the corner L-ticks every die
 carries reach into them so the operator sees where the lines run.
 
 One gold layer
 --------------
-Every cell is on ``LAYER_FRONT``. The plate is a darkfield write with positive
+Every cell is on ``LAYER_GOLD``. The plate is a darkfield write with positive
 resist and the file holds the openings (``polarity=CLEAR``, see witness_dies).
 
 Rectangle economy
@@ -51,14 +51,12 @@ import numpy as np
 
 from . import witness_moire as wm
 from .patterns.bitmap import colourplan as cp
+from .production import (BLANK_SIDE_UM, DBU_UM, LAYER_DICE, LAYER_GOLD,
+                         LAYER_OUTLINE, STREET_UM)
 from .witness_geom import (
     CLEAR,
     METAL,
-    GUTTER_UM,
     LABEL_H_UM,
-    LAYER_FRONT,
-    LAYER_OUTLINE,
-    PLATE_SIDE_UM,
     USABLE_UM as _GEOM_USABLE_UM,
     Cell,
     CellArt,
@@ -67,8 +65,6 @@ from .witness_geom import (
     _text_rects,
 )
 
-LAYER_DICE = (2, 0)      # annotation: the saw's street centrelines (never chrome)
-
 TICK_REACH_UM = 550.0
 """How far a die's corner dicing tick reaches into the street beyond the die
 edge (``ply_cuts.DICE_TICK_GAP_UM + DICE_TICK_LEN_UM``). The packer keeps
@@ -76,7 +72,7 @@ every cell this much inside the geometric usable square, so no written shape —
 tick included — lands in the blank's 4 mm edge margin."""
 USABLE_UM = _GEOM_USABLE_UM - 2.0 * TICK_REACH_UM
 MM = 1000.0
-ROW_GUTTER_UM = GUTTER_UM
+ROW_GUTTER_UM = STREET_UM
 """Between rows: a real saw street, the same width as the one between dies.
 Every row boundary IS a cut on this plate."""
 ROW_SLACK_UM = 1500.0
@@ -391,11 +387,11 @@ def layout(bands: Iterable[list[Cell]]) -> tuple[list[Placed], dict[str, Any]]:
         for r in rows:
             slack = r.h - h
             if 0 <= slack <= (ROW_SLACK_UM if c.block != "production" else 1e-6) \
-                    and r.x + (GUTTER_UM if r.cells else 0.0) + span <= x_hi + 1e-6:
+                    and r.x + (STREET_UM if r.cells else 0.0) + span <= x_hi + 1e-6:
                 home = r
                 break
         if home is not None:
-            x = home.x + (GUTTER_UM if home.cells else 0.0)
+            x = home.x + (STREET_UM if home.cells else 0.0)
             put(c, x, home.y_top, home)
             home.xs.append(x); home.x1s.append(x + span)
             home.x = x + span
@@ -420,7 +416,7 @@ def layout(bands: Iterable[list[Cell]]) -> tuple[list[Placed], dict[str, Any]]:
                     break
             if done:
                 break
-            x0 = r.x + (GUTTER_UM if r.cells else 0.0)
+            x0 = r.x + (STREET_UM if r.cells else 0.0)
             if x0 + span <= x_hi + 1e-6 and h <= r.h + 1e-6:
                 col = _Column(x0=x0, w=span, y_top=r.y_top, y_bot=r.y_bot)
                 hit = col.try_place(c)
@@ -475,7 +471,7 @@ def layout(bands: Iterable[list[Cell]]) -> tuple[list[Placed], dict[str, Any]]:
         "rows": [{"y_top_mm": s["y_top_mm"], "height_mm": s["height_mm"], "cells": s["cells"]}
                  for s in strips],
         "dicing": {
-            "street_um": GUTTER_UM,
+            "street_um": STREET_UM,
             "edge_cuts": True,
             # full-width horizontal cuts: the top and bottom edge of every strip's dies
             "y_cuts_mm": sorted({round(y / MM, 3) for y in y_cuts}, reverse=True),
@@ -676,7 +672,7 @@ def _dice_edge_marks(lay: dict[str, Any]) -> np.ndarray:
         for x in s["x_cuts_mm"]:
             xc = x * MM
             # above the dies: the street above the strip (or the top margin)
-            y1 = min(yt + GUTTER_UM, edge1)
+            y1 = min(yt + STREET_UM, edge1)
             out.append((xc - w, xc + w, y1 - DICE_MARK_LEN_UM, y1))
             # below the dies: the label band under them (waste once cut)
             out.append((xc - w, xc + w, yb - DICE_MARK_LEN_UM, yb))
@@ -717,8 +713,8 @@ def flat_rect_count(plate: dict[str, Any]) -> int:
 # --- writers ----------------------------------------------------------------
 
 
-DBU_UM = 0.001
-"""The writer's database unit. Everything below goes in as INTEGER DBU."""
+# The writer's database unit is ``production.DBU_UM`` (imported at the top,
+# same nanometre as the fine writer's). Everything below goes in as INTEGER DBU.
 
 
 def _to_dbu(a: np.ndarray, dbu_um: float = DBU_UM) -> np.ndarray:
@@ -839,7 +835,7 @@ def write_mask(
     ly = kdb.Layout()
     ly.dbu = DBU_UM
     top = ly.create_cell("WITNESS_5IN")
-    l_front = ly.layer(*LAYER_FRONT)
+    l_front = ly.layer(*LAYER_GOLD)
     l_out = ly.layer(*LAYER_OUTLINE)
     l_dice = ly.layer(*LAYER_DICE)
 
@@ -848,7 +844,7 @@ def write_mask(
     _insert_polys(top, l_front, plate.get("free_polys", ()), kdb)
     _insert_rects(top, l_front, plate["labels"], kdb)
     _insert_rects(top, l_out, plate["outline"], kdb)
-    half = PLATE_SIDE_UM / 2.0
+    half = BLANK_SIDE_UM / 2.0
     top.shapes(l_out).insert(kdb.DBox(-half, -half, half, half))
 
     n_inst = 0
@@ -940,7 +936,7 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
     """A one-page plate map from the manifest: block colour and etched label.
     Keyed on ``block`` — an earlier version keyed on the single-letter group and
     coloured one block of five."""
-    s = PLATE_SIDE_UM
+    s = BLANK_SIDE_UM
     sc = 900.0 / s
     FILL = {"production": "#d6b04a", "moire": "#e0457b", "diffraction": "#00b8a9",
             "parallax": "#7c4dff", "halftone": "#f0a202", "metrology": "#9fb0b6"}
@@ -1013,7 +1009,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="build and report, write nothing")
     a = ap.parse_args(argv)
 
-    print(f"building the {PLATE_SIDE_UM/MM:.0f} mm witness plate ...")
+    print(f"building the {BLANK_SIDE_UM/MM:.0f} mm witness plate ...")
     t0 = time.perf_counter()
     plate = build_plate()
     t_built = time.perf_counter()
@@ -1046,7 +1042,7 @@ def main(argv: list[str] | None = None) -> int:
         mp = Path(a.manifest)
         mp.parent.mkdir(parents=True, exist_ok=True)
         mp.write_text(json.dumps({
-            "plate_side_um": PLATE_SIDE_UM,
+            "plate_side_um": BLANK_SIDE_UM,
             "layout": lg,
             "gds": plate.get("gds", {}),
             "polarity": plate["polarity"],

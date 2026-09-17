@@ -310,20 +310,21 @@ def test_the_production_art_rim_is_pinned_not_derived_from_the_foil():
     the two rims (plates._raster_compose_plate), so a narrower back window would
     pull the garland in just as surely as a narrower weld margin."""
     from app.assembly import keepout_um
-    from app.boxes import FACE_IDS, PRODUCTION_ART_RIM_UM, default_box_spec
+    from app.boxes import FACE_IDS, default_box_spec
+    from app.production import ART_RIM_UM
 
     spec = default_box_spec()
-    assert PRODUCTION_ART_RIM_UM == 3637.5
-    assert spec.art_rim_um == PRODUCTION_ART_RIM_UM
+    assert ART_RIM_UM == 3637.5
+    assert spec.art_rim_um == ART_RIM_UM
     # ...and it is NOT what this box's foil would give.
     assert keepout_um(spec.foil, spec.glass.thickness_um) == pytest.approx(2550.0)
     for fid in FACE_IDS:
         face = spec.faces[fid]
-        assert face.weld_margin_um == PRODUCTION_ART_RIM_UM, fid
-        assert face.back_margin_um == PRODUCTION_ART_RIM_UM, fid
+        assert face.weld_margin_um == ART_RIM_UM, fid
+        assert face.back_margin_um == ART_RIM_UM, fid
     # Re-normalizing (materialize_box does it every time) must not undo it.
     spec.normalize_face_dims()
-    assert spec.faces["top"].weld_margin_um == PRODUCTION_ART_RIM_UM
+    assert spec.faces["top"].weld_margin_um == ART_RIM_UM
 
 
 def test_a_box_that_pins_no_rim_still_derives_one_from_its_foil():
@@ -345,9 +346,10 @@ def test_the_ring_fits_a_single_ply_wall():
     """One ply per face means a 2.25 mm wall, not a 4.5 mm bonded stack: the
     same 32 x 32 x 35 mm outer box opens from a 23 mm interior to
     27.5 x 27.5 x 30.5 mm, and the ring gains 4.5 mm on every axis."""
-    from app.boxes import PRODUCTION_PLY_UM, ring_fit, ring_interior_um
+    from app.boxes import ring_fit, ring_interior_um
+    from app.production import PLY_UM
 
-    fit = ring_fit(32000.0, 32000.0, 35000.0, PRODUCTION_PLY_UM)
+    fit = ring_fit(32000.0, 32000.0, 35000.0, PLY_UM)
     assert fit["interior_um"] == [27500.0, 27500.0, 30500.0]
     assert fit["needed_um"] == list(ring_interior_um())
     assert fit["clearance_um"] == [4500.0, 4500.0, 4500.0]
@@ -362,19 +364,20 @@ def test_the_single_ply_cut_dims_are_the_dies_that_were_written():
     what the 2026-09-15 plate was diced to."""
     from app import ply_cuts as pc
     from app.assembly import FACE_IDS, face_cut_dims
-    from app.boxes import PRODUCTION_PLY_UM, default_box_spec
+    from app.boxes import default_box_spec
+    from app.production import PLY_UM
 
     spec = default_box_spec()
     dims = (spec.width_um, spec.depth_um, spec.height_um)
     pair = {r.face: (r.width_um, r.height_um)
-            for r in pc.pair_rects(*dims, PRODUCTION_PLY_UM)}
+            for r in pc.pair_rects(*dims, PLY_UM)}
     want = {
         "top": (32000.0, 32000.0), "bottom": (32000.0, 32000.0),
         "front": (32000.0, 30500.0), "back": (32000.0, 30500.0),
         "left": (27500.0, 30500.0), "right": (27500.0, 30500.0),
     }
     for fid in FACE_IDS:
-        single = face_cut_dims(fid, *dims, PRODUCTION_PLY_UM)
+        single = face_cut_dims(fid, *dims, PLY_UM)
         assert single == pair[pc.subplate_id(fid, "F")], fid
         assert single == want[fid], fid
         assert (spec.faces[fid].width_um, spec.faces[fid].height_um) == want[fid], fid

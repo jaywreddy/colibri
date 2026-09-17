@@ -17,30 +17,32 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-# --- plate constants --------------------------------------------------------
+# The stock, the blank and the layer map are PRODUCTION constants, defined once
+# in ``app.production``. This module derives the plate's OPTICS from them —
+# change ``PLY_UM`` or ``GLASS_N`` there and the carrier, the comb, the monogram
+# pitch, the parallax rate, the near-field limit and the swap angles all follow
+# (``test_witness`` pins them against what ``plates._carrier_recipe_data``
+# computes for the same glass).
+from .production import (  # noqa: F401  (re-exported for the die/plate writers)
+    BLANK_EDGE_MARGIN_UM,
+    BLANK_SIDE_UM,
+    GLASS_MATERIAL,
+    GLASS_N,
+    LAYER_GOLD,
+    LAYER_LABEL,
+    LAYER_OUTLINE,
+    PLY_UM,
+    STREET_UM,
+)
 
-PLATE_SIDE_UM = 127_000.0            # 5 inch square
-EDGE_MARGIN_UM = 4_000.0             # handling / chuck exclusion
-USABLE_UM = PLATE_SIDE_UM - 2.0 * EDGE_MARGIN_UM
-GUTTER_UM = 1_000.0                  # = the blank's hand-scribe street
+# --- plate layout ----------------------------------------------------------
+
+USABLE_UM = BLANK_SIDE_UM - 2.0 * BLANK_EDGE_MARGIN_UM
 LABEL_H_UM = 900.0                   # gold cell-ID text under each cell
-
-LAYER_FRONT = (10, 0)
-LAYER_OUTLINE = (1, 0)
-LAYER_LABEL = (3, 0)                 # annotation text, not gold
 
 # The reference point every ladder brackets. These are the numbers the box
 # currently ships or the analysis settled on, so a sweep reads as "the
 # reference, plus or minus" rather than as an unanchored grid.
-# --- the glass -------------------------------------------------------------
-# This plate IS the box stock: the production dies are box plies, so the plate's
-# thickness and index set every gap-scaled family of the design. Change these
-# two numbers and the carrier, comb, monogram pitch, parallax rate, near-field
-# limit and swap angles all follow; ``test_witness`` pins them against what
-# ``plates._carrier_recipe_data`` computes for the same glass.
-PLY_UM = 2250.0
-GLASS_N = 1.4585
-GLASS_MATERIAL = "fused quartz"
 _BASELINE_GAP_UM = 500.0 / 1.46     # plates.BASE_PARALLAX_GAP_UM: the 500 um quartz design point
 LAMBDA_UM = 0.55
 

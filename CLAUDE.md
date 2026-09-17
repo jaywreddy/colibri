@@ -18,7 +18,7 @@
   Manual equivalent, from `backend/`, one at a time:
   ```
   uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
-  uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py tests/test_face_kind.py -q
+  uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py tests/test_face_kind.py tests/test_production_constants.py -q
   uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q
   uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_showcase_patterns.py -q
   uv run --extra dev pytest tests/test_param_validation.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_shimmer_moire.py -q
@@ -51,6 +51,17 @@
   AND regenerate the shared golden fixture
   (`uv run --directory backend python ../tools/dev/gen_assembly_golden.py`) —
   both test suites pin their implementation to it.
+- **production constants:** `backend/app/production.py` is the ONE holder of the
+  process (litho floor, finish radius, DBU, polarity, layer map), stock (ply,
+  index, blank, street) and box (dims, tape, motif scale, band, art rim, ID-tick
+  offset) constants. Never re-type one of those numbers anywhere — import it.
+  `witness_geom` derives the plate's optics from it; `frontend/src/production.ts`
+  is GENERATED from it (`uv run --directory backend python
+  ../tools/dev/gen_production_constants.py`) and `api.ts::defaultBoxSpec` reads
+  the generated file, so regenerate in the same change
+  (`tests/test_production_constants.py` fails if it is stale). Six of the
+  constants are PINNED to the 2026-09-15 plate — changing one is a mask change,
+  and the witness rebuild is the gate.
 - **renderer honesty:** every optical effect must be view-dependent,
   time-invariant, litho-mask-driven, and GEOMETRIC — the back gold layer
   renders on a real inner plane at the paraxial T/n air gap below the outer

@@ -27,7 +27,7 @@ Design rules the emitter enforces (so a motif author does not have to):
   controls the hue"). Vertical also means axis-aligned rectangles: one plate
   rectangle per line per run, no rotated vertices, no decomposition slivers.
 * a region's period must clear the litho floor (line = p·duty ≥ 2 µm) AND the
-  die finish (``witness_dies.FINISH_*``: an open of radius r erases lines under
+  die finish (``production.FINISH_RADIUS_UM``: an open of radius r erases lines under
   2r) — the same guard the leaf families pass. The colour ladder the leaves use
   (``plates.SINGLE_PLY_LEAF_HUE_PERIODS_UM``, 4.15–6.02 µm) is the safe choice.
 * regions of different periods are separated by a one-cell gutter at the zone

@@ -33,21 +33,9 @@ ID_TICK_W_UM = 150.0
 ID_TICK_LEN_UM = 400.0
 ID_TICK_PITCH_UM = 350.0
 
-PRODUCTION_ID_TICK_OFFSET_UM = 2943.75
-"""Mark-centre distance from the die edge on the PRODUCTION plate, PINNED.
-
-Written on the 2026-09-15 plate; chosen when the box was bonded, where it was
-``fold_band_offset_um(2250, 1387.5)`` — centred in the interior foil-fold band
-of a 3/8"-taped three-ply edge. Kept so the plate does not change.
-
-NOTE what the 2026-09-16 tape change did to it: on a single ply with 1/4" tape
-the fold reaches only 2.05 mm, so a mark centred at 2.94 mm is NO LONGER under
-the copper. It lands in the blank ring between the fold and the 3.6375 mm art
-rim — still outside the garland, still off every optical surface, but visible on
-the finished box unless the solder bead covers it. A 0.15 x 0.4 mm gold tick at
-the extreme edge of a face is a bench-legible plate ID, which is what it is for;
-if that is not wanted on the shipping box the fix is a mask change, not a
-constant change here."""
+# The PRODUCTION plate's pinned mark-centre offset lives with the rest of the
+# box constants; re-exported here because the tick geometry is this module's.
+from .production import ID_TICK_OFFSET_UM  # noqa: E402
 
 # --- dicing ticks -------------------------------------------------------------
 # Just outside each plate corner, inside the street.
@@ -167,7 +155,7 @@ def id_tick_rects(
 
     ``band_offset_um`` overrides the derived ``fold_band_offset_um(ply, fold)``
     — the production plate passes its PINNED offset (see
-    ``PRODUCTION_ID_TICK_OFFSET_UM``)."""
+    ``production.ID_TICK_OFFSET_UM``)."""
     n = face_index + 1
     off = (fold_band_offset_um(ply_um, fold_um)
            if band_offset_um is None else float(band_offset_um))

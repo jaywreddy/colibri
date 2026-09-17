@@ -42,11 +42,9 @@ from .patterns.effects.gratings import band_select
 
 _log = logging.getLogger("optics.export_fine")
 
-# --- litho floor ------------------------------------------------------------
-LITHO_FLOOR_UM = 2.0   # 2 µm line / 2 µm gap, HARD
-
-# GDS database unit: 1 nm. Coordinates are written as round(um / DBU_UM).
-DBU_UM = 0.001
+# The process constants live in ``app.production`` — one definition each, read
+# by the generators, both mask writers and the die inverter.
+from .production import DBU_UM, FINISH_RADIUS_UM, LITHO_FLOOR_UM  # noqa: E402
 
 
 # =========================================================================== #
@@ -488,9 +486,7 @@ def check_region_periods(regions: dict[int, Any]) -> None:
     """Every diffractive region must survive the litho floor AND the die
     finish (the guard the single-ply leaf families pass): line = p·duty must
     exceed 2 × the finish radius and both line and gap must clear the floor."""
-    from .witness_dies import FINISH_ART_UM, FINISH_FRAME_UM
-
-    finish_min_line = 2.0 * max(FINISH_ART_UM, FINISH_FRAME_UM)
+    finish_min_line = 2.0 * FINISH_RADIUS_UM
     for rid, r in regions.items():
         if r.period_um <= 0:
             continue
@@ -666,17 +662,16 @@ def build_plate_fine(spec: Any, face: str, *, drc_before_report: bool = False) -
         dot_cov = float(getattr(P, "SINGLE_PLY_LEAF_DOT_COVERAGE", 0.5))
         floor_p = LF.min_period_um(fill, leaf_period, coverage=dot_cov)
         # every family's finest LINE must survive the die finish: an open of
-        # radius r (witness_dies.FINISH_FRAME_UM) deletes lines under 2r, and the
+        # radius r (production.FINISH_RADIUS_UM) deletes lines under 2r, and the
         # written line is p * duty. Probe ALL buckets, not the first.
-        from .witness_dies import FINISH_ART_UM, FINISH_FRAME_UM
         probe = min([p for b in range(frame_count)
                      for p, _ in LF.bucket_layers(fill, b, frame_count, 0.0, leaf_period, hue_periods)]
                     or [leaf_period])
-        finish_min_line = 2.0 * max(FINISH_ART_UM, FINISH_FRAME_UM)
+        finish_min_line = 2.0 * FINISH_RADIUS_UM
         if probe * duty <= finish_min_line + 1e-9:
             raise ValueError(
                 f"single-ply leaf fill {fill!r}: a {probe} um period at duty {duty} writes "
-                f"{probe * duty:.3f} um lines, which the {max(FINISH_ART_UM, FINISH_FRAME_UM)} um "
+                f"{probe * duty:.3f} um lines, which the {FINISH_RADIUS_UM} um "
                 f"die finish (open) erases (needs > {finish_min_line:.3f} um)")
         if probe < floor_p - 1e-9:
             raise ValueError(

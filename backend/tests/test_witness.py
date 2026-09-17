@@ -38,9 +38,9 @@ from app.patterns.bitmap import screenrects as sr
 from app.patterns.bitmap.colourzone import MIN_FEATURE_UM
 from app.witness_geom import (
     CLEAR,
-    GUTTER_UM,
+    STREET_UM,
     METAL,
-    PLATE_SIDE_UM,
+    BLANK_SIDE_UM,
     PLY_UM,
     USABLE_UM,
     Cell,
@@ -203,7 +203,7 @@ def test_the_layout_is_a_dicing_grid():
         xs = sorted((boxes[c][0], boxes[c][1]) for c in s["cells"])
         gaps = [b[0] - a[1] for a, b in zip(xs, xs[1:])]
         for g in gaps:
-            assert g >= GUTTER_UM - 1e-6, gaps
+            assert g >= STREET_UM - 1e-6, gaps
         # every production die spans the full strip height (exact cut dims)
         for cid in s["cells"]:
             p = next(q for q in placed if q.cell.cid == cid)
@@ -212,7 +212,7 @@ def test_the_layout_is_a_dicing_grid():
                 assert s["height_mm"] * MM == pytest.approx(p.cell.h_um + _label_h(p.cell.h_um))
     # rows are stacked top-down with one street between them
     for a, b in zip(strips, strips[1:]):
-        assert a["y_bot_mm"] - b["y_top_mm"] == pytest.approx(GUTTER_UM / MM)
+        assert a["y_bot_mm"] - b["y_top_mm"] == pytest.approx(STREET_UM / MM)
     # EDGE cuts: the top and the bottom edge of every strip's dies
     assert len(dc["y_cuts_mm"]) == 2 * len(strips)
     for s in strips:
@@ -453,7 +453,7 @@ def test_the_plate_stays_inside_the_glass():
                                lambda cx, cy, w, h: wc.build_grating_patch(
                                    cx, cy, w, h, period_um=10.0))]],
                         verbose=False, polarity=METAL)
-    half = PLATE_SIDE_UM / 2.0
+    half = BLANK_SIDE_UM / 2.0
     for key in ("front", "outline", "labels"):
         r = plate[key]
         if len(r):

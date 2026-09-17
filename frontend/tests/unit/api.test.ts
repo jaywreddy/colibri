@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as api from '../../src/api';
+import * as P from '../../src/production';
 
 function mockFetchOk(body: unknown) {
   return vi.fn().mockResolvedValue({
@@ -66,7 +67,7 @@ describe('defaultBoxSpec (contract defaults)', () => {
     // Six single plies (2026-09-16): no bond, 1/4" tape, the art rim pinned at
     // the 3.64 mm the 15 September plate was written with.
     expect(s.bonded).toBe(false);
-    expect(s.art_rim_um).toBe(api.PRODUCTION_ART_RIM_UM);
+    expect(s.art_rim_um).toBe(P.ART_RIM_UM);
     expect(s.glass).toEqual({ thickness_um: 2250, material: 'fused quartz', n: 1.4585 });
     expect(s.foil).toEqual({
       tape_width_um: 6350,
@@ -86,7 +87,7 @@ describe('defaultBoxSpec (contract defaults)', () => {
     // scaling produced. It is stamped onto every face by normalize_face_dims,
     // so a drift here silently re-pitches all six gratings.
     expect(s.carrier_pitch_um).toBe(65.5);
-    expect(api.PRODUCTION_CARRIER_UM).toBe(65.5);
+    expect(P.CARRIER_UM).toBe(65.5);
     expect(s.metal).toBe('gold');
     expect(s.label).toBe('');
   });

@@ -38,6 +38,22 @@ from .assembly import (
     validate_bonded_assembly,
 )
 from .plates import FrameSpec, GlassSpec, PlateSpec, materialize_plate
+# Every number the production box is made of lives in ONE module. What used to
+# be a dozen ``PRODUCTION_*`` constants here (each with a twin in witness_geom,
+# ply_cuts or api.ts) is now read from there; the prose that justified each one
+# went with it.
+from .production import (
+    ART_RIM_UM,
+    BAND_UM,
+    DEPTH_UM,
+    GLASS_MATERIAL,
+    GLASS_N,
+    HEIGHT_UM,
+    MOTIF_SCALE,
+    PLY_UM,
+    TAPE_UM,
+    WIDTH_UM,
+)
 from .service import DATA_ROOT, cache_lock, read_json_cache, write_json_atomic
 
 
@@ -60,7 +76,7 @@ BOXES_ROOT = DATA_ROOT / "boxes"
 # 2026-09-16: and then the INNER PLIES went too. A bare inner ply was buying
 # nothing but wall thickness, and bonding twelve plies by hand is a step that
 # can only go wrong; the box is six single 2.25 mm plies, butt-jointed. See
-# PRODUCTION_TAPE_UM and PRODUCTION_ART_RIM_UM for what that changed and, more
+# production.TAPE_UM and production.ART_RIM_UM for what that changed and, more
 # importantly, for the two numbers it deliberately did NOT change.
 DEFAULT_FACE_PATTERN_SLUG = "globe-atlantic"       # front: the Atlantic globe, colour by region
 LID_PATTERN_SLUG = "monogram-jp"                   # top
@@ -100,39 +116,6 @@ _FACE_PATTERN_PARAMS: dict[str, dict[str, Any]] = {
 # than a parallax one. See PlateSpec.single_ply.
 _SINGLE_PLY_FACES: frozenset[str] = frozenset(FACE_IDS)
 
-# Motif size dial for every face's frame. 0.68 makes the foliage read finer and
-# lacier without narrowing the band — the leaves simply come more often — and
-# keeps a flower under a millimetre inside the 2.4 mm band. witness_dies reads
-# this, so the production plate is written at the same value.
-PRODUCTION_MOTIF_SCALE = 0.68
-
-# One garland band width for all six faces (µm). The default (12% of the
-# shorter side) gave the lid a 3.5 mm band and the walls 2.95 mm; inside the
-# pinned 3.6375 mm art rim a fixed 2.4 mm keeps the lid's art box at 17 mm and
-# the photo walls' at 12.5 mm.
-PRODUCTION_BAND_UM = 2400.0
-
-# 1/4" copper foil. A single 2.25 mm ply is a 2.25 mm edge, so 6.35 mm of tape
-# leaves a 2.05 mm fold on each face — a real lap for the solder, and clear of
-# the 3.64 mm art rim below. (The bonded build needed 3/8": its stepped edge was
-# three plies, 6.75 mm, and 1/4" tape did not even reach across it. 3/8" on a
-# single ply would fold 3.64 mm onto the face — exactly onto the art.)
-PRODUCTION_TAPE_UM = 6350.0
-
-# THE ART RIM, PINNED. Every face's gold starts 3.6375 mm in from its edge.
-#
-# This number is NOT derived, and that is the point: it is what the 2026-09-15
-# plate was WRITTEN with, back when the box was bonded and the rim was
-# ``assembly.bonded_art_keepout_um`` = one ply plus the interior foil fold
-# (2250 + 1387.5). The box stopped being bonded on 2026-09-16; the mask did not
-# change, because a written plate is a written plate. Deriving the rim from the
-# new single-ply foil instead would move every face's garland in by ~1.1 mm and
-# invalidate the plate for the sake of tidiness.
-#
-# It is also still a GOOD rim on the new build: the 1/4" fold lands at 2.05 mm,
-# so the art keeps 1.59 mm of clear glass between itself and the copper.
-PRODUCTION_ART_RIM_UM = 3637.5
-
 # The moire carrier every face's garland and the lid's monogram beat against,
 # in micrometres AS FABRICATED: witness_geom sizes it so the period subtends
 # 0.75 arcmin at 300 mm (65.5 um) — the lines are invisible in hand, only the
@@ -141,12 +124,6 @@ PRODUCTION_ART_RIM_UM = 3637.5
 # ratio and landed at 99 um, a hatch the eye resolves).
 from .witness_geom import BOX_CARRIER_UM as PRODUCTION_CARRIER_UM  # noqa: E402
 
-# The production stock: 2.25 mm fused quartz. ONE ply per face, so the wall IS
-# 2.25 mm and the paraxial gap t/n = 1543 um is the whole slab (which is why no
-# face can carry a parallax effect — see witness_geom.P_MIN_UM).
-PRODUCTION_PLY_UM = 2250.0
-PRODUCTION_GLASS_MATERIAL = "fused quartz"
-PRODUCTION_GLASS_N = 1.4585
 # The RING sizes the box. Assumed envelope (Jay to confirm against the ring):
 # a US 6-7 band, outer diameter up to 21 mm, standing 24 mm tall with its head
 # up, in a slot in a 1 mm liner. The clear interior between the 4.5 mm bonded
@@ -184,15 +161,6 @@ def ring_fit(width_um: float, depth_um: float, height_um: float, ply_um: float) 
     }
 
 
-# Outer box dimensions (um). Set when the walls were 4.5 mm bonded stacks
-# (23 x 23 x 26 mm of interior); at a 2.25 mm single-ply wall the same outer box
-# holds 27.5 x 27.5 x 30.5 mm, which is room to spare rather than a reason to
-# shrink — the die sizes are what the 2026-09-15 plate was cut to. Square in
-# plan; the height carries the lid. The frontend's defaultBoxSpec mirrors these
-# numbers.
-PRODUCTION_WIDTH_UM = 32000.0
-PRODUCTION_DEPTH_UM = 32000.0
-PRODUCTION_HEIGHT_UM = 35000.0
 
 # Per-face frame recipe. Each face gets a distinct seed (which the plate
 # compositor turns into a distinct moiré CARRIER ANGLE via (seed*17)%180) plus
@@ -277,7 +245,7 @@ class BoxSpec:
     # PINNED art rim (um), overriding the rim ``normalize_face_dims`` would
     # otherwise derive from the foil. ``None`` = derive it, which is what any
     # user-built box does. The PRODUCTION box pins it, because its mask is
-    # already written: see PRODUCTION_ART_RIM_UM. Applied to BOTH the front art
+    # already written: see production.ART_RIM_UM. Applied to BOTH the front art
     # rim (``weld_margin_um``) and the back window (``back_margin_um``) — on a
     # single ply the back window only ever narrowed the front keep-out anyway
     # (see plates._raster_compose_plate's single-ply rim), so one pinned number
@@ -347,7 +315,7 @@ class BoxSpec:
         t = self.glass.thickness_um
         if self.art_rim_um is not None:
             # Pinned rim: the same number on both layers of every face. See
-            # BoxSpec.art_rim_um / PRODUCTION_ART_RIM_UM.
+            # BoxSpec.art_rim_um / production.ART_RIM_UM.
             ko = bw = float(self.art_rim_um)
         elif self.bonded:
             # Two-ply construction: masks are composed in the OUTER ply frame
@@ -412,23 +380,23 @@ def default_box_spec() -> BoxSpec:
     no moiré — its effects are the photograph's tone and the spectral colour of
     fine gratings (``region_art``, ``leaf_fills``).
 
-    The art rim is PINNED (``PRODUCTION_ART_RIM_UM``) rather than derived from
+    The art rim is PINNED (``production.ART_RIM_UM``) rather than derived from
     the 1/4" foil, because the plate is already written; the cut dims are
     unchanged by the inner plies leaving, because a face's OUTER ply was always
     cut at the ply thickness.
     """
     spec = BoxSpec(
-        width_um=PRODUCTION_WIDTH_UM,
-        depth_um=PRODUCTION_DEPTH_UM,
-        height_um=PRODUCTION_HEIGHT_UM,
+        width_um=WIDTH_UM,
+        depth_um=DEPTH_UM,
+        height_um=HEIGHT_UM,
         glass=GlassSpec(
-            thickness_um=PRODUCTION_PLY_UM,
-            material=PRODUCTION_GLASS_MATERIAL,
-            n=PRODUCTION_GLASS_N,
+            thickness_um=PLY_UM,
+            material=GLASS_MATERIAL,
+            n=GLASS_N,
         ),
-        foil=FoilSpec(tape_width_um=PRODUCTION_TAPE_UM),
+        foil=FoilSpec(tape_width_um=TAPE_UM),
         bonded=False,
-        art_rim_um=PRODUCTION_ART_RIM_UM,
+        art_rim_um=ART_RIM_UM,
     )
     for fid in FACE_IDS:
         profile = _FACE_FRAME_PROFILE.get(fid, {})
@@ -436,14 +404,14 @@ def default_box_spec() -> BoxSpec:
         spec.faces[fid] = PlateSpec(
             pattern_slug=slug,
             pattern_params=dict(_FACE_PATTERN_PARAMS.get(fid, {})),
-            frame=FrameSpec(**profile, motif_scale=PRODUCTION_MOTIF_SCALE,
-                            band_um=PRODUCTION_BAND_UM),
+            frame=FrameSpec(**profile, motif_scale=MOTIF_SCALE,
+                            band_um=BAND_UM),
             single_ply=fid in _SINGLE_PLY_FACES,
             carrier_scale_mode="fixed",
         )
     spec.carrier_pitch_um = PRODUCTION_CARRIER_UM
     spec.normalize_face_dims()
-    fit = ring_fit(spec.width_um, spec.depth_um, spec.height_um, PRODUCTION_PLY_UM)
+    fit = ring_fit(spec.width_um, spec.depth_um, spec.height_um, PLY_UM)
     if not fit["fits"]:
         raise ValueError(f"production box does not hold the ring envelope: {fit}")
     return spec
@@ -561,7 +529,7 @@ def _assembly_block(spec: BoxSpec) -> dict[str, Any]:
     rim when there is one.
 
     ``assembly_summary`` reports the rim the FOIL implies. When a box pins its
-    art rim instead (the production box does — see PRODUCTION_ART_RIM_UM) the
+    art rim instead (the production box does — see production.ART_RIM_UM) the
     two disagree, and a cut list that quietly reported the derived number would
     describe a plate nobody wrote. So the pinned value goes in beside it, named,
     rather than overwriting it."""

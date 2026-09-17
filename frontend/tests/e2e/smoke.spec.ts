@@ -39,7 +39,7 @@ test.describe('smoke', () => {
     await expect(page.getByTestId('cut-list')).toBeVisible();
     // Production defaults (single plies, 2026-09-16): the front is one
     // 32.0 x 30.5 mm ply; the art rim is pinned at 3.64 mm — the number the
-    // 15 September plate was written with (boxes.PRODUCTION_ART_RIM_UM).
+    // 15 September plate was written with (production.ART_RIM_UM).
     await expect(page.getByTestId('cut-front')).toContainText('32.0');
     await expect(page.getByTestId('cut-front')).toContainText('30.5');
     await expect(page.getByTestId('keepout-readout')).toContainText('3.6 mm');

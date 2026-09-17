@@ -7,6 +7,11 @@ from typing import Any, ClassVar
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
+# ``app.production`` imports nothing from ``app``, so reading the litho floor
+# from it here is safe: the cycle that used to force a hand-mirrored copy
+# (patterns -> effects.drc -> export_fine -> patterns) does not exist any more.
+from ..production import LITHO_FLOOR_UM
+
 
 @dataclass
 class ParamSpec:
@@ -31,15 +36,10 @@ class Substrate:
     n: float = 1.46
 
 
-# Hard process floor for the gold-on-quartz line: 2 µm minimum line AND 2 µm
-# minimum gap. The OTHER holder of this number is ``export_fine.LITHO_FLOOR_UM``
-# (which also owns the drc_clean heal pass that repairs sub-floor geometry on the
-# fine-export path). It is MIRRORED here rather than imported because export_fine
-# imports patterns.effects.drc, which pulls in the patterns package __init__ and
-# hence this module — importing it back would be circular. The two constants must
-# stay equal.
-LITHO_FLOOR_UM = 2.0
-
+# ``LITHO_FLOOR_UM`` is re-exported from here (see the import above) because
+# every generator already reads it off ``patterns.base``; it is DEFINED in
+# ``app.production`` along with the rest of the process constants.
+#
 # Reported minima are products of float slider values, so a design that lands
 # exactly ON the floor (a 4 µm grating at 50% duty is 2 µm line / 2 µm gap — the
 # canonical minimum feature) must pass, not fail by a rounding bit.

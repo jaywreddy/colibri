@@ -217,7 +217,7 @@ export function stampFaces(spec: BoxSpec): BoxSpec {
   // PINNED rim: a box whose mask is already written states its art rim rather
   // than deriving it from the current foil, and the same number bounds both
   // layers of every face (mirrors backend BoxSpec.art_rim_um /
-  // boxes.normalize_face_dims / PRODUCTION_ART_RIM_UM).
+  // boxes.normalize_face_dims / production.ART_RIM_UM).
   const pinned = spec.art_rim_um ?? null;
   // Bonded: front art starts at the larger of the foil rim and the inner ply's
   // window (mirrors backend boxes.normalize_face_dims / bonded_art_keepout_um).

@@ -2,6 +2,10 @@ import { log } from './logger';
 // NOTE: assembly.ts imports only *types* from this module, so this is not a
 // runtime cycle — stampFaces keeps fresh BoxSpecs internally consistent.
 import { stampFaces } from './assembly';
+// The production box's numbers, GENERATED from backend/app/production.py by
+// tools/dev/gen_production_constants.py. Nothing in this file may retype one
+// of them: the preview POSTs this spec and the fab bake ships it.
+import * as P from './production';
 
 export type ParamSpec = {
   name: string;
@@ -376,7 +380,7 @@ export type BoxSpec = {
   /** PINNED art rim (um), overriding the rim stampFaces would derive from the
    * foil, on BOTH layers of every face. null/absent = derive it. The production
    * box pins it because its mask is already written — mirrors backend
-   * BoxSpec.art_rim_um / boxes.PRODUCTION_ART_RIM_UM. */
+   * BoxSpec.art_rim_um / production.ART_RIM_UM. */
   art_rim_um?: number | null;
   /** Litho metal for the PREVIEW's conductor response (masks are identical):
    * 'gold' | 'chrome' (bright, platinum-line read) | 'chrome-ar' (AR-coated
@@ -536,23 +540,27 @@ const FACE_FRAME_PROFILE: Record<FaceId, Partial<FrameSpec> & { seed: number }> 
 };
 
 /**
- * PRODUCTION glass: 2.25 mm fused quartz per ply (the box is bonded, so the
- * wall is 4.5 mm and the optical parallax gap is one ply, 2250/1.4585 ≈
- * 1543 µm of paraxial air). n is the real fused-quartz index at d-line, not
- * the 1.46 round number the pre-production default carried.
+ * PRODUCTION glass: ONE 2.25 mm fused-quartz ply per face, so the wall IS the
+ * ply and the paraxial gap t/n ≈ 1543 µm is the whole slab. n is the real
+ * fused-quartz index at the d-line, not the 1.46 round number the
+ * pre-production default carried.
  */
 export function defaultGlassSpec(): GlassSpec {
-  return { thickness_um: 2250.0, material: 'fused quartz', n: 1.4585 };
+  return { thickness_um: P.PLY_UM, material: P.GLASS_MATERIAL, n: P.GLASS_N };
 }
 
 /**
  * PRODUCTION foil: 1/4" copper. A single 2.25 mm ply is a 2.25 mm edge, so the
  * tape leaves a 2.05 mm fold on each face — clear of the 3.6375 mm art rim.
- * (The bonded build needed 3/8" to wrap its 6.75 mm stepped edge.) Mirrors
- * backend boxes.PRODUCTION_TAPE_UM.
+ * (The bonded build needed 3/8" to wrap its 6.75 mm stepped edge.)
  */
 export function defaultFoilSpec(): FoilSpec {
-  return { tape_width_um: 6350.0, safety_um: 500.0, bead_um: 2000.0, finish: 'bright' };
+  return {
+    tape_width_um: P.TAPE_UM,
+    safety_um: P.FOIL_SAFETY_UM,
+    bead_um: P.FOIL_BEAD_UM,
+    finish: 'bright',
+  };
 }
 
 export function defaultHingeSpec(): HingeSpec {
@@ -587,23 +595,6 @@ export function defaultPlateSpec(
 }
 
 /**
- * PRODUCTION moire carrier, micrometres as fabricated: the period subtends
- * 0.75 arcmin at 300 mm so the lines are invisible in hand and only the beat
- * shows. Mirrors backend witness_geom.BOX_CARRIER_UM / boxes.PRODUCTION_CARRIER_UM;
- * the production faces run carrier_scale_mode 'fixed' so this is the literal pitch.
- */
-export const PRODUCTION_CARRIER_UM = 65.5;
-
-/**
- * The PRODUCTION art rim, micrometres, PINNED. Every face's gold starts
- * 3.6375 mm in from its edge — the number the 2026-09-15 plate was WRITTEN
- * with, chosen when the box was bonded (one ply + the interior foil fold) and
- * kept so the plate does not change now that the box is six single plies.
- * Mirrors backend boxes.PRODUCTION_ART_RIM_UM.
- */
-export const PRODUCTION_ART_RIM_UM = 3637.5;
-
-/**
  * The PRODUCTION box — 32 × 32 × 35 mm outer, SIX SINGLE 2.25 mm fused-quartz
  * plies butt-jointed with 1/4" foil (2026-09-16: no inner plies, no bonding),
  * which opens the interior to 27.5 × 27.5 × 30.5 mm for a 21 mm ring standing
@@ -622,25 +613,29 @@ export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxS
     // bare glass — every face one ply. A caller-supplied `patternSlug`
     // overrides only the FRONT face (themed override boxes).
     const slug = fid === 'front' ? patternSlug : plan.slug;
-    // motif_scale / band_um mirror backend boxes.PRODUCTION_MOTIF_SCALE /
-    // PRODUCTION_BAND_UM: one 2.4 mm band on every face, foliage at 0.68.
-    faces[fid] = defaultPlateSpec(slug, seed, { ...frameOverrides, motif_scale: 0.68, band_um: 2400 }, {
-      params: plan.params,
-      singlePly: plan.singlePly,
-      carrierScaleMode: 'fixed',
-    });
+    // One 2.4 mm garland band on every face, foliage at 0.68.
+    faces[fid] = defaultPlateSpec(
+      slug,
+      seed,
+      { ...frameOverrides, motif_scale: P.MOTIF_SCALE, band_um: P.BAND_UM },
+      {
+        params: plan.params,
+        singlePly: plan.singlePly,
+        carrierScaleMode: 'fixed',
+      }
+    );
   });
   const spec: BoxSpec = {
-    width_um: 32000.0,
-    depth_um: 32000.0,
-    height_um: 35000.0,
+    width_um: P.WIDTH_UM,
+    depth_um: P.DEPTH_UM,
+    height_um: P.HEIGHT_UM,
     glass: defaultGlassSpec(),
     foil: defaultFoilSpec(),
     hinge: defaultHingeSpec(),
     faces,
-    carrier_pitch_um: PRODUCTION_CARRIER_UM,
+    carrier_pitch_um: P.CARRIER_UM,
     bonded: false,
-    art_rim_um: PRODUCTION_ART_RIM_UM,
+    art_rim_um: P.ART_RIM_UM,
     metal: 'gold',
     label: '',
   };

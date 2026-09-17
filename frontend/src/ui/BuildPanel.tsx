@@ -51,7 +51,7 @@ const FINISHES: FoilFinish[] = ['bright', 'copper', 'gold', 'rose', 'patina', 'g
  * client-side from src/assembly.ts so it updates instantly.
  *
  * The old "4 · Grating pitch" section is gone. The fabricated carrier pitch is
- * a PROCESS constant now (boxes.PRODUCTION_CARRIER_UM, 65.5 µm — the period
+ * a PROCESS constant now (production.CARRIER_UM, 65.5 µm — the period
  * that subtends 0.75 arcmin at 300 mm so the lines stay invisible in hand),
  * stamped onto every face by defaultBoxSpec; offering a slider for it invited
  * re-pitching all six gratings of a designed part from a preview. The

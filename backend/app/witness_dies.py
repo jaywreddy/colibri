@@ -1,6 +1,6 @@
 """Production dies on the witness plate: the box faces that come off as plies.
 
-The 5″ plate is the stock the box is built from (``witness_geom.PLY_UM`` of
+The 5″ plate is the stock the box is built from (``production.PLY_UM`` of
 ``GLASS_MATERIAL``), so a rectangle of it written with a face's fine geometry
 IS that face's outer ply once it is diced. Every face is ONE written ply
 (2026-09-15: the bonded moiré pairs of the first plate read badly on glass and
@@ -51,19 +51,16 @@ from typing import Any
 import numpy as np
 
 from . import ply_cuts as pc
-from .witness_geom import (CLEAR, GLASS_MATERIAL, GLASS_N, METAL, PLY_UM, CellArt,
-                           Cell, _cat)
+from .production import FINISH_RADIUS_UM, GLASS_N, LITHO_FLOOR_UM, PLY_UM
+from .witness_geom import CLEAR, METAL, CellArt, Cell, _cat
 
-# The plate IS the box stock (witness_geom.PLY_UM / GLASS_N). Every derived
+# The plate IS the box stock (production.PLY_UM / GLASS_N). Every derived
 # number on the witness -- parallax rate, near-field boundary, comb pitch -- is
-# therefore the box's own.
+# therefore the box's own, and the garland dials the dies are written at are
+# the box's own too (production.MOTIF_SCALE / BAND_UM, through the face specs
+# that boxes.default_box_spec hands back).
 
 TRAPEZOID_DECOMP = True
-
-# The garland dials the plate is written at are the box's own
-# (boxes.PRODUCTION_MOTIF_SCALE / PRODUCTION_BAND_UM); MOTIF_SCALE is kept as a
-# name for the tools and tests that read it here.
-from .boxes import PRODUCTION_MOTIF_SCALE as MOTIF_SCALE  # noqa: E402
 
 
 # --- the box this plate feeds -------------------------------------------------
@@ -76,12 +73,16 @@ def blank_plan() -> tuple[Any, Any]:
     is the ``(width, depth, height)`` triple the pair rects are derived from.
     The plate no longer sizes the box (the old solve packed all twelve plies of
     the largest box onto one blank); the ring sizes the box, and the plate
-    carries what fits."""
+    carries what fits.
+
+    This used to re-check at runtime that the box's glass matched the witness
+    plate's, because the two were separate constants that could drift. They are
+    one constant now (``production.PLY_UM`` / ``GLASS_N``, which
+    ``boxes.default_box_spec`` builds its ``GlassSpec`` from), so there is
+    nothing left to disagree."""
     from .boxes import default_box_spec
 
     spec = default_box_spec()
-    if abs(spec.glass.thickness_um - PLY_UM) > 1e-6 or abs(spec.glass.n - GLASS_N) > 1e-9:
-        raise RuntimeError("production box glass differs from witness_geom PLY_UM / GLASS_N")
     dims = (spec.width_um, spec.depth_um, spec.height_um)
     return dims, spec
 
@@ -102,13 +103,13 @@ def bench_marks(face: str, ply: str, stack_w: float, stack_h: float) -> np.ndarr
     of the bonded design are not written: the plate carries single plies and
     there is nothing behind one to beat against.
 
-    The band offset is PINNED (``ply_cuts.PRODUCTION_ID_TICK_OFFSET_UM``), not
+    The band offset is PINNED (``production.ID_TICK_OFFSET_UM``), not
     derived from the box's current foil: these marks are on the written plate."""
     from .assembly import FACE_IDS
 
     return pc.id_tick_rects(list(FACE_IDS).index(face), ply == "B",
                             stack_w, stack_h, PLY_UM, 0.0,
-                            band_offset_um=pc.PRODUCTION_ID_TICK_OFFSET_UM)
+                            band_offset_um=pc.ID_TICK_OFFSET_UM)
 
 
 def dice_ticks(w: float, h: float) -> np.ndarray:
@@ -120,10 +121,6 @@ def dice_ticks(w: float, h: float) -> np.ndarray:
 
 # --- inversion ----------------------------------------------------------------
 
-
-CLEAR_FLOOR_UM = 2.0
-"""The shop's rule, both senses: no written CLEAR feature and no CHROME left
-between clear features narrower than this."""
 
 SETTLE_ROUNDS = 4
 """Patch rounds the written-data settle may take. Four, because that is the
@@ -138,27 +135,17 @@ old structure did (+4847 µm² of clear kept, 0.04% of the field). This is a
 ceiling, not a schedule: the settle is monotone and any round that does not
 reduce the count is undone, so a clean die still costs one check."""
 
-FINISH_ART_UM = CLEAR_FLOOR_UM / 2.0
-FINISH_FRAME_UM = 1.0   # == FINISH_ART_UM: an open of radius r deletes every line under 2r, and the
-# single-ply garland writes 4.15 um leaf gratings (2.075 um lines) in the frame band.
-# 1.2 um (chosen when the frame held only 36 um leaf lines) erased the two finest
-# families outright on the 07:37 plate; 1.0 leaves 75 nm of core on the finest line.
-"""Half-widths of the morphological OPENs that finish a die (see
-``clear_field``): the METAL is opened (eroded then dilated) so no chrome
-filament or tip thinner than the floor survives, then the CLEAR complement is
-opened so no clear slit, pinch or DBU sliver does. Inside the centrepiece ART
-BOX the radius is exactly the half-floor: the finest colour sub-grating leaves
-2.075 µm of clear and 2.075 µm of chrome, which survive a 1.0 µm erosion at
-75 nm and regrow. In the FRAME the radius is 1.2 µm: nothing there is finer
-than a 40 µm vernier bar, and where a single-ply garland's two gratings cross
-at 2.5° the clear gap tapers to a wedge that the open must cap — klayout
-rebuilds the cap as a flat cut whose width is 2r less the wedge taper, so at
-r = 1.0 the caps came out 1.91 µm and were flagged; at 1.2 they are 2.3 µm.
-What the opens leave (a jagged weld pocket around a colour-stripe end from
-the metal-side heal, a decomposition sliver) is chromed over where the width
-check flags it, in at most ``SETTLE_ROUNDS`` monotone rounds, and the remainder is counted in
-the die's ``drc_written_*`` stats — a few sub-micron pockets that resist will
-not resolve anyway, listed rather than hidden."""
+# The die finish. ONE radius for the art box and the frame — see
+# ``production.FINISH_RADIUS_UM`` for why they cannot differ any more (the
+# single-ply garland writes 2.075 µm leaf lines in the frame band, so the frame
+# cannot be opened harder than the art). ``build_face_die`` still takes the two
+# as separate arguments, because a bench die may want to finish its frame
+# differently from its picture; the PRODUCTION die passes the one radius to
+# both. What the opens leave (a jagged weld pocket around a colour-stripe end
+# from the metal-side heal, a decomposition sliver) is chromed over where the
+# width check flags it, in at most ``SETTLE_ROUNDS`` monotone rounds, and the
+# remainder is counted in the die's ``drc_written_*`` stats — a few sub-micron
+# pockets that resist will not resolve anyway, listed rather than hidden.
 
 
 def _patch_boxes(patch, dbu_um: float, halo_um: float) -> list[tuple[float, float, float, float]]:
@@ -228,8 +215,8 @@ def _drc_checks(reg, kdb, floor_dbu: int):
 
 def clear_field(w: float, h: float, metal: list[np.ndarray], *,
                 dbu_um: float = 0.001, art_box_um: float | None = None,
-                finish_art_um: float = FINISH_ART_UM,
-                finish_frame_um: float = FINISH_FRAME_UM,
+                finish_art_um: float = FINISH_RADIUS_UM,
+                finish_frame_um: float = FINISH_RADIUS_UM,
                 timing: dict[str, Any] | None = None,
                 drc_out: dict[str, Any] | None = None,
                 ) -> list[np.ndarray]:
@@ -238,7 +225,7 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
     ``metal`` mixes ``(N,4)`` rect arrays and ``(K,2)`` vertex rings. The
     metal is merged and opened to the floor, one klayout Region boolean over
     the die takes the complement, the clear field is opened and checked to the
-    floor (see ``FINISH_FRAME_UM``; ``art_box_um`` is the side of the centred
+    floor (see ``production.FINISH_RADIUS_UM``; ``art_box_um`` is the side of the centred
     centrepiece square that takes the finer radius), then a convex
     decomposition so the writer never sees a polygon with holes or a
     100k-vertex ring (pieces have at most six vertices). Zero-area pieces of
@@ -276,7 +263,7 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
     s = 1.0 / dbu_um
     reg.merge()
     tm["merge_metal_s"] = round(_T() - _t, 2)
-    floor_dbu = int(round(CLEAR_FLOOR_UM * s))
+    floor_dbu = int(round(LITHO_FLOOR_UM * s))
     box = kdb.Region(kdb.Box(int(round(-w / 2 * s)), int(round(-h / 2 * s)),
                              int(round(w / 2 * s)), int(round(h / 2 * s))))
     art = None
@@ -346,7 +333,7 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
             # neighbouring PIECE would report its neighbour's own width as a
             # violation (see drc.patched_neighbourhood). Tiles are independent,
             # so a kept tile answers exactly what it answers in a whole-die pass.
-            near = _patch_boxes(patch, dbu_um, 2.0 * CLEAR_FLOOR_UM)
+            near = _patch_boxes(patch, dbu_um, 2.0 * LITHO_FLOOR_UM)
             nw2, mnw2, ns2, mns2, wm2, sm2 = _tiled_checks(
                 cand, kdb, floor_dbu, dbu_um, only_near=near)
             n2 = nw2 + ns2
@@ -442,7 +429,7 @@ def clear_field(w: float, h: float, metal: list[np.ndarray], *,
     return out
 
 
-def written_clear_drc(polys: list[np.ndarray], *, floor_um: float = CLEAR_FLOOR_UM,
+def written_clear_drc(polys: list[np.ndarray], *, floor_um: float = LITHO_FLOOR_UM,
                       dbu_um: float = 0.001) -> dict[str, Any]:
     """Width / space check of WRITTEN clear polygons (what the shop's incoming
     DRC sees), Euclidian, locally merged, run TILED.
@@ -641,7 +628,7 @@ def build_face_die(face: str, cx: float, cy: float, w: float, h: float,
         # the WRITTEN clear data, post-inversion
         "drc_written_front": drc_written_front,
         "timing_s": timing,
-        "finish_um": [FINISH_ART_UM, FINISH_FRAME_UM],
+        "finish_um": [FINISH_RADIUS_UM, FINISH_RADIUS_UM],
         "single_layer": True,
         "pattern_params": dict(getattr(pspec, "pattern_params", {}) or {}),
     }

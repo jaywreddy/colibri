@@ -22,7 +22,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 import klayout.db as kdb  # noqa: E402
 
 from app.export_witness import (DICE_MARK_LEN_UM, DICE_MARK_W_UM, LAYER_DICE,  # noqa: E402
-                                LAYER_FRONT, _dice_edge_marks, _dice_line_rects,
+                                LAYER_GOLD, _dice_edge_marks, _dice_line_rects,
                                 _insert_rects, _save_options, doe_cells, layout,
                                 write_dicing_md, write_map_svg)
 
@@ -52,7 +52,7 @@ def main() -> int:
         ly = kdb.Layout()
         ly.read(str(p))
         top = ly.top_cell()
-        li = ly.layer(*LAYER_FRONT)
+        li = ly.layer(*LAYER_GOLD)
         # drop every earlier saw-lane mark (a bare 80 x 500 um bar is nothing
         # else on this plate), then insert the current set
         removed = 0
