@@ -45,3 +45,11 @@ NOT in git — they were purged from the history and are ignored by
 a fresh clone needs them copied in before the photo faces or the plate can be
 built. The mattes (`.subject.png`), the fade field (`.fade.png`) and the colour
 plans (`.colour.json`) are derived and stay tracked.
+
+Tests: the tests that screen a real picture (`tests/test_plates_and_boxes.py`
+photo tests, marked `requires_photo("beach")`; `tests/test_witness.py`'s
+portrait complement test, marked `requires_source_photo`) SKIP when the asset
+is absent, with the reason printed (`pytest -rs`) — so a fresh clone and CI
+see "skipped: personal asset", not a failure. The band builder's complement
+property is still exercised everywhere on a synthetic image
+(`test_the_halftone_inverse_is_a_complement_on_any_image`).

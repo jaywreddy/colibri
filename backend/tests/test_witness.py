@@ -337,6 +337,13 @@ def test_analytic_inverses_tile_their_cell_exactly(kw):
     assert _art_area(m) + _art_area(k) == pytest.approx(W * H, rel=1e-6)
 
 
+requires_source_photo = pytest.mark.skipif(
+    not wc.photo_path().is_file(),
+    reason="the reference portrait (photos/<SOURCE_PHOTO>) is a personal asset and not in git",
+)
+
+
+@requires_source_photo
 @pytest.mark.parametrize("mode", ["plain", "zones"])
 def test_the_halftone_inverse_tiles_the_lines_it_covers(mode):
     """Plain bands AND coloured bands: the clear sub-grating (duty 1-c at phase
@@ -356,6 +363,77 @@ def test_the_halftone_inverse_tiles_the_lines_it_covers(mode):
         band = _area(m.arrays[0]["rects"])
         assert _array_area(m.arrays[0]) / band == pytest.approx(0.5, abs=0.01)
         assert _array_area(k.arrays[0]) / band == pytest.approx(0.5, abs=0.01)
+
+
+@pytest.fixture
+def synthetic_portrait(monkeypatch):
+    """Stand in for the reference photograph, which is PERSONAL and not in git.
+
+    ``build_halftone`` loads ``photos/<SOURCE_PHOTO>`` through
+    ``portrait_source``; a checkout (CI included) has no such file. This is a
+    deterministic image in the same regime: a grey tone ramp with a sinusoidal
+    structure across it (sat 0, so no colour rule claims it) and two saturated
+    discs inside the zones plan's "flowers" bbox, which its hue rule colours.
+    """
+    from PIL import Image
+
+    def _src(size: int = 1400) -> tuple[np.ndarray, np.ndarray]:
+        n = int(size)
+        y, x = np.mgrid[0:n, 0:n].astype(np.float32) / max(n - 1, 1)
+        gray = 0.15 + 0.7 * (0.5 * x + 0.5 * np.sin(2 * np.pi * y) ** 2)
+        hue = np.zeros_like(x)
+        sat = np.zeros_like(x)
+        val = np.clip(gray, 0.0, 1.0)
+        for (cx, cy, rx, ry), h in (((0.19, 0.37, 0.11, 0.17), 20.0 / 360.0),
+                                    ((0.42, 0.70, 0.10, 0.15), 300.0 / 360.0)):
+            patch = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1.0
+            hue[patch] = h
+            sat[patch] = 0.85
+            val[patch] = 0.7
+        hsv = np.stack([hue * 255.0, sat * 255.0, val * 255.0], axis=-1).astype(np.uint8)
+        rgb = np.asarray(Image.fromarray(hsv, "HSV").convert("RGB"), dtype=np.float32) / 255.0
+        return gray.astype(np.float32), rgb
+
+    monkeypatch.setattr(wc, "portrait_source", _src)
+
+
+@pytest.mark.parametrize("mode", ["plain", "zones"])
+def test_the_halftone_inverse_is_a_complement_on_any_image(mode, synthetic_portrait):
+    """The same complement property, on an image every checkout has.
+
+    What the band builder GUARANTEES, as opposed to what the portrait happens
+    to measure: plain bands tile exactly; coloured bands tile up to the
+    centre-in stripe rule, whose error is confined to band ENDS and bounded by
+    one half-period stripe (d/2 wide, the band tall) at each of the two ends
+    of every coloured band. The portrait test above pins the much tighter
+    figure the real picture reaches (its many petals sample every stripe
+    phase, so the end errors cancel); a synthetic image cannot promise that —
+    with a 2.86 um source pixel and a 4.75 um rung the disc chords end on a
+    handful of stripe phases and the errors add (+497 um2 on this image) — so
+    this test asserts the bound and a loose relative ceiling instead.
+    """
+    W = H = 4000.0
+    kw = dict(plan=_plan(mode), line_period_um=44.0, tone_steps=22)
+    m = wc.build_halftone(0, 0, W, H, polarity=METAL, **kw)
+    k = wc.build_halftone(0, 0, W, H, polarity=CLEAR, **kw)
+    tiled = round(W / 44.0) * 44.0 * W
+    diff = _art_area(m) + _art_area(k) - tiled
+    if mode == "plain":
+        assert not m.arrays and not k.arrays
+        assert diff == pytest.approx(0.0, abs=tiled * 1e-9)
+        return
+    assert m.arrays and k.arrays, "the zones plan must colour the discs"
+    for a in (m.arrays[0], k.arrays[0]):
+        band = _area(a["rects"])
+        assert _array_area(a) / band == pytest.approx(0.5, abs=0.01)
+    # One half-period stripe per band end, summed over every coloured band.
+    bound = 0.0
+    for a in m.arrays:
+        r = np.asarray(a["rects"], dtype=np.float64)
+        d = np.broadcast_to(np.asarray(a["period_um"], dtype=np.float64), (r.shape[0],))
+        bound += float((2 * 0.5 * d * (r[:, 3] - r[:, 2])).sum())
+    assert abs(diff) <= bound
+    assert abs(diff) <= tiled * 1e-4, f"coloured band ends miss by {diff:.1f} um2 on {tiled:.0f}"
 
 
 def test_a_grating_and_its_inverse_are_complements():

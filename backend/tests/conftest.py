@@ -22,6 +22,24 @@ CHEAP_PARAMS: dict[str, float] = {
 }
 
 
+def requires_photo(name: str) -> pytest.MarkDecorator:
+    """Skip when the prepared photograph ``<name>.png`` is not on disk.
+
+    The six photographs are PERSONAL and live outside git (purged from history
+    2026-09-16, ignored since): a checkout - CI included - has the authored
+    ``.colour.json`` plans and the ``.subject``/``.fade`` sidecars but not the
+    pictures. Tests that screen a real picture run on the operator's machine
+    and skip everywhere else; the skip reason names the missing asset so a
+    CI log says WHY the photo pipeline was not exercised, instead of failing.
+    """
+    from app.patterns.bitmap.photo import available_photos
+
+    return pytest.mark.skipif(
+        name not in available_photos(),
+        reason=f"photo {name!r} is not in git (personal asset; see assets/photos/README.md)",
+    )
+
+
 @pytest.fixture
 def cheap_pattern() -> tuple[str, dict[str, float]]:
     """(slug, params) of the cheapest generate the catalog allows."""
@@ -33,7 +51,7 @@ def shared_pattern_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Session-wide central-pattern cache shared by all plate/box tests.
 
     Pattern variants are content-addressed (slug + params hash), so sharing
-    the cache across tests is safe — and essential for speed: a cold central
+    the cache across tests is safe â€” and essential for speed: a cold central
     pattern costs seconds, and without sharing every plate/box test pays it
     again in its own tmp dir.
     """
@@ -84,7 +102,7 @@ def isolated_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture
 def client(isolated_data_root: Path) -> TestClient:
     """TestClient with the lifespan disabled (so we don't seed every pattern
-    on every test — that would take ~20 seconds per test)."""
+    on every test â€” that would take ~20 seconds per test)."""
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.staticfiles import StaticFiles

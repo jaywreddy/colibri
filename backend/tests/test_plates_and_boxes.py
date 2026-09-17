@@ -14,6 +14,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import requires_photo
+
 
 def test_weld_margin_zeroes_border_in_raster(isolated_data):
     """No gold pixels may appear inside the weld zone of either layer."""
@@ -390,6 +392,7 @@ def test_the_single_ply_cut_dims_are_the_dies_that_were_written():
 # ----- production face types --------------------------------------------------
 
 
+@requires_photo("beach")
 def test_photo_halftone_registers_with_a_valid_recipe(isolated_data):
     from app.patterns.base import RECIPE_NAMES, registry
 
@@ -410,6 +413,7 @@ def test_photo_halftone_registers_with_a_valid_recipe(isolated_data):
     assert gp.min_feature_um >= 2.0
 
 
+@requires_photo("beach")
 def test_photo_coverage_fades_to_the_carrier_field_but_keeps_the_centre(isolated_data):
     import numpy as np
     from app.patterns.bitmap.photo import CARRIER_COV, box_edge, photo_coverage
@@ -568,6 +572,7 @@ def test_single_ply_leaves_are_fine_gratings_one_period_per_family(isolated_data
     assert _carrier_recipe_data(_spec(False))["single_ply_leaf_period_um"] == 0.0
 
 
+@requires_photo("beach")
 def test_photo_face_composes_bands_on_the_front_only(isolated_data):
     import numpy as np
     from PIL import Image

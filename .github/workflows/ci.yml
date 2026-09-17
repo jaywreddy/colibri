@@ -66,8 +66,8 @@ jobs:
       # command shape identical to the local one is what makes a CI failure
       # reproducible with a single copy-paste.
       - name: pytest chunk 1
-        run: uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
+        run: uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q -rs
       - name: pytest chunk 9
         run: >-
           uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py
-          tests/test_witness.py tests/test_ply_cuts.py tests/test_export_svg_rects.py -q
+          tests/test_witness.py tests/test_ply_cuts.py tests/test_export_svg_rects.py -q -rs
