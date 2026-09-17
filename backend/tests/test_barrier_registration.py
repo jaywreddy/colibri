@@ -1,9 +1,12 @@
-"""Barrier REGISTRATION regression — switch_metrics on the six barrier slugs'
+"""Barrier REGISTRATION regression — switch_metrics on the barrier exemplar's
 REAL generated geometry.
 
-``tests/test_pattern_types.py`` pins the switch/reveal/fringe metrics against
-synthetic masks that are perfectly registered by construction, so it can only
-prove the METRICS work; it never looks at a shipped pattern. That gap is how the
+``globe-duo-phase`` is the one parallax-barrier construction the repo keeps
+(2026-09-16): no production face carries a switch, but the construction is kept
+built and measured so it cannot rot. The metrics themselves used to be pinned
+separately against synthetic masks that were perfectly registered by
+construction, which could only prove the METRICS work; it never looked at a
+shipped pattern. That gap is how the
 2026-07 audit found every p=60 barrier misregistered: the back interlace period
 was derived from the extent (60.15 µm at the defaults) instead of from the slit
 lattice (60.0 µm), and the open slit sat ~p/8 off the channel boundary, so the
@@ -24,9 +27,9 @@ straddle signature at the CLAUDE.md barrier contract shift —
   * 50/50 mud at ±p/2 (the aliasing zone; a slit-CENTRED barrier is the exact
     opposite — sharp at p/2, mud at p/4 — which is how the class is pinned).
 
-Cost: eight ``generate()`` calls at default extents (never beyond — the host
+Cost: two ``generate()`` calls at legal extents (never beyond — the host
 bugchecks under memory load) and ~1200x1200 px rasters. No file I/O, no
-registry-wide sweep; run it as its own chunk.
+registry-wide sweep.
 """
 from __future__ import annotations
 
@@ -39,23 +42,14 @@ from app.patterns.base import registry
 from app.rasterize import rasterize
 from app.sim2d import switch_metrics
 
-# The six parallax-barrier slugs: BOTH images interlaced in the BACK layer as
+# The parallax-barrier exemplar: BOTH images interlaced in the BACK layer as
 # half-period column channels, pure full-field slit mask in FRONT.
-BARRIER_SLUGS = [
-    "jp-monogram-phase",
-    "colibri-flap-phase",
-    "globe-duo-phase",
-    "gear-quill-switch",
-    "colibri-globe-lenticular",
-    "globe-rotation-stereo",
-]
+BARRIER_SLUGS = ["globe-duo-phase"]
 
-# One non-default extent per barrier family, chosen as a legal 100 µm slider
-# step that was the WRONG registration class before the phase became
-# extent-aware: 2100 µm put the open slit dead-centre over channel A for the
-# p=40 family (raster_half 1050 ≡ 10 mod 20) and it exercises the other of the
-# two barrier-phase solutions (mod p/2) for the p=60 family.
-EXTENT_CASES = [("jp-monogram-phase", 2100.0), ("colibri-globe-lenticular", 2100.0)]
+# One non-default extent, chosen as a legal 100 µm slider step that was the
+# WRONG registration class before the phase became extent-aware: it exercises
+# the other of the two barrier-phase solutions (mod p/2) for the p=60 family.
+EXTENT_CASES = [("globe-duo-phase", 2100.0)]
 
 # Raster pitch = slit_period_um / 24, so every lattice the measurement depends
 # on lands on whole pixels: the p/2 channel is 12 px, the p/4 shift is 6 px, and

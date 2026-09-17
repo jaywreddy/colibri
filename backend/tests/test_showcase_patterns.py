@@ -1,9 +1,8 @@
-"""Sanity checks for the showcase patterns: the parallax-barrier image
-switches rebuilt from the retired phase overlays (J+P monogram ↔ heart,
-CA ↔ Colombia duo-globe, gear ↔ quill, colibrí wing beat), the spinning-globe
-lenticular, the Cattleya shimmer, the J+P carrier reveal, and the globe-motif
-rotation support they build on. Extents are kept small so each generate()
-stays in the sub-second range on the constrained dev host."""
+"""Sanity checks for the registered centrepieces: the two single-layer
+diffraction mappings the box actually writes (the lid's J+P monogram and the
+front's Atlantic globe), and the parallax-barrier exemplar the repo keeps built
+(``globe-duo-phase``). Extents are kept small so each generate() stays in the
+sub-second range on the constrained dev host."""
 from __future__ import annotations
 
 import math
@@ -13,31 +12,16 @@ import pytest
 
 import app.patterns.artistic  # noqa: F401  -- populate registry
 from app.patterns.base import RECIPE_NAMES, Substrate, registry
-from app.patterns.motifs import globe, monogram
+from app.patterns.motifs import globe
 from app.rasterize import rasterize
 
-SHOWCASE_SLUGS = [
-    "globe-rotation-stereo",
-    "orchid-shimmer-moire",
-    "jp-monogram-phase",
-    "globe-duo-phase",
-    "gear-quill-switch",
-    "colibri-flap-phase",
-    "monogram-carrier-reveal",
-]
+SHOWCASE_SLUGS = ["monogram-jp", "globe-atlantic", "globe-duo-phase"]
 
-# The slugs rebuilt from phase overlays into parallax barriers: both images
-# interlaced in the BACK layer as half-period column channels, pure FULL-FIELD
-# slit mask in FRONT (never clipped to the silhouettes — a union-gated comb is
-# itself a static front image; the front-coverage test below is the tripwire
-# for that defect class). colibri-globe-phase, once first in this list, was
-# removed as a redundant twin of colibri-globe-lenticular.
-BARRIER_SLUGS = [
-    "jp-monogram-phase",
-    "globe-duo-phase",
-    "gear-quill-switch",
-    "colibri-flap-phase",
-]
+# The PARALLAX BARRIER exemplar: both images interlaced in the BACK layer as
+# half-period column channels, pure FULL-FIELD slit mask in FRONT (never clipped
+# to the silhouettes — a union-gated comb is itself a static front image; the
+# front-coverage test below is the tripwire for that defect class).
+BARRIER_SLUGS = ["globe-duo-phase"]
 
 # Small extent keeps raster grids and lattice cell counts tiny.
 SMALL_EXTENT = 800.0
@@ -66,35 +50,22 @@ def test_showcase_slugs_registered_with_valid_recipe_and_descriptor():
 
 @pytest.mark.parametrize("slug", SHOWCASE_SLUGS)
 def test_generate_small_extent_nonempty_layers_inside_bounds(slug):
+    """Front always carries metal and stays inside the extent. The BACK only
+    exists on the two-ply exemplar: the two written faces are single plies, so
+    an empty back is their contract, not a defect (pinned per slug below)."""
     cls = registry[slug]
     kwargs = cls.defaults() | {"extent_um": SMALL_EXTENT}
     gp = cls.generate(**kwargs)
     assert gp.extent_um == (SMALL_EXTENT, SMALL_EXTENT)
     _assert_layer_inside_extent(gp.front, SMALL_EXTENT, f"{slug} front")
-    _assert_layer_inside_extent(gp.back, SMALL_EXTENT, f"{slug} back")
-
-
-def test_stereo_views_present_and_differ():
-    cls = registry["globe-rotation-stereo"]
-    gp = cls.generate(**(cls.defaults() | {"extent_um": SMALL_EXTENT}))
-    view_a = gp.extra_layers.get("view_a")
-    view_b = gp.extra_layers.get("view_b")
-    assert view_a is not None and view_b is not None
-    _assert_layer_inside_extent(view_a, SMALL_EXTENT, "view_a")
-    _assert_layer_inside_extent(view_b, SMALL_EXTENT, "view_b")
-    # The two spin states occupy complementary interlace columns AND depict
-    # different rotations, so at least one of area / bounds must differ.
-    # (No symmetric_difference here — the raster-strip MultiPolygons are
-    # concatenations whose members share edges, i.e. not GEOS-boolean-safe.)
-    assert (
-        abs(view_a.area - view_b.area) > 1e-9 or view_a.bounds != view_b.bounds
-    ), "view_a and view_b are indistinguishable"
-    assert gp.recipe_data["slit_axis_deg"] == 0.0
-    assert gp.recipe_data["slit_period_um"] == cls.defaults()["slit_period_um"]
+    if slug in BARRIER_SLUGS:
+        _assert_layer_inside_extent(gp.back, SMALL_EXTENT, f"{slug} back")
+    else:
+        assert gp.back.is_empty, f"{slug} is a single written ply"
 
 
 # ---------------------------------------------------------------------------
-# Rebuilt barrier switches (formerly phase overlays)
+# The parallax-barrier exemplar
 # ---------------------------------------------------------------------------
 
 
@@ -181,83 +152,7 @@ def test_barrier_budget_guard_rejects_abusive_params(slug):
 
 
 # ---------------------------------------------------------------------------
-# Carrier reveal (honest single-image anti-phase effect)
-# ---------------------------------------------------------------------------
-
-
-def test_carrier_reveal_recipe_and_metadata():
-    cls = registry["monogram-carrier-reveal"]
-    assert cls.render_recipe == "moire_interactive"
-    gp = cls.generate(**(cls.defaults() | {"extent_um": SMALL_EXTENT}))
-    p = cls.defaults()["period_um"]
-    sub = Substrate()
-    expected_vanish = math.degrees(
-        math.asin(sub.n * math.sin(math.atan(p / 2 / sub.thickness_um)))
-    )
-    assert gp.extra["carrier_period_um"] == p
-    assert gp.extra["vanish_angle_deg"] == pytest.approx(expected_vanish, rel=1e-6)
-
-
-def _eroded(mask: np.ndarray, steps: int = 2) -> np.ndarray:
-    """Cheap 4-neighbourhood erosion via rolls — keeps only interior pixels."""
-    m = mask
-    for _ in range(steps):
-        m = (
-            m
-            & np.roll(m, 1, axis=0)
-            & np.roll(m, -1, axis=0)
-            & np.roll(m, 1, axis=1)
-            & np.roll(m, -1, axis=1)
-        )
-    return m
-
-
-def test_carrier_reveal_carriers_are_antiphase():
-    """Head-on (zero shift) the front and back carriers interlock inside the
-    monogram — near-zero open area — while a half-period back shift aligns
-    the two carriers and opens the figure up. This is the polygon-level
-    signature of an exact anti-phase carrier pair; a phase error would leak
-    transmission at zero shift and kill the reveal contrast."""
-    cls = registry["monogram-carrier-reveal"]
-    period = cls.defaults()["period_um"]  # 40 um
-    gp = cls.generate(**(cls.defaults() | {"extent_um": SMALL_EXTENT}))
-
-    # Rasterize both layers at a pitch that divides the half-period exactly
-    # so the half-period shift is an integer pixel roll (5 um -> 4 px).
-    pitch = period / 8.0
-    n_px = int(round(SMALL_EXTENT / pitch))
-    fr = np.asarray(rasterize(gp.front, gp.extent_um, pitch)) > 127
-    bk = np.asarray(rasterize(gp.back, gp.extent_um, pitch)) > 127
-    assert fr.shape == bk.shape == (n_px, n_px)
-
-    # Interior of the monogram (eroded so silhouette-edge pixels from the
-    # two different sampling grids don't pollute the statistics).
-    fig = _eroded(monogram.jp_monogram_silhouette(gp.extent_um, n_grid=n_px))
-    assert fig.sum() > 200, "eroded monogram interior unexpectedly small"
-
-    open_zero = float((~fr & ~bk)[fig].mean())
-    half_px = int(round(period / 2.0 / pitch))
-    bk_half = np.roll(bk, half_px, axis=1)
-    open_half = float((~fr & ~bk_half)[fig].mean())
-
-    # Zero shift: carriers are complementary -> the figure is (near-)opaque.
-    assert open_zero < 0.1, f"anti-phase interlock leaks: open@0 = {open_zero:.3f}"
-    # Half period: back stripes hide behind the front's -> the figure opens
-    # to roughly the carrier duty (0.5), i.e. it dissolves into the ground.
-    assert open_half > 0.25, f"reveal never opens: open@p/2 = {open_half:.3f}"
-    assert open_half > open_zero + 0.2
-
-
-def test_carrier_reveal_budget_guard_rejects_abusive_params():
-    """Max extent at min period would emit ~1M back-carrier rectangles — the
-    lattice budget guard must refuse before any raster or GEOS work."""
-    cls = registry["monogram-carrier-reveal"]
-    with pytest.raises(ValueError, match="lattice cells"):
-        cls.generate(period_um=6.0, extent_um=5000.0)
-
-
-# ---------------------------------------------------------------------------
-# Globe motif rotation + orchid budget guard (unchanged support checks)
+# Globe motif rotation (support for the front face and the exemplar's two views)
 # ---------------------------------------------------------------------------
 
 
@@ -275,17 +170,6 @@ def test_globe_rotation_changes_silhouette():
     assert not np.array_equal(a, b)
     # Both spins still draw a globe of comparable coverage.
     assert 0.01 < float(b.mean()) < 0.95
-
-
-def test_orchid_budget_guard_rejects_abusive_params():
-    """Max extent at min period would emit ~1M front rectangles — the lattice
-    budget guard must refuse before any raster or GEOS work happens."""
-    cls = registry["orchid-shimmer-moire"]
-    with pytest.raises(ValueError, match="lattice cells"):
-        cls.generate(period_um=6.0, extent_um=5000.0)
-    # Defaults stay comfortably inside the budget (generate() succeeds).
-    gp = cls.generate(**(cls.defaults() | {"extent_um": SMALL_EXTENT}))
-    assert not gp.front.is_empty
 
 
 # ---------------------------------------------------------------------------

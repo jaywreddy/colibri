@@ -16,7 +16,7 @@ from app.patterns.base import registry
 from app.service import materialize, validate_params
 
 
-WAYUU = "wayuu-kanasu-moire"  # period_um 4..200, duty 0.1..0.9, extent_um 500..5000
+MONO = "monogram-jp"  # extent_um 500..5000, overlap 0.4..0.85, *_period_um 4.15..6.02
 
 
 def _specs(slug: str) -> dict:
@@ -24,71 +24,71 @@ def _specs(slug: str) -> dict:
 
 
 def test_declared_bounds_are_accepted() -> None:
-    for name, spec in _specs(WAYUU).items():
+    for name, spec in _specs(MONO).items():
         assert spec.min is not None and spec.max is not None, name
-        validate_params(WAYUU, {name: spec.min})
-        validate_params(WAYUU, {name: spec.max})
+        validate_params(MONO, {name: spec.min})
+        validate_params(MONO, {name: spec.max})
 
 
 def test_defaults_are_accepted() -> None:
-    validate_params(WAYUU, registry[WAYUU].defaults())
+    validate_params(MONO, registry[MONO].defaults())
 
 
 def test_below_min_is_rejected() -> None:
     with pytest.raises(ValueError) as e:
-        validate_params(WAYUU, {"extent_um": 100.0})
+        validate_params(MONO, {"extent_um": 100.0})
     assert "500" in str(e.value)  # message states the limit
 
 
 def test_above_max_is_rejected() -> None:
     with pytest.raises(ValueError) as e:
-        validate_params(WAYUU, {"extent_um": 40000.0})
+        validate_params(MONO, {"extent_um": 40000.0})
     assert "5000" in str(e.value)
 
 
 def test_unknown_key_is_rejected() -> None:
     with pytest.raises(ValueError) as e:
-        validate_params(WAYUU, {"slit_period_um": 60.0})
+        validate_params(MONO, {"slit_period_um": 60.0})
     assert "slit_period_um" in str(e.value)
 
 
 def test_string_for_float_is_rejected() -> None:
     with pytest.raises(ValueError):
-        validate_params(WAYUU, {"period_um": "not-a-number"})
+        validate_params(MONO, {"overlap": "not-a-number"})
 
 
 def test_bool_for_float_is_rejected() -> None:
     with pytest.raises(ValueError):
-        validate_params(WAYUU, {"period_um": True})
+        validate_params(MONO, {"overlap": True})
 
 
 def test_nonfinite_float_is_rejected() -> None:
     with pytest.raises(ValueError):
-        validate_params(WAYUU, {"period_um": float("inf")})
+        validate_params(MONO, {"overlap": float("inf")})
 
 
 def test_fractional_int_is_rejected() -> None:
     with pytest.raises(ValueError):
-        validate_params("inscription-line", {"year": 2026.5})
+        validate_params("photo-halftone", {"tone_steps": 22.5})
 
 
 def test_choice_outside_choices_is_rejected() -> None:
     with pytest.raises(ValueError) as e:
-        validate_params("bitmap-halftone", {"back_mode": "carrier-ish"})
-    assert "carrier" in str(e.value)
+        validate_params("photo-halftone", {"image": "not-a-photograph"})
+    assert "beach" in str(e.value)
 
 
 def test_materialize_rejects_before_generating(isolated_data_root: Path) -> None:
     """The guard fires ahead of the hash, so no variant dir is created."""
     with pytest.raises(ValueError):
-        materialize(WAYUU, {"extent_um": 40000.0, "period_um": 6.0})
-    assert not (isolated_data_root / WAYUU).exists()
+        materialize(MONO, {"extent_um": 40000.0, "overlap": 0.6})
+    assert not (isolated_data_root / MONO).exists()
 
 
 def test_api_maps_out_of_range_to_client_error(client: TestClient) -> None:
     r = client.post(
         "/patterns/generate",
-        json={"slug": WAYUU, "params": {"extent_um": 40000.0}},
+        json={"slug": MONO, "params": {"extent_um": 40000.0}},
     )
     assert r.status_code in (400, 422), r.text
     assert "5000" in r.text

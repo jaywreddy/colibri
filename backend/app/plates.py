@@ -347,7 +347,8 @@ N_FRAME_BUCKETS = 6
 # the beat depends on |crossing|, the fix is to centre the fan low rather than
 # merely narrow it - 2.5 +/- 2.5*1.0 gives crossings 0..5 deg, keeping all six
 # species in the 187-266 um (2.15-3.05 arcmin) band with six DISTINCT
-# treatments. Pinned by tests/test_readability.py.
+# treatments. (The readability gate that measured this went with the 2D lab on
+# 2026-09-16; the identity behind it is pinned in tests/test_optics_math.py.)
 FRAME_ANGLE_SPAN_DEG = 1.0
 
 

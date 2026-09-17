@@ -6,57 +6,24 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 
-# Catalog contract after the 2026-07 parallax-honesty rebuilds:
-# - "jp-monogram-phase", "globe-duo-phase", "gear-quill-switch" and
-#   "colibri-flap-phase" are parallax barriers (both images interlaced in
-#   BACK, pure slit comb in FRONT, stereo_lenticular) — the two-image
-#   front/back phase split they once shipped was structurally incapable of
-#   switching under honest parallax.
-# - "colibri-globe-phase" REMOVED — after its barrier rebuild it was
-#   architecturally identical to colibri-globe-lenticular (only a slower
-#   default period), so the redundant twin was dropped.
-# - "monogram-carrier-reveal" — the honest T5 carrier reveal (single image
-#   halftoned onto a carrier in FRONT, exact anti-phase carrier in BACK,
-#   moire_interactive).
-# - "food-pair-chirp", "jamon-tray", "inscription-line" are single-layer
-#   front-only shimmers (moire_interactive; empty back).
-# - "monogram-jp" is a SINGLE-LAYER DIFFRACTION mapping (2026-09): the lid is
-#   one written ply, so each initial is a region of fine vertical grating whose
-#   PERIOD is its colour (foliage_moire, like the photo faces — a composed box
-#   face with no moiré to interact with).
-# - "globe-atlantic" is the FRONT face's single-layer diffraction globe (2026-09).
-#   It supersedes "globe-duo-phase" on the box: a barrier switch needs two planes
-#   and the box is now one written ply per face. The duo switch stays REGISTERED
-#   (it is still an honest two-ply part and the catalog's barrier fixture), it is
-#   simply no longer what the front face points at.
+# The catalogue IS the box (2026-09-16). Four written production faces, bare
+# glass, and ONE hidden exemplar:
+# - "monogram-jp" (lid) and "globe-atlantic" (front) are SINGLE-LAYER
+#   DIFFRACTION mappings: each region is a fine vertical grating whose PERIOD is
+#   its colour. foliage_moire, like the photo faces — a composed box face with
+#   no second plane to interact with.
+# - "photo-halftone" is the three sides' gold line screen, "solid-gold" the
+#   base plate, "blank" the bare-quartz back.
+# - "globe-duo-phase" carries no face. It is the PARALLAX BARRIER exemplar,
+#   kept registered so the two-image switch construction stays built and
+#   measured (tests/test_barrier_registration.py) after the box went single-ply.
 EXPECTED_SLUGS = {
-    # Original catalog
-    "wayuu-kanasu-moire",
-    "emerald-facet-moire",
-    "colibri-globe-lenticular",
-    "colibri-globe-moire",
-    # Taxonomy rebuild additions (barrier switches, carrier reveal, bitmap)
-    "globe-rotation-stereo",
-    "orchid-shimmer-moire",
-    "jp-monogram-phase",
-    "monogram-carrier-reveal",
-    "bitmap-halftone",
-    # Engagement-box showpieces (six-face plan + experiments)
-    "capybara-scanimation",
-    "colibri-flap-phase",
-    "food-pair-chirp",
-    "gear-quill-switch",
-    "globe-duo-phase",
-    "inscription-line",
-    "jamon-tray",
     "monogram-jp",
-    # Production box faces (2026-09): a photograph face and a bare-glass face
-    "photo-halftone",
-    "blank",
-    # Single-layer diffraction front face (2026-09)
     "globe-atlantic",
-    # The solid gold base plate (2026-09-15)
+    "photo-halftone",
     "solid-gold",
+    "blank",
+    "globe-duo-phase",
 }
 
 
@@ -67,11 +34,11 @@ def test_list_patterns_returns_all_registered_slugs(client: TestClient) -> None:
     assert got == EXPECTED_SLUGS
 
 
-# The generate-shape tests below assert MANIFEST STRUCTURE, never wayuu's
-# default geometry, so they run on the `cheap_pattern` fixture (coarsest weave,
-# smallest legal extent -> 20x20 px raster). On the default variant each of
-# them paid its own ~90 s cold generate, because `client` isolates DATA_ROOT
-# per test and nothing is shared between them.
+# The generate-shape tests below assert MANIFEST STRUCTURE, never the
+# monogram's default geometry, so they run on the `cheap_pattern` fixture
+# (smallest legal extent). On a default variant each of them would pay its own
+# cold generate, because `client` isolates DATA_ROOT per test and nothing is
+# shared between them.
 def test_get_manifest_roundtrips_after_generate(
     client: TestClient, cheap_pattern: tuple[str, dict[str, float]]
 ) -> None:
@@ -126,7 +93,7 @@ def test_generate_writes_pngs_and_thumbnail_with_lazy_svg(
 
 
 def test_svg_endpoint_404s_for_unknown_variant(client: TestClient) -> None:
-    r = client.get("/patterns/wayuu-kanasu-moire/no-such-variant/svg")
+    r = client.get("/patterns/monogram-jp/no-such-variant/svg")
     assert r.status_code == 404
 
 
@@ -189,13 +156,12 @@ def test_thumbnail_endpoint_404s_for_unknown_slug(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 # NOTE: phase_shift_overlay (recipe 2) is RETIRED with zero users — its
-# "switch" was a shader view-sign bias, not physics. The barrier rebuilds
-# (jp-monogram-phase, globe-duo-phase, gear-quill-switch, colibri-flap-phase)
-# and the single-layer retags (food-pair-chirp, jamon-tray, inscription-line
-# → moire_interactive; monogram-jp → foliage_moire once the lid became a
-# one-ply diffraction mapping) removed every user; the name is deleted
-# from base.RECIPE_NAMES and the frontend deleted shader id 2. Numeric ids
-# 0/1/3 are stable with a permanent hole at 2.
+# "switch" was a shader view-sign bias, not physics. The name is gone from
+# base.RECIPE_NAMES and the frontend deleted shader id 2. Numeric ids 0/1/3 are
+# stable with a permanent hole at 2. moire_interactive (1) has no pattern user
+# left either since the catalogue became the box, but it stays a legal name:
+# the exemplar's sibling constructions are one commit away, and a recipe the
+# shader still switches on is not a recipe to delete from the contract.
 _VALID_RECIPES = {
     "stereo_lenticular",
     "moire_interactive",
@@ -228,12 +194,14 @@ def test_descriptor_advertises_render_recipe_for_every_pattern(client: TestClien
         )
 
 
-def test_lenticular_manifest_ships_view_a_view_b_urls(client: TestClient) -> None:
-    """stereo_lenticular patterns must publish view_a / view_b PNG URLs in
-    recipe_data so the PlateScene can fetch the interlaced scenes."""
+def test_the_barrier_exemplar_ships_view_a_view_b_urls(client: TestClient) -> None:
+    """``globe-duo-phase`` is the one stereo_lenticular pattern left. A barrier
+    publishes view_a / view_b PNG URLs in recipe_data (the two interlaced back
+    channels) plus the slit period, so a consumer can draw the same lattice
+    instead of guessing one."""
     r = client.post(
         "/patterns/generate",
-        json={"slug": "colibri-globe-lenticular", "params": {}},
+        json={"slug": "globe-duo-phase", "params": {"extent_um": 600.0}},
     )
     assert r.status_code == 200, r.text
     m = r.json()
@@ -241,45 +209,11 @@ def test_lenticular_manifest_ships_view_a_view_b_urls(client: TestClient) -> Non
     rd = m["recipe_data"]
     assert "view_a_png" in rd and "view_b_png" in rd
     assert "slit_period_um" in rd
-
-
-def test_monogram_barrier_manifest_ships_view_urls(client: TestClient) -> None:
-    """jp-monogram-phase was rebuilt from the broken two-image phase overlay
-    into a parallax barrier (both images interlaced in the BACK layer, slit
-    mask in FRONT — the only construction that switches under honest
-    parallax). It must advertise stereo_lenticular and ship the interlaced
-    view PNGs + slit period like the other barrier patterns."""
-    r = client.post(
-        "/patterns/generate",
-        json={"slug": "jp-monogram-phase", "params": {}},
-    )
-    assert r.status_code == 200, r.text
-    m = r.json()
-    assert m["render_recipe"] == "stereo_lenticular"
-    rd = m["recipe_data"]
-    assert "view_a_png" in rd and "view_b_png" in rd
-    assert "slit_period_um" in rd
-
-
-def test_carrier_reveal_manifest_ships_carrier_period(client: TestClient) -> None:
-    """The honest carrier reveal (image-on-carrier FRONT, uniform image-free
-    carrier BACK) renders under plain moire_interactive mask sampling and
-    must publish carrier_period_um so the UI/tests can calibrate first-zone
-    tilts: the reveal completes at a back shift of p/2 and aliases with
-    period p."""
-    r = client.post(
-        "/patterns/generate",
-        json={"slug": "monogram-carrier-reveal", "params": {}},
-    )
-    assert r.status_code == 200, r.text
-    m = r.json()
-    assert m["render_recipe"] == "moire_interactive"
-    assert "carrier_period_um" in m["recipe_data"]
 
 
 def test_invalid_param_type_returns_error(client: TestClient) -> None:
     r = client.post(
         "/patterns/generate",
-        json={"slug": "wayuu-kanasu-moire", "params": {"period_um": "not-a-number"}},
+        json={"slug": "monogram-jp", "params": {"overlap": "not-a-number"}},
     )
     assert r.status_code in (400, 422)

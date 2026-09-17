@@ -187,7 +187,7 @@ def test_box_manifest_carries_assembly_block(isolated_data):
     from app.plates import FrameSpec, PlateSpec
 
     spec = BoxSpec(width_um=24000.0, depth_um=24000.0, height_um=24000.0)
-    spec.faces["top"] = PlateSpec(pattern_slug="wayuu-kanasu-moire", frame=FrameSpec(seed=42))
+    spec.faces["top"] = PlateSpec(pattern_slug="monogram-jp", frame=FrameSpec(seed=42))
     manifest = materialize_box(spec, box_id="asm-block")
     asm = manifest["assembly"]
     assert asm["keepout_um"] == pytest.approx(3425.0)
@@ -203,7 +203,7 @@ def test_frame_scene_kept_out_of_manifests_sidecar_on_disk(isolated_data):
     from app.plates import FrameSpec, PlateSpec, PLATES_ROOT
 
     spec = BoxSpec(width_um=24000.0, depth_um=24000.0, height_um=24000.0)
-    spec.faces["front"] = PlateSpec(pattern_slug="wayuu-kanasu-moire", frame=FrameSpec(seed=7))
+    spec.faces["front"] = PlateSpec(pattern_slug="monogram-jp", frame=FrameSpec(seed=7))
     manifest = materialize_box(spec, box_id="lean-faces")
     face = manifest["faces"]["front"]
     assert "frame_scene" not in face["recipe_data"]

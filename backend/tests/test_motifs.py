@@ -1,49 +1,48 @@
-"""Sanity checks on every motif module — non-empty geometry, determinism, and
-that binary silhouettes convert to non-empty MultiPolygons via raster_to_polygons."""
+"""Sanity checks on the surviving motif modules — non-empty geometry,
+determinism, and that binary silhouettes convert to non-empty MultiPolygons
+via raster_to_polygons.
+
+Two modules are left (2026-09-16): ``globe`` (the front face's orthographic
+world, and the exemplar switch's two hemispheres) and ``monogram`` (the lid's
+J+P). The shapely lattice motifs — wayuu's kanasü weave, emerald's hex facets —
+went with the patterns that used them, and with them the direct pin on the
+lattice-budget guard; that guard is still live and still pinned, through
+``_helpers.check_lattice_budget`` below.
+"""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from app.patterns._helpers import MAX_LATTICE_CELLS, raster_to_polygons
-from app.patterns.motifs import (
-    colibri,
-    emerald,
-    globe,
-    wayuu,
+from app.patterns._helpers import (
+    MAX_LATTICE_CELLS,
+    check_lattice_budget,
+    raster_to_polygons,
 )
+from app.patterns.motifs import globe, monogram
 
 EXTENT = (1000.0, 1000.0)
 
 
-def test_shapely_motifs_produce_nonempty_geometry():
-    checks = [
-        ("wayuu.kanasu_diamonds", wayuu.kanasu_diamonds(EXTENT, 20.0)),
-        ("emerald.hex_facets", emerald.hex_facets(EXTENT, 30.0)),
-    ]
-    for name, mp in checks:
-        assert not mp.is_empty, f"{name} produced empty geometry"
-        assert mp.area > 0, f"{name} produced zero-area geometry"
-
-
 def test_lattice_budget_guard_rejects_machine_killing_params():
-    """extent 5000 um at period 4 um is inside the UI slider ranges but would
-    build ~15M GEOS polygons (~tens of GB commit) — it froze and bugchecked
-    the dev machine on 2026-06-10. The guard must refuse with an actionable
-    ValueError instead of building the lattice."""
+    """A 5000 um extent at a 4 um period is inside the UI slider ranges but
+    would build ~15M GEOS polygons (~tens of GB commit) — it froze and
+    bugchecked the dev machine on 2026-06-10. The guard must refuse with an
+    actionable ValueError instead of building the lattice."""
+    cells = (5000.0 / 4.0) ** 2
+    assert cells > MAX_LATTICE_CELLS
     with pytest.raises(ValueError, match="lattice cells"):
-        wayuu.kanasu_diamonds((5000.0, 5000.0), period_um=4.0)
-    with pytest.raises(ValueError, match="lattice cells"):
-        emerald.hex_facets((5000.0, 5000.0), period_um=2.0)
-    # Defaults stay comfortably inside the budget.
-    assert (2 * (int(np.hypot(2000, 2000) * 1.1 / 20.0) + 3) + 1) ** 2 < MAX_LATTICE_CELLS
+        check_lattice_budget(int(cells), "kanasu diamonds", pitch_um=4.0)
+    # and a real motif's own grid stays comfortably inside it
+    check_lattice_budget(128 * 128, "globe silhouette", pitch_um=EXTENT[0] / 128)
 
 
 def test_binary_silhouettes_are_non_trivial():
-    """Silhouettes should cover a meaningful fraction of the grid — not all 0, not all 1."""
+    """Silhouettes should cover a meaningful fraction of the grid — not all 0,
+    not all 1."""
     for name, fn in [
-        ("colibri", colibri.colibri_silhouette),
         ("globe", globe.globe_silhouette),
+        ("monogram", monogram.monogram_silhouette),
     ]:
         grid = fn(EXTENT, n_grid=128)
         frac = float(grid.mean())
@@ -51,13 +50,12 @@ def test_binary_silhouettes_are_non_trivial():
 
 
 def test_pillow_silhouettes_are_deterministic():
-    """Same args → identical bool array (no hidden randomness in draw pipeline)."""
-    a = colibri.colibri_silhouette(EXTENT, n_grid=128)
-    b = colibri.colibri_silhouette(EXTENT, n_grid=128)
-    assert np.array_equal(a, b)
-    a = globe.globe_silhouette(EXTENT, n_grid=128)
-    b = globe.globe_silhouette(EXTENT, n_grid=128)
-    assert np.array_equal(a, b)
+    """Same args -> identical bool array (no hidden randomness in the draw
+    pipeline). The monogram in particular goes through a font raster."""
+    for fn in (globe.globe_silhouette, monogram.monogram_silhouette):
+        a = fn(EXTENT, n_grid=128)
+        b = fn(EXTENT, n_grid=128)
+        assert np.array_equal(a, b), fn.__qualname__
 
 
 def test_raster_to_polygons_on_silhouette_produces_polygons():
@@ -66,18 +64,3 @@ def test_raster_to_polygons_on_silhouette_produces_polygons():
     mp = raster_to_polygons(grid.astype(np.uint8), cell, EXTENT)
     assert not mp.is_empty
     assert mp.area > 0
-
-
-def test_kanasu_rotation_changes_geometry():
-    """A rotated lattice should not be bit-identical to the unrotated one."""
-    a = wayuu.kanasu_diamonds(EXTENT, 20.0, rotation_deg=0.0)
-    b = wayuu.kanasu_diamonds(EXTENT, 20.0, rotation_deg=5.0)
-    sym = a.symmetric_difference(b)
-    assert sym.area > 0
-
-
-def test_hex_facets_period_scales_feature_density():
-    """Halving the period should roughly quadruple the number of hexes."""
-    a = emerald.hex_facets(EXTENT, period_um=40.0)
-    b = emerald.hex_facets(EXTENT, period_um=20.0)
-    assert len(list(b.geoms)) > len(list(a.geoms)) * 2

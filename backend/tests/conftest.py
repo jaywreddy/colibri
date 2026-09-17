@@ -8,19 +8,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Cheapest central pattern in the catalog, for tests that only assert MANIFEST
-# SHAPE / API contracts and not geometry: the coarsest legal kanasü weave at
-# the smallest legal extent -> ~3x3 diamonds on a 20x20 px raster, a few ms
-# instead of the ~90 s the default variant costs. Every value sits inside its
-# ParamSpec bounds (service.validate_params runs before the variant hash) and
-# clears the litho floor (200 um * 0.29 = 58 um features). Same geometry
-# test_cache_integrity.py uses; tests that genuinely pin wayuu's DEFAULT
-# geometry must keep passing `{}`.
-CHEAP_SLUG = "wayuu-kanasu-moire"
+# SHAPE / API contracts and not geometry: the J+P monogram at the smallest legal
+# extent -> two glyphs on a small raster, a few ms. Every value sits inside its
+# ParamSpec bounds (service.validate_params runs before the variant hash). Same
+# geometry test_cache_integrity.py uses; tests that genuinely pin the monogram's
+# DEFAULT geometry must keep passing `{}`.
+CHEAP_SLUG = "monogram-jp"
 CHEAP_PARAMS: dict[str, float] = {
-    "period_um": 200.0,
-    "duty": 0.5,
-    "rotation_deg": 2.0,
     "extent_um": 500.0,
+    "overlap": 0.76,
+    "j_period_um": 4.47,
+    "p_period_um": 6.02,
 }
 
 
@@ -35,9 +33,9 @@ def shared_pattern_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Session-wide central-pattern cache shared by all plate/box tests.
 
     Pattern variants are content-addressed (slug + params hash), so sharing
-    the cache across tests is safe — and essential for speed: generating the
-    wayuu central pattern from scratch costs ~90 s, and without sharing every
-    plate/box test pays it again in its own tmp dir.
+    the cache across tests is safe — and essential for speed: a cold central
+    pattern costs seconds, and without sharing every plate/box test pays it
+    again in its own tmp dir.
     """
     return tmp_path_factory.mktemp("pattern-cache")
 
@@ -71,12 +69,10 @@ def isolated_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     references that were already imported elsewhere. FastAPI static mount is
     set up in create_app(), so we must patch before importing main."""
     from app import service as service_mod
-    from app.api import sim as sim_mod
 
     new_root = tmp_path / "data"
     new_root.mkdir()
     monkeypatch.setattr(service_mod, "DATA_ROOT", new_root)
-    monkeypatch.setattr(sim_mod, "DATA_ROOT", new_root)
     return new_root
 
 
@@ -107,11 +103,3 @@ def client(isolated_data_root: Path) -> TestClient:
         yield c
 
 
-@pytest.fixture
-def seeded_wayuu_moire(client: TestClient) -> tuple[str, str]:
-    """POST /patterns/generate for a Wayuu kanasü moiré variant and yield
-    (slug, variant). Downstream sim tests reuse this instead of re-seeding."""
-    r = client.post("/patterns/generate", json={"slug": "wayuu-kanasu-moire", "params": {}})
-    assert r.status_code == 200, r.text
-    m = r.json()
-    return m["slug"], m["variant"]

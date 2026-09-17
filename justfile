@@ -25,22 +25,18 @@ frontend:
 seed:
     cd backend; uv run python -c "from app.service import seed_defaults; seed_defaults()"
 
-# Run as 5 SEQUENTIAL chunks, never the whole suite in one process: each
+# Run as 8 SEQUENTIAL chunks, never the whole suite in one process: each
 # chunk peaks ~1 GB and the 13.7 GB host has bugchecked under heavy parallel
 # compute (see CLAUDE.md). Chunk order keeps the heavy files
-# (plates_and_boxes, api_patterns, frames, patterns_roundtrip) paired with at
-# most one other file; chunk 2 is six light/fast files.
-# Chunk 5 (sim2d + pattern types + showcase patterns + bitmap halftone) is
-# synthetic/small-extent and runs in ~2 s.
-# Backend pytest (Layer 1) — 5 sequential memory-safe chunks
+# (plates_and_boxes, api_patterns, frames, patterns_roundtrip, cache_integrity)
+# paired with at most one other file; every other chunk is light/fast.
+# Backend pytest (Layer 1) — 8 sequential memory-safe chunks
 test-backend flags="":
     cd backend; uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_sim_numerics.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_sim2d.py tests/test_pattern_types.py tests/test_showcase_patterns.py tests/test_bitmap_halftone.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_param_validation.py tests/test_sim_bounds.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_readability.py -q {{flags}}
-    cd backend; uv run --extra dev pytest tests/test_collage.py tests/test_api_collage.py tests/test_shimmer_moire.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_showcase_patterns.py -q {{flags}}
+    cd backend; uv run --extra dev pytest tests/test_param_validation.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_shimmer_moire.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_imageprep.py tests/test_colourzone.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py tests/test_witness.py tests/test_optics_math.py tests/test_ply_cuts.py tests/test_export_svg_rects.py -q {{flags}}
     cd backend; uv run --extra dev pytest tests/test_cache_integrity.py -q {{flags}}

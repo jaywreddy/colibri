@@ -14,33 +14,33 @@
 ## Commands
 - `just dev` — backend :8765 + frontend :5173 together (don't start servers
   during automated sessions unless asked).
-- `just test-backend` — backend suite in the proven safe 10-chunk order.
+- `just test-backend` — backend suite in the proven safe 8-chunk order.
   Manual equivalent, from `backend/`, one at a time:
   ```
   uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
   uv run --extra dev pytest tests/test_motifs.py tests/test_rasterize.py tests/test_export_svg.py tests/test_theme_metadata.py tests/test_variant_hash.py -q
   uv run --extra dev pytest tests/test_api_patterns.py tests/test_frames.py -q
-  uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_sim_numerics.py -q
-  uv run --extra dev pytest tests/test_sim2d.py tests/test_pattern_types.py tests/test_showcase_patterns.py tests/test_bitmap_halftone.py -q
-  uv run --extra dev pytest tests/test_param_validation.py tests/test_sim_bounds.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_readability.py -q
-  uv run --extra dev pytest tests/test_collage.py tests/test_api_collage.py tests/test_shimmer_moire.py -q
+  uv run --extra dev pytest tests/test_patterns_roundtrip.py tests/test_showcase_patterns.py -q
+  uv run --extra dev pytest tests/test_param_validation.py tests/test_grating_phase.py tests/test_barrier_registration.py tests/test_drc_tiling.py tests/test_diffraction.py tests/test_shimmer_moire.py -q
   uv run --extra dev pytest tests/test_imageprep.py tests/test_colourzone.py -q
   uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py tests/test_witness.py tests/test_optics_math.py tests/test_ply_cuts.py tests/test_export_svg_rects.py -q
   uv run --extra dev pytest tests/test_cache_integrity.py -q
   ```
-  (The witness chunk is light — every cell in it is built at a couple of mm,
-  never at the shipping 30 mm; the real plate is a 30 s standalone build.
-  The collage chunk is light — it sweeps warm variant rasters, ~6 s.
-  Chunk 2 is six files and chunk 5 is four, but all of them are light/fast —
-  chunk 5's files are synthetic/small-extent, ~2 s total; chunk 6 is validation/
-  registration tests, ~6 s. The heavy files — plates_and_boxes, api_patterns,
-  frames, patterns_roundtrip, cache_integrity (~80 s, does a real fab-zip
-  rebuild) — never share a chunk with more than one other file.)
+  (The heavy files — plates_and_boxes, api_patterns, frames, patterns_roundtrip,
+  cache_integrity (~80 s, does a real fab-zip rebuild) — never share a chunk
+  with more than one other file. Everything else is light: chunk 2 and chunk 7
+  are five and six files but run in seconds, chunk 5 is validation/registration
+  at small extents, and the witness chunk builds every cell at a couple of mm,
+  never at the shipping 30 mm — the real plate is `just plate`, an 8 min
+  standalone build.)
 - `just test-unit` / `just test-e2e` — frontend vitest / Playwright. E2E starts
   both servers itself; treat it as a heavy process.
 - `just test-effects` — physical-honesty pixel-metric suite for the 3D
   renderer (@effects specs; part of test-e2e too). Heavy process, run alone.
   `just test-effects-verify` adds Claude vision grading of the frame dumps.
+- `just plate` — write the 5" production plate (GDS + OASIS + map + DICING.md).
+  HEAVY (~8 min); run alone. This is the fab deliverable and the regression
+  gate: rebuild it and compare per layer against the previous mask.
 - `just seed` — pre-warm all pattern default variants; `just clean` — wipe
   `backend/data/`.
 
@@ -71,10 +71,10 @@
   the BACK layer, slit/phase mask in FRONT. A front-layer image can never
   vanish under parallax (the front mask does not move with tilt) — the old
   two-image "phase overlay" construction is a banned anti-pattern. Barrier
-  switches peak at a back shift of ±p/4 and alias every full period; carrier
-  reveals peak at ±p/2. Type metrics live in `app/sim2d.py`
-  (`switch_metrics`/`reveal_metrics`/`fringe_metrics`, pinned by
-  `tests/test_pattern_types.py`).
+  switches peak at a back shift of ±p/4 and alias every full period. No
+  production face carries one; `globe-duo-phase` is the hidden exemplar that
+  keeps the construction built, and `app/sim2d.py::switch_metrics` measures it
+  on the real generated geometry (`tests/test_barrier_registration.py`).
 - **fab SVG = preview PNG:** `plates.py::ensure_plate_svg` must compose the
   same aperture-scaled geometry as `_raster_compose_plate`. Bump
   `PLATE_SVG_VERSION` whenever SVG compose geometry changes so stale cached

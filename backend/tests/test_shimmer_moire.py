@@ -1,9 +1,13 @@
-"""Shading moire on the front-only shimmer faces — the beat, and its robustness.
+"""Shading moire: the beat, and its robustness.
 
-These faces carry one figure and no second image. Their back plate was doing
-nothing, which on a two-ply build is a plate of glass and a litho step earning
-nothing. They were never short of a second grating (the back carrier spans the
-whole exposed face); they were short of a reason for the two to BEAT.
+The SHADING MOIRE is the hidden exemplar the lid used to be — one figure on the
+outer ply, the uniform carrier on the inner one, and a beat between them from a
+pitch MISMATCH rather than from a crossing angle. No production face carries it
+since the box became six single plies (``monogram-jp`` composed with
+``single_ply=False`` is the only spec that still enters the path), but the
+construction is kept built and this is what pins it: the solver, the geometry
+``shimmer_moire_layers`` emits, and the two robustness arguments that chose a
+pitch beat over an angle beat in the first place.
 """
 from __future__ import annotations
 
@@ -12,36 +16,16 @@ import math
 import numpy as np
 import pytest
 
-from app import plates, sim2d
+from app import plates
 from app.patterns.effects.gratings import beat_delta_um, shimmer_moire_layers
-from app.readability import beat_period_combined_um, subtense_arcmin
+from app.witness_geom import combined_beat_um
 
 ACUITY_ARCMIN = 2.0
 
 
-def _measure_beat_um(
-    period_um: float,
-    delta_um: float,
-    extent_um: float,
-    cell_um: float,
-) -> float:
-    """Beat period read back off the composited pair, via the envelope spectrum."""
-    n = int(extent_um / cell_um)
-    full = np.ones((n, n), dtype=bool)
-    front, back = shimmer_moire_layers(
-        full, back_period_um=period_um, delta_um=delta_um, cell_um=cell_um
-    )
-    img = sim2d.composite_parallax(
-        front.astype(float), back.astype(float), 0.0, 0.0, cell_um, illum="ambient"
-    )
-    row = np.asarray(img.convert("L"), dtype=float).mean(axis=0)
-    row = row - row.mean()
-    spec = np.abs(np.fft.rfft(row))
-    freqs = np.arange(len(spec))
-    periods = np.where(freqs > 0, len(row) * cell_um / np.maximum(freqs, 1), np.inf)
-    # Envelope band only: far coarser than the lattice, finer than the window.
-    band = (periods > 4.0 * period_um) & (periods < extent_um)
-    return float(periods[int(np.argmax(np.where(band, spec, 0)))])
+def subtense_arcmin(feature_um: float, distance_mm: float = 300.0) -> float:
+    """Angular size of a feature (um) at a viewing distance (mm), in arcmin."""
+    return math.degrees((feature_um / 1000.0) / distance_mm) * 60.0
 
 
 # --- the algebra ------------------------------------------------------------
@@ -108,14 +92,6 @@ def test_a_delta_that_cancels_the_carrier_is_refused():
         shimmer_moire_layers(art, back_period_um=22.0, delta_um=-22.0, cell_um=2.0)
 
 
-def test_the_measured_beat_matches_the_design():
-    """Read the fringe spacing back off the composite, not off the formula."""
-    for beat in (1000.0, 1635.0):
-        d = beat_delta_um(22.0, beat)
-        got = _measure_beat_um(22.0, d, extent_um=8000.0, cell_um=2.0)
-        assert got == pytest.approx(beat, rel=0.25), f"design {beat}, measured {got}"
-
-
 def test_the_lattice_stays_invisible_while_the_beat_reads():
     """The whole construction: gratings below acuity, beat above it."""
     assert subtense_arcmin(22.0, 300.0) < 0.5
@@ -130,11 +106,11 @@ def test_a_pitch_derived_beat_survives_misregistration():
     pitch-derived beat only drifts; it can never vanish."""
     d = beat_delta_um(22.0, 1635.0)
     for err in (0.0, 0.5, 1.0, 2.0):
-        beat = beat_period_combined_um(22.0 + d, 22.0, err)
+        beat = combined_beat_um(22.0 + d, 22.0, err)
         assert math.isfinite(beat)
         assert subtense_arcmin(beat, 300.0) > ACUITY_ARCMIN, f"{err} deg killed it"
     # Half a degree costs about a fifth, not a factor.
-    near = beat_period_combined_um(22.0 + d, 22.0, 0.5)
+    near = combined_beat_um(22.0 + d, 22.0, 0.5)
     assert 0.75 < near / 1635.0 < 1.0
 
 
@@ -142,9 +118,9 @@ def test_an_angle_derived_beat_does_not():
     """Why the beat is NOT taken from a crossing angle. Designed at 0.45 deg it
     reads 2801 um, but a degree of flip error more than halves it — and landing
     square gives no fringes at all."""
-    assert beat_period_combined_um(22.0, 22.0, 0.45) == pytest.approx(2801, rel=0.05)
-    assert beat_period_combined_um(22.0, 22.0, 1.45) < 900
-    assert math.isinf(beat_period_combined_um(22.0, 22.0, 0.0))
+    assert combined_beat_um(22.0, 22.0, 0.45) == pytest.approx(2801, rel=0.05)
+    assert combined_beat_um(22.0, 22.0, 1.45) < 900
+    assert math.isinf(combined_beat_um(22.0, 22.0, 0.0))
 
 
 # --- what the plate publishes -----------------------------------------------
@@ -163,7 +139,7 @@ def _spec(slug: str):
 @pytest.mark.parametrize("slug", sorted(plates.SHIMMER_MOIRE_SLUGS))
 def test_shimmer_faces_get_a_readable_beat_on_the_real_glass(slug):
     rd = plates._carrier_recipe_data(_spec(slug))
-    beat = beat_period_combined_um(
+    beat = combined_beat_um(
         rd["fab_center_period_um"],
         rd["carrier_period_um"],
         rd["switch_axis_deg"] - rd["carrier_angle_deg"],
@@ -173,9 +149,7 @@ def test_shimmer_faces_get_a_readable_beat_on_the_real_glass(slug):
     assert subtense_arcmin(beat, 300.0) > ACUITY_ARCMIN
 
 
-@pytest.mark.parametrize(
-    "slug", ["gear-quill-switch", "globe-duo-phase", "capybara-scanimation"]
-)
+@pytest.mark.parametrize("slug", ["globe-duo-phase"])
 def test_switch_and_comb_faces_are_untouched(slug):
     """On these the centerpiece pitch and axis set a SWITCH ANGLE, not a beat,
     and must not be retuned for fringe aesthetics."""
@@ -198,29 +172,3 @@ def test_the_fill_tracks_the_per_face_carrier_angle():
         assert rd["switch_axis_deg"] == pytest.approx(rd["carrier_angle_deg"])
         seen.add(round(rd["switch_axis_deg"], 3))
     assert len(seen) > 1
-
-
-# --- the four generators --------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "slug", ["inscription-line", "jamon-tray", "food-pair-chirp"]
-)
-def test_every_shimmer_pattern_now_bakes_a_back_layer(slug):
-    """Regression on the whole point: an empty back layer cannot produce a
-    view-dependent effect at any angle, which is what made these four read as
-    dead in the tilt collage.
-
-    ``monogram-jp`` has LEFT this list (2026-09): the lid is one written ply
-    now, so it has no back plate to beat against and its centrepiece is a
-    single-layer DIFFRACTION mapping (one grating period per initial) instead
-    of a shading moiré. Its own construction is pinned in
-    test_showcase_patterns.py::test_monogram_jp_*; the two-ply plate carrier
-    logic above still covers it, because a two-ply monogram-jp face is still a
-    legal spec."""
-    from app.patterns.base import registry
-
-    g = registry[slug].generate()
-    area = g.extent_um[0] * g.extent_um[1]
-    assert g.back.area / area > 0.3, f"{slug} back layer is still (near) empty"
-    assert g.front.area > 0.0

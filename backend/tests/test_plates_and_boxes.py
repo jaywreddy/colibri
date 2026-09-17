@@ -21,7 +21,7 @@ def test_weld_margin_zeroes_border_in_raster(isolated_data):
     from app.plates import FrameSpec, PlateSpec, PLATES_ROOT, materialize_plate
 
     spec = PlateSpec(
-        pattern_slug="wayuu-kanasu-moire",
+        pattern_slug="monogram-jp",
         frame=FrameSpec(seed=11),
         width_um=8000.0,
         height_um=8000.0,
@@ -49,7 +49,7 @@ def test_materialize_plate_writes_manifest(isolated_data):
     from app.plates import FrameSpec, PlateSpec, materialize_plate, PLATES_ROOT
 
     spec = PlateSpec(
-        pattern_slug="wayuu-kanasu-moire",
+        pattern_slug="monogram-jp",
         frame=FrameSpec(seed=3),
         width_um=8000.0,
         height_um=6000.0,
@@ -84,7 +84,7 @@ def test_materialize_plate_is_cached(isolated_data):
     from app.plates import FrameSpec, PlateSpec, materialize_plate
 
     spec = PlateSpec(
-        pattern_slug="wayuu-kanasu-moire",
+        pattern_slug="monogram-jp",
         frame=FrameSpec(seed=4),
         width_um=6000.0,
         height_um=6000.0,
@@ -111,7 +111,7 @@ def _box_spec(width=30000.0, depth=20000.0, height=25000.0, faces=None):
         if faces is not None and fid not in faces:
             continue
         spec.faces[fid] = PlateSpec(
-            pattern_slug="wayuu-kanasu-moire",
+            pattern_slug="monogram-jp",
             frame=FrameSpec(seed=100 + i),
             # dims/glass/weld are re-stamped by normalize_face_dims.
             width_um=0,
@@ -189,7 +189,7 @@ def test_box_persists_and_loads(isolated_data):
     spec = _box_spec(width=20000.0, depth=20000.0, height=20000.0)
     spec.faces = {
         "front": PlateSpec(
-            pattern_slug="wayuu-kanasu-moire",
+            pattern_slug="monogram-jp",
             frame=FrameSpec(seed=1),
             width_um=0,
             height_um=0,
@@ -571,7 +571,7 @@ def test_literal_rasters_publish_the_fabricated_chrome(isolated_data):
 
     art = materialize_plate(
         PlateSpec(
-            pattern_slug="wayuu-kanasu-moire",
+            pattern_slug="monogram-jp",
             frame=FrameSpec(seed=31),
             width_um=8000.0,
             height_um=6000.0,
@@ -716,7 +716,7 @@ def app_client(isolated_data):
 def test_http_plates_roundtrip(app_client):
     body = {
         "spec": {
-            "pattern_slug": "wayuu-kanasu-moire",
+            "pattern_slug": "monogram-jp",
             "pattern_params": {},
             "frame": {"seed": 12},
             "glass": {},
@@ -741,7 +741,7 @@ def test_http_plates_roundtrip(app_client):
 
 def _http_box_body(**overrides):
     face = {
-        "pattern_slug": "wayuu-kanasu-moire",
+        "pattern_slug": "monogram-jp",
         "pattern_params": {},
         "frame": {"seed": 1},
         "glass": {},
@@ -811,7 +811,7 @@ def test_plate_svg_central_scaled_to_aperture(isolated_data):
     from app.plates import FrameSpec, PlateSpec, ensure_plate_svg, materialize_plate
 
     spec = PlateSpec(
-        pattern_slug="wayuu-kanasu-moire",
+        pattern_slug="monogram-jp",
         frame=FrameSpec(seed=5),
         width_um=8000.0,
         height_um=8000.0,
@@ -871,7 +871,7 @@ def test_stale_plate_svg_regenerates_on_version_bump(isolated_data):
     )
 
     spec = PlateSpec(
-        pattern_slug="wayuu-kanasu-moire",
+        pattern_slug="monogram-jp",
         frame=FrameSpec(seed=6),
         width_um=8000.0,
         height_um=8000.0,
@@ -900,19 +900,19 @@ def test_recipe_data_keys_flow_to_box_faces(isolated_data):
     from app.boxes import materialize_box
     from app.plates import FrameSpec, PlateSpec
 
-    # Uses the curated test patterns (see frontend effectsCatalog TEST_PATTERNS):
-    # the spinning globe (stereo) and the J+P monogram reveal (phase).
+    # The barrier exemplar on one face and a written production face on the
+    # other: between them they exercise both halves of the merge — a central
+    # pattern that publishes its OWN recipe keys (the barrier's interlaced view
+    # PNGs and slit lattice) and one whose keys come from the compositor.
     spec = _box_spec(faces=[])
     spec.faces["front"] = PlateSpec(
-        pattern_slug="globe-rotation-stereo",
+        pattern_slug="globe-duo-phase",
         frame=FrameSpec(seed=201),
         width_um=0,
         height_um=0,
     )
     spec.faces["back"] = PlateSpec(
-        # The honest carrier reveal — its carrier_period_um must survive the
-        # box slimming for the Pattern Lab's zone quick-sets.
-        pattern_slug="monogram-carrier-reveal",
+        pattern_slug="monogram-jp",
         frame=FrameSpec(seed=202),
         width_um=0,
         height_um=0,
@@ -920,23 +920,24 @@ def test_recipe_data_keys_flow_to_box_faces(isolated_data):
     manifest = materialize_box(spec)
 
     # Post-merge contract: EVERY composed plate advertises the two-plane
-    # foliage_moire recipe (the plate is a box-first moire carrier), but the
-    # central pattern's own recipe_data keys must still merge through — the
-    # Pattern Lab zone UI and any central-recipe consumers read them there.
+    # foliage_moire recipe (the plate is a box-first carrier), but the central
+    # pattern's own recipe_data keys must still merge through.
     stereo = manifest["faces"]["front"]
     assert stereo["render_recipe"] == "foliage_moire"
     rd = stereo["recipe_data"]
     for key in ("view_a_png", "view_b_png", "slit_axis_deg", "slit_period_um"):
-        assert key in rd, f"stereo recipe_data missing {key!r} (frontend reads it)"
+        assert key in rd, f"barrier recipe_data missing {key!r} (frontend reads it)"
     for key in ("view_a_png", "view_b_png"):
         assert isinstance(rd[key], str) and rd[key].startswith("/data/"), (
             f"{key} must be a servable URL, got {rd[key]!r}"
         )
     assert "frame_scene" not in rd
 
-    reveal = manifest["faces"]["back"]
-    assert reveal["render_recipe"] == "foliage_moire"
-    rd = reveal["recipe_data"]
+    assert "frame_scene" not in rd
+
+    mono = manifest["faces"]["back"]
+    assert mono["render_recipe"] == "foliage_moire"
+    rd = mono["recipe_data"]
     for key in ("switch_axis_deg", "carrier_period_um"):
-        assert key in rd, f"reveal recipe_data missing {key!r} (lab zone UI reads it)"
+        assert key in rd, f"recipe_data missing {key!r}"
     assert "frame_scene" not in rd

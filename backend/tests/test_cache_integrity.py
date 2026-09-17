@@ -36,12 +36,17 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-# Cheapest central pattern in the catalog: coarsest weave period at the
-# smallest legal extent -> ~3x3 diamonds on a 20x20 px raster. Every value is
-# inside its ParamSpec bounds (service.validate_params runs before the hash) and
-# clears the litho floor (200 um * 0.29 = 58 um features).
-CHEAP_SLUG = "wayuu-kanasu-moire"
-CHEAP_PARAMS = {"period_um": 200.0, "duty": 0.5, "rotation_deg": 2.0, "extent_um": 500.0}
+# Cheapest central pattern in the catalog: the J+P monogram at the smallest
+# legal extent. Every value is inside its ParamSpec bounds (validate_params runs
+# before the hash) and every period clears the litho floor (4.15 um at 50 % duty
+# is a 2.08 um line). Keep in step with tests/conftest.py::CHEAP_PARAMS.
+CHEAP_SLUG = "monogram-jp"
+CHEAP_PARAMS = {
+    "extent_um": 500.0,
+    "overlap": 0.76,
+    "j_period_um": 4.47,
+    "p_period_um": 6.02,
+}
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
