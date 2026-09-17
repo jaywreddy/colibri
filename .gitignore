@@ -34,3 +34,7 @@ Thumbs.db
 .env.local
 .env.*.local
 photos/
+# the prepared photographs are personal: they live on disk (and in photos/prepared/), never in git
+backend/app/assets/photos/*.png
+!backend/app/assets/photos/*.subject.png
+!backend/app/assets/photos/*.fade.png
