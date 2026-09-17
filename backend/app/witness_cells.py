@@ -10,12 +10,13 @@ The halftone builder is the exception that proves the rule: it has to look at a
 photograph, so it samples one at the resolution the cell actually needs
 (:func:`asset_px_for`) rather than at the plate's own cell pitch.
 
-The file is in two parts. Above the EXPERIMENTS banner are the builders the
+The file is in two parts. Above the OFF-PLATE banner are the builders the
 current plate's DoE calls (``export_witness.doe_cells``) plus
 :func:`build_halftone_bands`, which the BOX's photo faces also go through
 (``plates.photo_band_rects``) so a picture is screened identically either way.
-Below it are the cells the 2026-09-10 plate dropped to make room for the
-production dies — kept, with the question each one answers, for the next plate.
+Below it is ``build_colour_band``, kept with the question it answers for the
+next plate. The two-ply builders that used to sit there went with the two-ply
+design on 2026-09-16 — see the banner.
 """
 from __future__ import annotations
 
@@ -30,9 +31,6 @@ from .patterns.bitmap import imageprep as ip
 from .patterns.bitmap import screenrects as sr
 from .patterns.bitmap.colourzone import MIN_FEATURE_UM
 from .witness_geom import (
-    BOX_CARRIER_UM,
-    BOX_COMB_UM,
-    CLEAR,
     METAL,
     PORTRAIT_CROP,
     REF_SCREEN_UM,
@@ -41,12 +39,6 @@ from .witness_geom import (
     CellArt,
     _cat,
     _grating_rects,
-    _rect,
-    column_complement,
-    grating_array,
-    grating_array_inverse,
-    invert_grating,
-    outside_boxes,
 )
 
 _SRC_CACHE: dict[int, tuple[np.ndarray, np.ndarray]] = {}
@@ -302,299 +294,19 @@ def build_grating_patch(
     )
 
 
-def build_vernier(
-    cx: float, cy: float, w: float, h: float, *,
-    front_pitch_um: float = 80.0, back_pitch_um: float = 88.0, n: int = 24,
-    polarity: str = METAL,
-) -> CellArt:
-    """C1 — two combs whose beat amplifies a real offset by p/(pb − p).
-
-    Read this cell before anything else on the plate: it is the number that
-    decides whether Group A is viable at all.
-    """
-    bar_h = h * 0.40
-    fw, bw = min(w, front_pitch_um * n), min(w, back_pitch_um * n)
-    fcy, bcy = cy + h * 0.25, cy - h * 0.25
-    f = grating_array if polarity == METAL else grating_array_inverse
-    fe, fr = f(cx, fcy, fw, bar_h, front_pitch_um, 0.5)
-    be, br = f(cx, bcy, bw, bar_h, back_pitch_um, 0.5)
-    art = CellArt(front=fr, back=br, arrays=[fe], back_arrays=[be])
-    if polarity != METAL:
-        art.front = _cat(art.front, outside_boxes(
-            cx, cy, w, h, [(cx - fw / 2, cx + fw / 2, fcy - bar_h / 2, fcy + bar_h / 2)]))
-        art.back = _cat(art.back, outside_boxes(
-            cx, cy, w, h, [(cx - bw / 2, cx + bw / 2, bcy - bar_h / 2, bcy + bar_h / 2)]))
-    art.stats = {
-        "polarity": polarity,
-        "front_pitch_um": front_pitch_um, "back_pitch_um": back_pitch_um,
-        "amplification": round(front_pitch_um / abs(back_pitch_um - front_pitch_um), 2),
-        "n_lines": n, "n_rects": int(len(art.front) + len(art.back)), "n_arrays": 2,
-    }
-    return art
-
-
-# --- two-layer cells (need a bonded pair) -----------------------------------
-
-
-def build_barrier_switch(
-    cx: float, cy: float, w: float, h: float, *, comb_um: float = BOX_COMB_UM,
-    polarity: str = METAL,
-) -> CellArt:
-    """P-SWAP test panel — two interlaced lane classes under a slit comb.
-
-    Back carries A/B bars in alternating half-comb lanes; front is the comb.
-    The comb is anchored to the CELL's left edge, where the lanes start — not to
-    the plate origin. Anchored to the origin, head-on registration was
-    ``x0 mod p``, which happened to be zero for three combs and 65 um for the
-    shipping 173 um one, so that cell alone came out 25/75 head-on and swapped
-    at 0.79 and 2.37 deg instead of a symmetric pair. Found by a reviewer
-    recomputing the cell, not by any test; the ``head_on_A_fraction`` stat now
-    exists so the page prints it.
-
-    Registration is the box's straddle convention (CLAUDE.md): the slit sits on
-    a lane boundary head-on, so head-on is a 50/50 blend and the clean images
-    are at a back shift of +-p/4 — one image per tilt sign.
-    """
-    lane = comb_um / 2.0
-    n = max(2, int(w / lane))
-    k = np.arange(n)
-    x_left = cx - w / 2.0
-    x0 = x_left + k * lane
-    back = np.empty((n, 4), dtype=np.float64)
-    back[:, 0], back[:, 1] = x0, x0 + lane
-    tall = (k % 2) == 0
-    back[:, 2] = cy - h / 2.0
-    back[:, 3] = np.where(tall, cy + h * 0.45, cy - h * 0.10)
-    # metal lines of the comb start p/4 past a lane boundary, so the slit
-    # (their complement) is centred ON the boundary: a 50/50 blend head-on
-    phase = (x_left % comb_um) + comb_um * 0.25
-    # fraction of the head-on slit that looks at lane class A: the slit is
-    # [u - p/4, u + p/4] with u its centre inside the A|B period, A = [0, p/2)
-    u = (phase + 0.75 * comb_um - x_left) % comb_um
-    lo, hi = u - comb_um / 4.0, u + comb_um / 4.0
-    over_a = (max(0.0, min(hi, lane) - max(lo, 0.0))
-              + max(0.0, min(hi, comb_um + lane) - max(lo, comb_um))   # next period's A
-              + max(0.0, min(hi, 0.0) - max(lo, -lane)) * 0.0)          # previous period is B
-    head_on_a = over_a / lane
-    f = grating_array if polarity == METAL else grating_array_inverse
-    fe, fr = f(cx, cy, w, h, comb_um, 0.5, phase_um=phase)
-    art = CellArt(front=fr, arrays=[fe])
-    if polarity == METAL:
-        art.back = back
-    else:
-        rem = _rect(x0[-1] + lane, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0) \
-            if x0[-1] + lane < cx + w / 2.0 - 1e-9 else np.empty((0, 4))
-        art.back = _cat(column_complement(back, cy - h / 2.0, cy + h / 2.0), rem)
-    art.stats = {
-        "polarity": polarity,
-        "comb_um": comb_um, "lane_um": lane, "peak_shift_um": comb_um / 4.0,
-        "head_on_A_fraction": round(float(head_on_a), 3),
-        "registration": "straddle: blend head-on, clean images at +-p/4",
-        "n_rects": int(len(art.back)), "n_arrays": 1,
-    }
-    return art
-
-
-def build_shading_moire(
-    cx: float, cy: float, w: float, h: float, *,
-    back_period_um: float = BOX_CARRIER_UM, beat_um: float = 1635.0, duty: float = 0.5,
-    polarity: str = METAL,
-) -> CellArt:
-    """A4 / B-MOVE — two near-equal pitches on TWO plies whose drift paints bands.
-
-    ``beat = p(p+delta)/delta``, so the front pitch is SOLVED from the beat you
-    want rather than the other way round. Pinning delta instead is what made an
-    earlier jamón cell read 0.075 where it should have read 0.47.
-    """
-    from .patterns.effects.gratings import beat_delta_um
-
-    delta = beat_delta_um(back_period_um, beat_um)
-    front_period = back_period_um + delta
-    f = grating_array if polarity == METAL else grating_array_inverse
-    fe, fr = f(cx, cy, w, h, front_period, duty)
-    be, br = f(cx, cy, w, h, back_period_um, duty)
-    art = CellArt(front=fr, back=br, arrays=[fe], back_arrays=[be])
-    art.stats = {
-        "polarity": polarity,
-        "back_period_um": back_period_um,
-        "front_period_um": round(front_period, 4),
-        "delta_um": round(delta, 4), "beat_um": beat_um,
-        "bands_across": round(w / beat_um, 2), "n_rects": 0, "n_arrays": 2,
-    }
-    return art
-
-
-# --- EXPERIMENTS — builders NO cell on the current plate calls ---------------
+# --- OFF-PLATE builders -----------------------------------------------------
 #
-# The 2026-09-10 plate gave its area to eight production plies, so the DoE was
-# cut to the bench essentials (see ``export_witness.doe_cells``). These four
-# builders are the cells that came off it. They are kept — not deleted — because
-# each answers a question a FUTURE plate will ask, and rewriting a cell from the
-# physics plan is more expensive than carrying a function nobody calls:
-#
-#   build_moire_magnifier  B-MAG   sampling one lattice with another; needs two
-#                                  plies, so it waits for the next bonded pair
-#   build_scanimation      P-SCAN  the N-phase kinegram; its 15 µm slots are two
-#                                  orders under this 2.25 mm stock's near-field
-#                                  limit, so it waits for thin stock
-#   build_chirp            D-CHIRP a continuous CD read — the swept period
-#                                  crosses the litho floor somewhere
-#   build_colour_band      D-BAND  "does a BANDED grating still diffract, and
-#                                  what does holding tone costs?", with the
-#                                  photograph taken out of the question
-#
-# ``build_colour_band`` and ``build_halftone`` (above, likewise off-plate) stay
+# No cell on the current plate calls ``build_colour_band`` or ``build_halftone``
+# (above). They are kept — not deleted — because each answers a question a
+# FUTURE plate will ask with the photograph taken out of it, and both stay
 # pinned by ``tests/test_witness.py`` for the metal/clear complement property,
 # which is the one thing that must not rot while they sit here.
-
-
-def build_moire_magnifier(
-    cx: float, cy: float, w: float, h: float, *,
-    sampler_um: float = 60.0, motif_um: float = 62.0, polarity: str = METAL,
-) -> CellArt:
-    """A6 — a pinhole array over a slightly different motif pitch.
-
-    Transmission is ``(1 − f)(1 − b)``, so the sampler must be CHROME WITH HOLES
-    rather than sparse dots; the inverted version reads as a grey field and
-    nothing floats. ``M = p_s/(p_s − p_m)`` is negative here (motif coarser than
-    sampler), so the magnified image is inverted.
-
-    Both plies are 2-D lattices, so both are written as one array per row: the
-    sampler's clear complement is its pinhole grid, and the dot field's clear
-    complement is the gaps between dots plus the strips between rows. As
-    booleans these two cells alone were 55,000 polygons.
-    """
-    mag = sampler_um / (sampler_um - motif_um)     # signed: negative = inverted
-    hole = max(MIN_FEATURE_UM * 2.0, sampler_um * 0.18)
-    dot = max(MIN_FEATURE_UM * 3.0, motif_um * 0.35)
-    x0, x1 = cx - w / 2.0, cx + w / 2.0
-    y0, y1 = cy - h / 2.0, cy + h / 2.0
-    ny = max(1, int(h / sampler_um))
-    gy = y1 - (np.arange(ny) + 0.5) * sampler_um
-    my = max(1, int(h / motif_um))
-    py = y1 - (np.arange(my) + 0.5) * motif_um
-
-    def rows(ys, size, pitch, line, phase):
-        """One array entry per row band of height ``size``."""
-        r = np.empty((len(ys), 4), dtype=np.float64)
-        r[:, 0], r[:, 1] = x0, x1
-        r[:, 2], r[:, 3] = ys - size / 2.0, ys + size / 2.0
-        return {"rects": r, "period_um": np.full(len(ys), pitch),
-                "line_um": np.full(len(ys), line), "phase_um": np.full(len(ys), phase)}
-
-    def between(ys, size):
-        """Full-width strips between row bands, and above/below the first/last."""
-        edges_top = np.concatenate(([y1], ys - size / 2.0))
-        edges_bot = np.concatenate((ys + size / 2.0, [y0]))
-        r = np.empty((len(ys) + 1, 4), dtype=np.float64)
-        r[:, 0], r[:, 1] = x0, x1
-        r[:, 2], r[:, 3] = edges_bot, edges_top
-        return r[r[:, 3] - r[:, 2] > 1e-9]
-
-    s_phase = x0 + 0.5 * sampler_um - hole / 2.0     # first hole's left edge
-    m_phase = x0 + 0.5 * motif_um - dot / 2.0         # first dot's left edge
-    if polarity == METAL:
-        # front: opaque field with holes = strips between rows + per-row segments
-        # between holes (an array of the GAPS between holes, i.e. line = pitch - hole)
-        front_arr = rows(gy, hole, sampler_um, sampler_um - hole, s_phase + hole)
-        art = CellArt(front=between(gy, hole), arrays=[front_arr],
-                      back_arrays=[rows(py, dot, motif_um, dot, m_phase)])
-    else:
-        # clear: the holes themselves; and the dot field's complement
-        art = CellArt(arrays=[rows(gy, hole, sampler_um, hole, s_phase)],
-                      back=between(py, dot),
-                      back_arrays=[rows(py, dot, motif_um, motif_um - dot, m_phase + dot)])
-    art.stats = {"polarity": polarity, "sampler_um": sampler_um, "motif_um": motif_um,
-                 "magnification": round(mag, 1), "hole_um": round(hole, 2),
-                 "n_rects": int(len(art.front) + len(art.back)), "n_arrays": 2}
-    return art
-
-
-def build_scanimation(
-    cx: float, cy: float, w: float, h: float, *, comb_um: float = BOX_COMB_UM,
-    phases: int = 4, polarity: str = METAL,
-) -> CellArt:
-    """P-SCAN test panel — N-phase kinegram, N frames in 1/N-pitch lanes.
-
-    The bare-line version, where the direction of travel is unambiguous. The
-    comb is anchored to the cell's left edge like the lanes (see
-    :func:`build_barrier_switch` for what origin-anchoring did).
-    """
-    lane = comb_um / phases
-    n = max(phases, int(w / lane))
-    k = np.arange(n)
-    x_left = cx - w / 2.0
-    x0 = x_left + k * lane
-    ph = k % phases
-    back = np.empty((n, 4), dtype=np.float64)
-    back[:, 0], back[:, 1] = x0, x0 + lane
-    y = cy - h / 2.0 + (ph / float(phases)) * h * 0.78
-    back[:, 2], back[:, 3] = y, y + h * 0.18
-    f = grating_array if polarity == METAL else grating_array_inverse
-    fe, fr = f(cx, cy, w, h, comb_um, 1.0 / phases, phase_um=(x_left % comb_um))
-    art = CellArt(front=fr, arrays=[fe])
-    if polarity == METAL:
-        art.back = back
-    else:
-        rem = _rect(x0[-1] + lane, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)             if x0[-1] + lane < cx + w / 2.0 - 1e-9 else np.empty((0, 4))
-        art.back = _cat(column_complement(back, cy - h / 2.0, cy + h / 2.0), rem)
-    art.stats = {"polarity": polarity, "comb_um": comb_um, "phases": phases,
-                 "slot_um": round(lane, 2), "n_rects": int(len(art.back)),
-                 "n_arrays": 1}
-    return art
-
-
-def build_chirp(
-    cx: float, cy: float, w: float, h: float, *,
-    period_start_um: float = 22.0, period_end_um: float = 3.0, duty: float = 0.5,
-    polarity: str = METAL,
-) -> CellArt:
-    """D-CHIRP — period swept along the patch, so the fan is graded, not flat.
-
-    Doubles as a continuous resolution check: the sweep crosses the litho floor
-    somewhere, and where it stops diffracting is where the process gave out.
-
-    The fine end is 3.0 um, not the 4.0 the accent zone uses. At 4.0 the sweep
-    STOPS exactly at the floor (a 50%-duty 4 um period is a 2 um line) and never
-    crosses it, so the cell could only ever confirm the assumed limit and never
-    find the real one — which is the single thing it is for.
-    """
-    x0 = cx - w / 2.0
-    x1 = cx + w / 2.0
-    xs: list[float] = []
-    ws: list[float] = []
-    x = x0
-    while x < x1:
-        t = (x - x0) / w
-        d = period_start_um + (period_end_um - period_start_um) * t
-        xs.append(x)
-        ws.append(d * duty)
-        x += d
-    a = np.asarray(xs, dtype=np.float64)
-    b = a + np.asarray(ws, dtype=np.float64)
-    keep = b <= x1
-    a, b = a[keep], b[keep]
-    if polarity == METAL:
-        r = np.empty((a.size, 4), dtype=np.float64)
-        r[:, 0], r[:, 1] = a, b
-    else:
-        # the gaps: after each line up to the next, plus the two ends
-        g0 = np.concatenate(([x0], b))
-        g1 = np.concatenate((a, [x1]))
-        keep = g1 - g0 > 1e-9
-        r = np.empty((int(keep.sum()), 4), dtype=np.float64)
-        r[:, 0], r[:, 1] = g0[keep], g1[keep]
-    r[:, 2], r[:, 3] = cy - h / 2.0, cy + h / 2.0
-    return CellArt(
-        front=r,
-        stats={
-            "polarity": polarity,
-            "period_start_um": period_start_um,
-            "period_end_um": period_end_um,
-            "crosses_floor_at_um": round(MIN_FEATURE_UM / duty, 2),
-            "n_rects": int(len(r)),
-        },
-    )
+#
+# The TWO-PLY builders that used to live here went on 2026-09-16 with the rest
+# of the two-ply optics: the vernier (C1), the barrier switch (P-SWAP), the
+# shading moire, the moire magnifier (B-MAG), the scanimation (P-SCAN) and the
+# chirp (D-CHIRP). The box is six single plies, so none of them can be measured
+# on its stock at all; they are in git history at 22d1634.
 
 
 def build_colour_band(

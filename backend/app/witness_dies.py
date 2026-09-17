@@ -709,7 +709,7 @@ def _face_cell(face: str, cid: str, title: str, *, rotated: bool = False,
         build=(lambda face=face, pspec=pspec, rotated=rotated:
                (lambda cx, cy, w, h, polarity=METAL:
                 build_face_die(face, cx, cy, w, h, polarity, pspec=pspec, rotated=rotated)))(),
-        label=label, block="production", two_layer=False, takes_polarity=True,
+        label=label, block="production", takes_polarity=True,
         axis="production die", level=level, note=note)
 
 

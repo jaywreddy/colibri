@@ -11,19 +11,11 @@ arrays of micrometres, plate-centred, +y up - never as a full-plate raster. A
 """
 from __future__ import annotations
 
-import argparse
-import json
 import math
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Sequence, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
-
-from .patterns.bitmap import colourplan as cp
-from .patterns.bitmap import imageprep as ip
-from .patterns.bitmap import screenrects as sr
-from .patterns.bitmap.colourzone import MIN_FEATURE_UM
 
 # --- plate constants --------------------------------------------------------
 
@@ -34,7 +26,6 @@ GUTTER_UM = 1_000.0                  # = the blank's hand-scribe street
 LABEL_H_UM = 900.0                   # gold cell-ID text under each cell
 
 LAYER_FRONT = (10, 0)
-LAYER_BACK = (20, 0)
 LAYER_OUTLINE = (1, 0)
 LAYER_LABEL = (3, 0)                 # annotation text, not gold
 
@@ -64,8 +55,66 @@ def _snap_half(v: float) -> float:
 
 
 def beat_delta(p: float, beat_um: float) -> float:
-    """Pitch increment that beats against ``p`` at ``beat_um``: p(p+d)/d = beat."""
+    """Pitch increment that beats against ``p`` at ``beat_um``: p(p+d)/d = beat.
+
+    Solved FROM the beat, never the other way round: the beat is the thing the
+    eye reads and the thing a design picks, and pinning delta instead is what
+    made an earlier witness cell read 0.075 where it should have read 0.47.
+    ``patterns.effects.gratings.beat_delta_um`` is the same solve on the plate
+    side; ``tests/test_optics_math.py`` pins the two against the identity.
+    """
+    if beat_um <= p:
+        raise ValueError(f"beat {beat_um} must exceed the pitch {p}")
     return p * p / (beat_um - p)
+
+
+def combined_beat_um(p1: float, p2: float, angle_deg: float) -> float:
+    """The general VECTOR beat of two gratings: ``|k1 - k2|``.
+
+    ``p_beat = p1 p2 / sqrt(p1^2 + p2^2 - 2 p1 p2 cos alpha)``. Reduces to the
+    pitch beat ``p1 p2 / |p1 - p2|`` at alpha = 0 and to ``p / (2 sin(alpha/2))``
+    at p1 = p2 — the two special cases the garland's angle fan and the lid's
+    shading moire are each designed on, which is why the general form is kept in
+    one place rather than written out twice.
+    """
+    a = math.radians(angle_deg)
+    den = math.sqrt(p1 * p1 + p2 * p2 - 2.0 * p1 * p2 * math.cos(a))
+    return float("inf") if den < 1e-12 else p1 * p2 / den
+
+
+def harmonic_beats(p1: float, p2: float, duty: float,
+                   max_order: int = 3) -> list[dict[str, Any]]:
+    """Every ``|m/p1 - n/p2|`` beat of two square gratings, and its amplitude.
+
+    The amplitude of harmonic ``k`` of a duty-``c`` square wave is ``c sinc(kc)``,
+    which VANISHES for even ``k`` at exactly c = 0.5. So a beat that needs an
+    even harmonic has amplitude identically zero at nominal duty and appears the
+    moment the process drifts: the halftone screen (44 um) over the box carrier
+    has a (2,3) beat at 6.4 arcmin — plainly visible banding across a
+    photograph — that the nominal design does not have. That is the argument for
+    the duty ladder on the plate, and it is pinned in
+    ``tests/test_optics_math.py``.
+    """
+    def amp(k: int, c: float) -> float:
+        x = math.pi * k * c
+        return abs(c * math.sin(x) / x) if x else 0.0
+
+    out = []
+    for m in range(1, max_order + 1):
+        for n in range(1, max_order + 1):
+            f = abs(m / p1 - n / p2)
+            if f < 1e-12:
+                continue
+            beat = 1.0 / f
+            if beat > 60000.0:
+                continue
+            out.append({
+                "m": m, "n": n,
+                "beat_um": round(beat, 1),
+                "arcmin": round(beat / 87.0, 2),
+                "amplitude": round(amp(m, duty) * amp(n, duty), 5),
+            })
+    return sorted(out, key=lambda r: -r["beat_um"])
 
 
 # The carrier is sized by the EYE, not by the gap. Scaling the 22 um design
@@ -148,23 +197,13 @@ class CellArt:
     """What one cell contributes, in plate-centred micrometres."""
 
     front: np.ndarray = field(default_factory=lambda: np.empty((0, 4)))
-    back: np.ndarray = field(default_factory=lambda: np.empty((0, 4)))
     polys: list[np.ndarray] = field(default_factory=list)
-    """Rotated METAL geometry: a list of ``(k, 2)`` vertex arrays.
-
-    Rotational moire needs real rotated polygons — staircasing a 1 degree
-    rotation onto the writer grid would add a periodic error at exactly the
-    scale the cell exists to measure — and clipping them to the cell makes the
-    vertex count variable, so this cannot be a single array."""
+    """METAL geometry that is not axis-aligned: a list of ``(k, 2)`` vertex
+    arrays. A production die's rotated placement produces these; clipping them
+    to the cell makes the vertex count variable, so this cannot be one array."""
     free_polys: list[np.ndarray] = field(default_factory=list)
     """Variable-vertex polygons, each ``(k, 2)``. Only the boolean clear-field
     inverter produces these: a box minus a grating is not a rectangle."""
-    back_polys: list[np.ndarray] = field(default_factory=list)
-    """Polygons belonging to the BACK die of a bonded pair, built at the front
-    die's centre; the plate shifts them to the pair position."""
-    back_arrays: list[dict[str, Any]] = field(default_factory=list)
-    """Array-referenced geometry belonging to the BACK die of a bonded pair;
-    the plate shifts it to the pair position."""
     arrays: list[dict[str, Any]] = field(default_factory=list)
     """Periodic sub-gratings, deferred as array references rather than
     polygons. Each entry is one band: ``x0/x1/y0/y1`` of the parent band,
@@ -190,7 +229,6 @@ class Cell:
     without the map, and maps get separated from plates — so the label carries
     the VALUE, not just the index: "CP 6.5um" tells you what you are looking at
     and a stack of them tells you which way the ladder runs."""
-    two_layer: bool = False
     axis: str = ""
     """Which DoE axis this cell is a rung of, empty for a one-off."""
     block: str = ""
@@ -202,16 +240,6 @@ class Cell:
     cell that sets this False is."""
     level: str = ""
     """This cell's value on that axis."""
-    back_w_um: float | None = None
-    back_h_um: float | None = None
-    """Size of the BACK die of a two-layer cell when it differs from the front
-    (a bonded box face: the inner ply is inset one ply per edge). ``None`` means
-    the pair is two equal dies, which every experiment cell is."""
-
-    @property
-    def back_dims(self) -> tuple[float, float]:
-        return (self.back_w_um if self.back_w_um is not None else self.w_um,
-                self.back_h_um if self.back_h_um is not None else self.h_um)
 
 
 # --- small rect utilities ---------------------------------------------------
@@ -337,37 +365,6 @@ def invert_grating(
     )
 
 
-def outside_boxes(
-    cx: float, cy: float, w: float, h: float,
-    boxes: Sequence[tuple[float, float, float, float]],
-) -> np.ndarray:
-    """Cell minus a few VERTICALLY DISJOINT boxes, as rectangles.
-
-    For cells whose features do not fill their cell — the vernier's two combs,
-    say. In metal polarity the space around them is bare glass and needs no
-    geometry; in clear polarity it is chrome unless something says otherwise, so
-    it has to be written.
-
-    ``boxes`` are ``(x0, x1, y0, y1)`` and must not overlap in y.
-    """
-    x0c, x1c = cx - w / 2.0, cx + w / 2.0
-    y0c, y1c = cy - h / 2.0, cy + h / 2.0
-    bs = sorted(boxes, key=lambda b: b[2])
-    parts: list[np.ndarray] = []
-    y = y0c
-    for bx0, bx1, by0, by1 in bs:
-        if by0 > y + 1e-9:
-            parts.append(_rect(x0c, y, x1c, by0))
-        if bx0 > x0c + 1e-9:
-            parts.append(_rect(x0c, max(by0, y0c), bx0, min(by1, y1c)))
-        if bx1 < x1c - 1e-9:
-            parts.append(_rect(bx1, max(by0, y0c), x1c, min(by1, y1c)))
-        y = max(y, by1)
-    if y < y1c - 1e-9:
-        parts.append(_rect(x0c, y, x1c, y1c))
-    return _cat(*parts)
-
-
 def grating_array(cx: float, cy: float, w: float, h: float, period_um: float,
                   duty: float, *, phase_um: float = 0.0,
                   vertical: bool = True) -> tuple[dict[str, Any], np.ndarray]:
@@ -420,26 +417,6 @@ def grating_array_inverse(cx: float, cy: float, w: float, h: float,
     ``c*d``. Together with the original it tiles the band exactly."""
     return grating_array(cx, cy, w, h, period_um, 1.0 - duty,
                          phase_um=phase_um + period_um * duty)
-
-
-def column_complement(
-    rects: np.ndarray, y_lo: float, y_hi: float
-) -> np.ndarray:
-    """For rects that TILE x within a row, the strips above and below each.
-
-    Used by the lane-based cells (the barrier's back die, the scanimation's
-    frames): every lane owns an x interval and a bar inside it, so the clear
-    part of that lane is whatever the bar does not cover.
-    """
-    r = np.asarray(rects, dtype=np.float64)
-    if not len(r):
-        return np.empty((0, 4), dtype=np.float64)
-    out = np.empty((2 * len(r), 4), dtype=np.float64)
-    out[:, 0] = np.concatenate((r[:, 0], r[:, 0]))
-    out[:, 1] = np.concatenate((r[:, 1], r[:, 1]))
-    out[:, 2] = np.concatenate((np.full(len(r), y_lo), r[:, 3]))
-    out[:, 3] = np.concatenate((r[:, 2], np.full(len(r), y_hi)))
-    return out[out[:, 3] - out[:, 2] > 1e-9]
 
 
 def _frame_rects(cx: float, cy: float, w: float, h: float, t: float = 60.0) -> np.ndarray:

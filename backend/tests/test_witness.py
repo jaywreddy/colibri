@@ -1,11 +1,15 @@
 """The 5-inch witness plate: does the DoE fit, and is each cell what it claims?
 
 Built from SMALL cells wherever a shipping-size one would be expensive. The real
-plate is 78 cells and half a million rectangles, a 10 s build; what is worth
-pinning is the contracts — the packer fits, the physics formulas are the ones
-``docs/witness-physics-plan.md`` states, the litho floor is reported honestly,
-and **metal and clear are exact complements**, which on a darkfield write is the
-difference between the part and its negative.
+plate is half a million rectangles, a 10 s build; what is worth pinning here is
+the plate CONTRACTS — the packer fits, the layout is a dicing grid, the dies are
+the box's own plies, the litho floor is reported honestly, and **metal and clear
+are exact complements**, which on a darkfield write is the difference between
+the part and its negative.
+
+The optical IDENTITIES the plate's cells used to carry (beat, rotation,
+harmonic, near field, swap angle) live in ``tests/test_optics_math.py`` since
+2026-09-16, pinned against the formulas rather than against a cell's stats dict.
 """
 from __future__ import annotations
 
@@ -18,13 +22,10 @@ import pytest
 from app import witness_cells as wc
 from app import witness_moire as wm
 from app.export_witness import (
-    BEAT_H_MM,
     C3_DUTY_LADDER,
     MM,
-    NEAR_FIELD_LADDER_UM,
     PERIOD_LADDER_UM,
     RESOLUTION_LADDER_UM,
-    _beat_w_mm,
     _label_h,
     _plan,
     build_plate,
@@ -39,11 +40,8 @@ from app.witness_geom import (
     CLEAR,
     GUTTER_UM,
     METAL,
-    PARALLAX_UM_PER_DEG,
     PLATE_SIDE_UM,
     PLY_UM,
-    P_MIN_UM,
-    fresnel_number,
     USABLE_UM,
     Cell,
     _grating_rects,
@@ -93,10 +91,7 @@ def test_no_cell_escapes_the_usable_area_and_none_overlap():
     half = USABLE_UM / 2.0
     boxes = []
     for p in placed:
-        dies = [(p.cx, p.cell.w_um, p.cell.h_um)]
-        if p.pair_cx is not None:
-            dies.append((p.pair_cx, *p.cell.back_dims))
-        for cx, w, h in dies:
+        for cx, w, h in [(p.cx, p.cell.w_um, p.cell.h_um)]:
             assert cx - w / 2 >= -half - 1e-6, p.cell.cid
             assert cx + w / 2 <= half + 1e-6, p.cell.cid
             assert abs(p.cy) + h / 2 <= half + 1e-6, p.cell.cid
@@ -110,8 +105,7 @@ def test_no_cell_escapes_the_usable_area_and_none_overlap():
 
 
 def _written_mm2(c) -> float:
-    bw, bh = c.back_dims
-    return (c.w_um * c.h_um + (bw * bh if c.two_layer else 0.0)) / 1e6
+    return c.w_um * c.h_um / 1e6
 
 
 def test_the_area_budget_matches_the_plan():
@@ -127,7 +121,6 @@ def test_the_area_budget_matches_the_plan():
     assert 0.65 < area["production"] / usable < 0.80, area
     exp = {k: v for k, v in area.items() if k != "production"}
     assert sum(exp.values()) / usable < 0.12, exp
-    assert not [p.cell.cid for p in placed if p.cell.two_layer], "one ply per cell"
     cids = {p.cell.cid for p in placed}
     from app.witness_dies import SIDE_PHOTOS, SPARE_FACES, SPARE_SIDES
     assert {cid for _, _, cid, _ in SIDE_PHOTOS} <= cids
@@ -157,8 +150,7 @@ def test_the_production_dies_are_the_panelized_box_plies():
     assert set(cells) == want
     assert len(SIDE_PHOTOS) >= 6, "every prepared photograph rides the plate"
     for c in cells.values():
-        assert not c.two_layer and c.takes_polarity and c.block == "production"
-        assert c.back_dims == (c.w_um, c.h_um)
+        assert c.takes_polarity and c.block == "production"
     for face in ("top", "front", "back", "bottom"):
         c, d = cells[f"DIE-{face.upper()}"], die_dims(face)
         assert (c.w_um, c.h_um) == (d["f_w"], d["f_h"])
@@ -273,32 +265,6 @@ def test_the_die_inversion_is_the_exact_complement_of_its_metal():
         assert len(p) <= 6, "convex pieces only"
         assert p[:, 0].min() >= -W / 2 - 1e-6 and p[:, 0].max() <= W / 2 + 1e-6
         assert p[:, 1].min() >= -H / 2 - 1e-6 and p[:, 1].max() <= H / 2 + 1e-6
-
-
-def test_a_two_layer_cell_may_have_a_smaller_back_die():
-    """A bonded box face: the inner ply is inset one ply per edge. The packer
-    must span the pair at its true widths and the plate must frame, label and
-    place the back die at its own size."""
-    def build(cx, cy, w, h, polarity=METAL):
-        art = wc.build_grating_patch(cx, cy, w, h, period_um=10.0)
-        art.back = _grating_rects(cx, cy, w - 600.0, h - 600.0, 10.0, 0.5)
-        art.back_polys = [np.array([[cx - 100, cy - 100], [cx + 100, cy - 100], [cx, cy + 100]])]
-        return art
-    c = Cell("PAIR", "t", "X", 3000.0, 3000.0, build, two_layer=True, takes_polarity=True,
-             back_w_um=2400.0, back_h_um=2400.0)
-    placed, lay = layout([[c]])
-    p = placed[0]
-    assert p.pair_cx == pytest.approx(p.cx + 1500.0 + GUTTER_UM + 1200.0)
-    plate = build_plate([[c]], verbose=False, polarity=METAL)
-    m = plate["manifest"][0]
-    assert (m["back_w_mm"], m["back_h_mm"]) == (2.4, 2.4)
-    dx = p.pair_cx - p.cx
-    tri = [pv for pv in plate["free_polys"] if len(pv) == 3]
-    assert len(tri) == 1 and tri[0][:, 0].mean() == pytest.approx(p.cx + dx)
-    pm = plate["pair_marks"]
-    assert pm[:, 0].min() == pytest.approx(p.pair_cx - 1200.0, abs=1.0)
-
-
 def test_short_cells_open_their_own_row_not_a_pocket():
     """A dicing grid: a 4 mm cell after a 28 mm one opens a 4 mm ROW under it
     (one more full-width cut) instead of nesting in the tall row's leftover,
@@ -372,28 +338,6 @@ def test_analytic_inverses_tile_their_cell_exactly(kw):
     assert _art_area(m) + _art_area(k) == pytest.approx(W * H, rel=1e-6)
 
 
-def test_the_crossed_grating_opens_exactly_the_square_of_its_gap():
-    """Two orthogonal gratings OVERLAP, so their rectangle areas cannot simply
-    be added: two 50% gratings sum to 100% of a cell whose union is 75%. The
-    clear fraction is the one unambiguous number — ``(1 - c)^2`` — and it is
-    also the check that the union identity behaves."""
-    import klayout.db as kdb
-
-    W = H = 4000.0
-    c = 0.5
-    m = wm.build_crossed(0, 0, W, H, period_x_um=20.0, period_y_um=25.0,
-                         duty=c, polarity=METAL)
-    k = wm.build_crossed(0, 0, W, H, period_x_um=20.0, period_y_um=25.0,
-                         duty=c, polarity=CLEAR)
-    assert _art_area(k) == pytest.approx((1 - c) ** 2 * W * H, rel=1e-3)
-    reg = kdb.Region()
-    for x0, x1, y0, y1 in m.front:
-        reg.insert(kdb.Box(round(x0 * 1000), round(y0 * 1000),
-                           round(x1 * 1000), round(y1 * 1000)))
-    reg.merge()
-    assert reg.area() * 1e-6 == pytest.approx((1 - (1 - c) ** 2) * W * H, rel=1e-3)
-
-
 @pytest.mark.parametrize("mode", ["plain", "zones"])
 def test_the_halftone_inverse_tiles_the_lines_it_covers(mode):
     """Plain bands AND coloured bands: the clear sub-grating (duty 1-c at phase
@@ -415,21 +359,6 @@ def test_the_halftone_inverse_tiles_the_lines_it_covers(mode):
         assert _array_area(k.arrays[0]) / band == pytest.approx(0.5, abs=0.01)
 
 
-def test_the_boolean_inverse_tiles_its_cell_exactly():
-    import klayout.db as kdb
-
-    W = H = 4000.0
-    m = wm.build_beat(0, 0, W, H, beat_um=1000.0)
-    free = clear_by_boolean(0, 0, W, H, m.front, m.polys)
-    reg = kdb.Region()
-    for x0, x1, y0, y1 in m.front:
-        reg.insert(kdb.Box(round(x0 * 1000), round(y0 * 1000),
-                           round(x1 * 1000), round(y1 * 1000)))
-    reg.merge()
-    metal = reg.area() * 1e-6
-    assert metal + sum(_poly_area(p) for p in free) == pytest.approx(W * H, rel=1e-6)
-
-
 def test_a_grating_and_its_inverse_are_complements():
     m = _grating_rects(0, 0, 1000.0, 400.0, 7.0, 0.5)
     c = invert_grating(0, 0, 1000.0, 400.0, 7.0, 0.5)
@@ -444,102 +373,7 @@ def test_the_boolean_inverter_refuses_a_cell_that_is_too_large():
         clear_by_boolean(0, 0, 10.0, 10.0, rects, [])
 
 
-def test_rotated_geometry_is_CLIPPED_to_its_cell_not_merely_rejected():
-    """A rotated grating's end lines overhang by up to half the diagonal. Left
-    unclipped they spill into the neighbouring cell, and the clear-field inverse
-    stops being the metal's complement — which the area check caught."""
-    W = H = 4000.0
-    a = wm.build_rotation_beat(0, 0, W, H, angle_deg=8.0)
-    assert a.polys, "a rotated cell must produce polygons"
-    for pv in a.polys:
-        assert pv[:, 0].min() >= -W / 2 - 1e-6 and pv[:, 0].max() <= W / 2 + 1e-6
-        assert pv[:, 1].min() >= -H / 2 - 1e-6 and pv[:, 1].max() <= H / 2 + 1e-6
-
-
-def test_clipping_a_convex_polygon_is_exact():
-    p = np.array([[-2.0, -2.0], [3.0, -2.0], [3.0, 3.0], [-2.0, 3.0]])
-    assert _poly_area(wm._clip_convex(p, 0, 0, 2, 2)) == pytest.approx(4.0)
-
-
-# --- physics ----------------------------------------------------------------
-
-
-def test_the_beat_is_solved_from_the_beat_not_from_delta():
-    # The BEAT ladder was cut from the plate on 2026-09-10 (its area went to the
-    # production dies), but the SOLVER is what the box's shading moire uses, so
-    # the physics stays pinned over the rungs the plate used to carry.
-    for b in (500.0, 1000.0, 1635.0, 3000.0, 6000.0):
-        d = wm.beat_delta_for(63.5, b)
-        assert 63.5 * (63.5 + d) / d == pytest.approx(b, rel=1e-9)
-    with pytest.raises(ValueError):
-        wm.beat_delta_for(63.5, 50.0)
-
-
-def test_the_beat_amplifies_a_pitch_error():
-    """What makes B-BEAT a metrology cell and not just a pretty one: the beat is
-    p/delta times the pitch difference, so it magnifies a pitch error by 25."""
-    a = wm.build_beat(0, 0, 8000, 8000, beat_um=1635.0)
-    from app.witness_geom import BOX_BEAT_UM, BOX_CARRIER_UM, beat_delta
-    assert a.stats["amplification"] == pytest.approx(
-        BOX_CARRIER_UM / beat_delta(BOX_CARRIER_UM, BOX_BEAT_UM), abs=0.2)
-    assert a.stats["single_layer"] is True
-
-
-def test_rotation_and_vector_beats_agree_where_they_overlap():
-    """``p/(2 sin(a/2))`` is the equal-pitch case of ``|k1 - k2|``; if they
-    disagreed the perimeter frame's numbers would be wrong."""
-    # The ROTATION ladder is off the plate too (see above); the identity it
-    # checks is the one the frame's angle fan is designed on, so it stays pinned
-    # over the angles that fan spans.
-    for a in (0.5, 1.0, 2.0, 3.0, 6.0):
-        rot = 63.5 / (2 * math.sin(math.radians(a) / 2))
-        assert wm.combined_beat_um(63.5, 63.5, a) == pytest.approx(rot, rel=1e-9)
-    assert wm.combined_beat_um(63.5, 66.07, 0.0) == pytest.approx(
-        63.5 * 66.07 / 2.57, rel=1e-3)
-
-
-def test_the_even_harmonic_moire_exists_ONLY_under_duty_bias():
-    """The best argument for the duty ladder. The (2,3) beat between the 44 µm
-    screen and the 63.5 µm carrier is 559 µm — 6.4 arcmin, plainly visible — and
-    its amplitude is identically zero at 50% duty, because even harmonics of a
-    square wave vanish there. A process error conjures banding across the
-    photograph that the nominal design does not have."""
-    at50 = {(t["m"], t["n"]): t for t in wm.harmonic_beats(44.0, 63.5, 0.50)}
-    at42 = {(t["m"], t["n"]): t for t in wm.harmonic_beats(44.0, 63.5, 0.42)}
-    assert at50[(2, 3)]["arcmin"] == pytest.approx(6.42, abs=0.05)
-    assert at50[(2, 3)]["amplitude"] == 0.0
-    assert at42[(2, 3)]["amplitude"] > 0.0
-    assert at50[(1, 1)]["arcmin"] == pytest.approx(1.65, abs=0.03)
-    assert at50[(1, 1)]["amplitude"] > 0.1
-
-    nominal = wm.build_harmonic(0, 0, 8000, 8000, duty=0.50)
-    biased = wm.build_harmonic(0, 0, 8000, 8000, duty=0.42)
-    assert nominal.stats["n_visible"] < biased.stats["n_visible"]
-
-
-def test_the_near_field_ladder_brackets_the_fresnel_boundary():
-    """Two-layer effects need a coarse pitch: a p/2 slit spreads by lambda*z/(n*p)
-    across the gap, and the ladder must straddle p_min = sqrt(2*lambda*z/n) or it
-    measures nothing. (Coherent Talbot self-imaging is NOT the criterion; its
-    quarter distance is where a 50% grating's shadow vanishes.)"""
-    verdicts = [wm.build_near_field(0, 0, 8000, 8000, period_um=p).stats["predicted"]
-                for p in NEAR_FIELD_LADDER_UM]
-    assert "washed out" in verdicts and "intact" in verdicts, verdicts
-    ref = wm.build_near_field(0, 0, 8000, 8000, period_um=44.0).stats
-    assert ref["p_min_um"] == pytest.approx(P_MIN_UM, abs=0.1), "the plate's own glass"
-    assert ref["fresnel_number"] == pytest.approx(fresnel_number(44.0), abs=0.005)
-    assert P_MIN_UM == pytest.approx(41.2, abs=0.2), "2.25 mm quartz"
-    assert NEAR_FIELD_LADDER_UM[0] < P_MIN_UM < NEAR_FIELD_LADDER_UM[-1]
-    fine = wm.build_near_field(0, 0, 8000, 8000, period_um=5.0).stats
-    assert fine["fresnel_number"] < 0.05, "a colour grating is far past it"
-
-
-def test_the_swatch_reports_when_its_blue_end_is_unprintable():
-    ok = wm.build_swatch(0, 0, 6000, 6000, base_period_um=5.0, spread=1.45)
-    assert ok.stats["all_printable"] is True
-    bad = wm.build_swatch(0, 0, 6000, 6000, base_period_um=4.0, spread=1.90)
-    assert bad.stats["all_printable"] is False
-    assert bad.stats["finest_line_um"] < MIN_FEATURE_UM
+# --- the bench cells: each reports what it measures --------------------------
 
 
 def test_the_step_wedge_quantises_to_the_screens_own_ladder():
@@ -570,40 +404,6 @@ def test_the_duty_ladder_brackets_the_second_order_null():
     assert all(m["clears_floor"] for m in strip.stats["rungs"]), (
         "a 10 um period keeps every rung of a 0.30-0.70 sweep printable"
     )
-
-
-def test_beat_cells_are_wide_not_square():
-    """Beat fringes are spaced along ONE axis, so these cells need width, not
-    area. Drawn square, the 6000 µm rung forced a 20.9 mm row that was a third
-    full and cost the plate 10 mm of height for one cell."""
-    # The sizing RULE holds whether or not the ladder is on this plate: width
-    # tracks the beat, height does not.
-    assert _beat_w_mm(6000.0) > _beat_w_mm(500.0)
-    assert _beat_w_mm(6000.0) > BEAT_H_MM
-
-    placed, _ = layout(doe_cells())
-    beats = [p.cell for p in placed if p.cell.cid.startswith("BEAT")]
-    if not beats:
-        pytest.skip("the BEAT ladder was cut from the plate on 2026-09-10 "
-                    "(eight production plies); the sizing rule is checked above")
-    heights = {c.h_um for c in beats}
-    assert len(heights) == 1, "every beat cell shares one height, so they pack"
-    for c in beats:
-        b = float(c.cid[4:])
-        assert c.w_um / b >= 3.0, f"{c.cid} holds only {c.w_um/b:.1f} fringes"
-    widest = max(beats, key=lambda c: c.w_um)
-    assert widest.w_um > widest.h_um, "the coarsest beat must be wide, not tall"
-
-
-def test_the_parallax_ruler_is_readable_by_hand():
-    """At ~27 µm/deg (2.25 mm quartz) a 200 µm tooth needs 7.4 deg of tilt, so a
-    hand-held read would cover two teeth. 60 µm gives 2.2 deg per tooth, nine
-    inside ±10 deg."""
-    a = wm.build_parallax_ruler(0, 0, 10000, 6000)
-    assert 1.5 < a.stats["deg_per_tooth"] < 4.0
-    assert a.stats["parallax_um_per_deg"] == pytest.approx(PARALLAX_UM_PER_DEG, abs=0.01)
-    assert PARALLAX_UM_PER_DEG == pytest.approx(26.93, abs=0.05)
-    assert a.stats["single_layer"] is False
 
 
 def test_the_glass_constants_are_the_plate_compositors():
@@ -686,21 +486,6 @@ def test_the_plate_reports_what_flattening_would_cost():
     plate = build_plate(cells, verbose=False, polarity=METAL)
     assert flat_rect_count(plate) > len(plate["front"])
     assert plate["manifest"][0]["n_array_bands"] > 0
-
-
-def test_the_barrier_switch_is_straddle_registered_wherever_the_cell_sits():
-    """The comb must be anchored to the CELL, not the plate origin. Anchored to
-    the origin, head-on registration was x0 mod p — zero for three combs and
-    65 um for the shipping 173 um one, so that cell alone came out 25/75 and
-    swapped at 0.79 and 2.37 deg instead of a symmetric pair. Found by a
-    reviewer recomputing the cell, not by any test."""
-    for comb in (100.0, 173.0, 250.0, 350.0):
-        for x_left in (0.0, 16500.0, 12345.0):
-            a = wc.build_barrier_switch(x_left + 4000, 0, 8000, 8000, comb_um=comb)
-            assert a.stats["head_on_A_fraction"] == pytest.approx(0.5, abs=1e-6), (comb, x_left)
-            assert a.stats["peak_shift_um"] == pytest.approx(comb / 4.0)
-
-
 def test_the_band_cells_are_banded_not_continuous():
     """At tone 0.5 with tone held the band was the whole 44 um period — a
     continuous grating with a phase reset, not a banded one. At tone 0.25 the

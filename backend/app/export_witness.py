@@ -49,18 +49,11 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 
-from . import witness_cells as wc
 from . import witness_moire as wm
 from .patterns.bitmap import colourplan as cp
 from .witness_geom import (
-    BOX_COMB_UM,
     CLEAR,
-    GLASS_MATERIAL,
     METAL,
-    PARALLAX_UM_PER_DEG,
-    PLY_UM,
-    P_MIN_UM,
-    fresnel_number,
     GUTTER_UM,
     LABEL_H_UM,
     LAYER_FRONT,
@@ -74,7 +67,6 @@ from .witness_geom import (
     _text_rects,
 )
 
-LAYER_PAIR = (21, 0)     # outline-only: marks the back die of a two-layer experiment cell
 LAYER_DICE = (2, 0)      # annotation: the saw's street centrelines (never chrome)
 
 TICK_REACH_UM = 550.0
@@ -113,65 +105,35 @@ def _label_h(cell_h_um: float) -> float:
 # the portraits went, and the subjective call -- which picture goes on a wall --
 # is now made on the production SIDE DIES themselves (witness_dies.SIDE_PHOTOS).
 #
-# 2026-09-10: the plate carries ten production plies (lid + front pairs, six
-# photo sides), so the experiment set is cut to the cells this box's bench
-# reads: polarity, CD, duty, the two-layer registration and switch cells at the
-# box's own pitches, one near-field pair either side of the design, one halftone
-# wedge at the photo screen, and single rungs of the diffraction and moire
-# ladders. 23 cells.
+# 2026-09-16: every production face is ONE ply, so the plate carries six single
+# dies plus spares and the experiment set is cut to the cells a SINGLE-LAYER
+# bench can read: polarity, CD, duty, one halftone wedge at the photo screen,
+# and single rungs of the diffraction and acuity ladders.
 #
 # What went is NOT kept as an empty tuple with a live loop over it: that is a
 # cell which silently does not exist, and it is how a plate ships missing an
 # experiment nobody noticed. The dropped rungs -- BEAT, BEAT-duty, ROTATION,
 # HARMONIC, SCREEN-angle, the D-SWATCH base-period x spread grid, the CROSS and
-# BAND swatches, the VEC pitch x angle grid, the MAG magnifier pair, P-SCAN, and
-# the portrait ladders (steps, duty, coarsen, unsharp, scale) -- live in git
-# history at 0799344, and their builders in witness_cells' EXPERIMENTS section.
+# BAND swatches, the VEC pitch x angle grid, the MAG magnifier pair, P-SCAN,
+# M-VERN, P-RULE, B-MOVE, the NF and SWAP ladders and the portrait ladders --
+# live in git history at 0799344 and 22d1634. What they MEASURED that still
+# matters is pinned as formulas in ``tests/test_optics_math.py``.
 RESOLUTION_LADDER_UM = (0.8, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.5, 8.0)
 C3_DUTY_LADDER = (0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70)
 PERIOD_LADDER_UM = (2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0, 14.0, 20.0)
-NEAR_FIELD_LADDER_UM = (20.0, 64.0)
-"""Kept for the physics tests (``wm.build_near_field`` and the Fresnel
-boundary): no near-field cell rides the plate since the two-layer design went."""
 SCREEN_LADDER_UM = (20.0, 30.0, 44.0, 60.0)
 WEDGE_SCREENS_UM = (44.0,)          # the photo screen; 20 and 60 were cut
 
-BEAT_H_MM = 8.0
-"""Height of every beat cell. Beat fringes are spaced along ONE axis — across
-the lines for a pitch beat, along them for a rotation beat — so these cells need
-WIDTH, not area. Drawn square, the 6000 um rung forced a 20.9 mm row that was
-33% full and cost the plate 10 mm of height for one cell."""
-
-
-def _beat_w_mm(beat_um: float, min_mm: float = 6.0, fringes: float = 5.0) -> float:
-    """Width that holds ``fringes`` of a beat, floored so a fine beat still gets
-    a cell you can put an eye to.
-
-    Five fringes, not three: the cell is read by COUNTING fringes and inverting
-    back to the pitch error through ``p/delta``, so the count is the measurement
-    and one more fringe is one more significant figure. Reshaping these cells
-    wide-and-short freed the height to afford it."""
-    return max(min_mm, round(fringes * beat_um / 1000.0, 1))
-
-PORTRAIT_MM = 12.0
-"""Cell size for a halftone PORTRAIT: 138 eye-cells across at 300 mm, enough to
-judge a colour treatment. No portrait rides this plate any more — the two colour
-SIDES are the portraits, at their 13.3 mm art box — but
-``tools/dev/render_witness_preview.py``
-renders its off-plate previews at this size, so the number stays here where the
-plate's other cell sizes are."""
-SWEEP_MM = 10.0
-PAIR_MM = 8.0
 WEDGE_W_MM = 30.0
 WEDGE_H_MM = 4.0
 
 
 def _cell(cid, title, block, w_mm, h_mm, build, *, label="", note="",
-          axis="", level="", two_layer=False, takes_polarity=False) -> Cell:
+          axis="", level="", takes_polarity=False) -> Cell:
     return Cell(cid=cid, title=title, group=block[0].upper(),
                 w_um=w_mm * MM, h_um=h_mm * MM, build=build, note=note,
                 label=label or cid, axis=axis, level=level,
-                two_layer=two_layer, block=block, takes_polarity=takes_polarity)
+                block=block, takes_polarity=takes_polarity)
 
 
 def _plan(mode: str, **kw: Any) -> cp.ColourPlan:
@@ -270,10 +232,8 @@ def doe_cells() -> list[list[Cell]]:
     # is the H-WEDGE.
     B.append(hf)
 
-    # === TWO-LAYER ==========================================================
-    # Gone with the bonded design (2026-09-15). M-VERN, P-RULE, B-MOVE, the NF
-    # and SWAP ladders measured a gap the box no longer has; their builders
-    # stay in witness_cells / witness_moire (the physics tests still pin them).
+    # No TWO-LAYER block: it went with the bonded design (2026-09-15) and its
+    # builders followed on 2026-09-16 (see witness_cells / witness_moire).
     return B
 
 
@@ -332,23 +292,16 @@ class Placed:
     cx: float
     cy: float
     art: CellArt = field(default_factory=CellArt)
-    pair_cx: float | None = None
-    """Centre of the BACK die, for a two-layer cell."""
-    back_free: list = field(default_factory=list)
-    """Clear-field polygons for the BACK die, when it was inverted by boolean."""
 
 
 def _span(c: Cell) -> float:
-    """Width a cell occupies in a row: its die, plus the back die and a street."""
-    if c.two_layer:
-        return c.w_um + GUTTER_UM + c.back_dims[0]
+    """Width a cell occupies in a row. One die per cell: every face is one ply."""
     return c.w_um
 
 
 def _cell_h(c: Cell) -> float:
-    """Height a cell costs in a row: the taller die plus its label band."""
-    h = max(c.h_um, c.back_dims[1])
-    return h + _label_h(h)
+    """Height a cell costs in a row: the die plus its label band."""
+    return c.h_um + _label_h(c.h_um)
 
 
 @dataclass
@@ -409,8 +362,6 @@ def layout(bands: Iterable[list[Cell]]) -> tuple[list[Placed], dict[str, Any]]:
     cuts are listed with it. Within a height class the order of the bands is
     kept, so a ladder still reads left to right.
 
-    A two-layer experiment cell's back die sits one street to the right of its
-    front die at the same y (its own size); no production cell is two-layer.
     """
     x_lo = -USABLE_UM / 2.0
     x_hi = USABLE_UM / 2.0
@@ -422,8 +373,6 @@ def layout(bands: Iterable[list[Cell]]) -> tuple[list[Placed], dict[str, Any]]:
 
     def put(c: Cell, x: float, y_top: float, row: _Row | None) -> None:
         pl = Placed(cell=c, cx=x + c.w_um / 2.0, cy=y_top - c.h_um / 2.0)
-        if c.two_layer:
-            pl.pair_cx = x + c.w_um + GUTTER_UM + c.back_dims[0] / 2.0
         placed.append(pl)
         if row is not None:
             row.cells.append(c.cid)
@@ -632,7 +581,6 @@ def build_plate(
     free: list[np.ndarray] = []
     labels: list[np.ndarray] = []
     outline: list[np.ndarray] = []
-    pair_marks: list[np.ndarray] = []
     arrays: list[dict[str, Any]] = []
     manifest: list[dict[str, Any]] = []
 
@@ -645,20 +593,12 @@ def build_plate(
             art = c.build(p.cx, p.cy, c.w_um, c.h_um)
             if polarity == CLEAR:
                 # This cell does not know its own inverse, so take it with a
-                # per-cell boolean. Its BACK die inverts separately, against the
-                # same cell box, because the two dies are different plies.
+                # per-cell boolean.
                 art.free_polys = clear_by_boolean(
                     p.cx, p.cy, c.w_um, c.h_um, art.front, art.polys)
-                if len(art.back):
-                    back_clear = clear_by_boolean(
-                        p.cx, p.cy, c.w_um, c.h_um, art.back, [])
-                else:
-                    back_clear = []
                 art.front = np.empty((0, 4))
                 art.polys = []
-                art.back = np.empty((0, 4))
                 art.stats["clear_polys"] = len(art.free_polys)
-                p.back_free = back_clear
         p.art = art
         front.append(art.front)
         for a in art.arrays:
@@ -673,35 +613,7 @@ def build_plate(
             p.cy - c.h_um / 2.0 - lab_h * 0.5, lab_h * 0.66, anchor="left"))
         free.extend(art.free_polys)
         free.extend(art.polys)
-        n_back = 0
-        bw, bh = c.back_dims
-        if c.two_layer and p.pair_cx is not None:
-            dx = p.pair_cx - p.cx
-            b = art.back.copy()
-            if len(b):
-                b[:, 0] += dx
-                b[:, 1] += dx
-                front.append(b)
-            n_back = len(b)
-            for pv in list(p.back_free) + list(art.back_polys):
-                q = np.asarray(pv, dtype=np.float64).copy()
-                q[:, 0] += dx
-                free.append(q)
-            n_back += len(p.back_free) + len(art.back_polys)
-            for a in art.back_arrays:
-                rr = np.asarray(a["rects"], dtype=np.float64).copy()
-                rr[:, 0] += dx
-                rr[:, 1] += dx
-                arrays.append({**a, "rects": rr,
-                               "phase_um": np.asarray(a.get("phase_um", 0.0),
-                                                      dtype=np.float64) + dx})
-            pair_marks.append(_frame_rects(p.pair_cx, p.cy, bw, bh))
-            outline.append(_frame_rects(p.pair_cx, p.cy, bw, bh))
-            lab_b = _label_h(bh)
-            labels.append(_text_rects(
-                (c.label or c.cid).split(" ")[0] + " B", p.pair_cx - bw / 2.0,
-                p.cy - bh / 2.0 - lab_b * 0.5, lab_b * 0.66, anchor="left"))
-        n_arr = sum(int(np.size(a["period_um"])) for a in art.arrays + art.back_arrays)
+        n_arr = sum(int(np.size(a["period_um"])) for a in art.arrays)
         dt = time.perf_counter() - t0
         manifest.append({
             "cid": c.cid, "title": c.title, "group": c.group,
@@ -709,17 +621,15 @@ def build_plate(
             "axis": c.axis, "level": c.level, "note": c.note,
             "x_mm": round(p.cx / MM, 3), "y_mm": round(p.cy / MM, 3),
             "w_mm": round(c.w_um / MM, 3), "h_mm": round(c.h_um / MM, 3),
-            "two_layer": c.two_layer,
-            "back_w_mm": round(bw / MM, 3), "back_h_mm": round(bh / MM, 3),
-            "n_rects": int(len(art.front)) + n_back,
-            "n_polys": int(len(art.free_polys)) + int(len(art.polys)) + int(len(art.back_polys)),
+            "n_rects": int(len(art.front)),
+            "n_polys": int(len(art.free_polys)) + int(len(art.polys)),
             "n_array_bands": n_arr,
             "build_s": round(dt, 2),
             "stats": art.stats,
         })
         if verbose:
             print(f"  {c.cid:14s} {c.title[:30]:30s} "
-                  f"{len(art.front)+n_back:>8,}r {len(art.free_polys)+len(art.polys):>7,}p "
+                  f"{len(art.front):>8,}r {len(art.free_polys)+len(art.polys):>7,}p "
                   f"{n_arr:>7,}a {dt:5.1f}s")
 
     return {
@@ -731,7 +641,6 @@ def build_plate(
         "front": _cat(*front, _dice_edge_marks(lay)),
         "outline": _cat(*outline),
         "labels": _cat(*labels),
-        "pair_marks": _cat(*pair_marks),
         "dice_lines": _dice_line_rects(lay),
         "arrays": arrays,
         "manifest": manifest,
@@ -932,7 +841,6 @@ def write_mask(
     top = ly.create_cell("WITNESS_5IN")
     l_front = ly.layer(*LAYER_FRONT)
     l_out = ly.layer(*LAYER_OUTLINE)
-    l_pair = ly.layer(*LAYER_PAIR)
     l_dice = ly.layer(*LAYER_DICE)
 
     _insert_rects(top, l_front, plate["front"], kdb)
@@ -940,7 +848,6 @@ def write_mask(
     _insert_polys(top, l_front, plate.get("free_polys", ()), kdb)
     _insert_rects(top, l_front, plate["labels"], kdb)
     _insert_rects(top, l_out, plate["outline"], kdb)
-    _insert_rects(top, l_pair, plate["pair_marks"], kdb)
     half = PLATE_SIDE_UM / 2.0
     top.shapes(l_out).insert(kdb.DBox(-half, -half, half, half))
 
@@ -1030,26 +937,19 @@ def write_gds(plate: dict[str, Any], out_path: Path, *, flat: bool = False) -> P
 
 
 def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
-    """A one-page plate map from the manifest: block colour, etched label, and
-    the bonded band shaded. Keyed on ``block`` — an earlier version keyed on the
-    single-letter group and coloured one block of five."""
+    """A one-page plate map from the manifest: block colour and etched label.
+    Keyed on ``block`` — an earlier version keyed on the single-letter group and
+    coloured one block of five."""
     s = PLATE_SIDE_UM
     sc = 900.0 / s
     FILL = {"production": "#d6b04a", "moire": "#e0457b", "diffraction": "#00b8a9",
             "parallax": "#7c4dff", "halftone": "#f0a202", "metrology": "#9fb0b6"}
     man = plate["manifest"]
-    two = [m for m in man if m["two_layer"]]
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 960" '
         f'width="900" height="960"><rect width="900" height="960" fill="#0d1113"/>',
         f'<rect x="0" y="0" width="900" height="900" fill="none" stroke="#3a4449" stroke-width="2"/>',
     ]
-    two = [m for m in two if m["block"] != "production"]
-    if two:
-        y_top = max(m["y_mm"] * MM + m["h_mm"] * MM / 2 for m in two)
-        y_bot = min(m["y_mm"] * MM - m["h_mm"] * MM / 2 for m in two)
-        parts.append(f'<rect x="2" y="{(s/2 - y_top)*sc:.1f}" width="896" '
-                     f'height="{(y_top - y_bot)*sc:.1f}" fill="#7c4dff" fill-opacity=".07"/>')
     for m in man:
         x = (m["x_mm"] * MM + s / 2) * sc
         y = (s / 2 - m["y_mm"] * MM) * sc
@@ -1062,12 +962,6 @@ def write_map_svg(plate: dict[str, Any], out_path: Path) -> Path:
             fs = max(7, min(11, w / max(6, len(m["label"]) * 0.75)))
             parts.append(f'<text x="{x:.1f}" y="{y+3:.1f}" fill="#e6eef1" font-size="{fs:.0f}" '
                          f'font-family="monospace" text-anchor="middle">{m["label"]}</text>')
-        if m["two_layer"]:
-            bw = m.get("back_w_mm", m["w_mm"]) * MM * sc
-            bh = m.get("back_h_mm", m["h_mm"]) * MM * sc
-            parts.append(f'<rect x="{x+w/2+GUTTER_UM*sc:.1f}" y="{y-bh/2:.1f}" width="{bw:.1f}" '
-                         f'height="{bh:.1f}" fill="{fill}" fill-opacity=".10" stroke="{fill}" '
-                         f'stroke-dasharray="3 2" stroke-width="1"/>')
     lg = plate["layout"]
     dc = lg.get("dicing")
     if dc:

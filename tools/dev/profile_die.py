@@ -34,7 +34,7 @@ for face in faces:
     art = wd.build_face_die(fid, 0.0, 0.0, d["f_w"], d["f_h"], wd.CLEAR, pspec=pspec)
     pr.disable()
     print(f"\n=== {face}: build_face_die {time.perf_counter() - t0:.1f} s, "
-          f"{len(art.polys)} F polys, {len(art.back_polys)} B polys ===")
+          f"{len(art.polys)} F polys ===")
     st = pstats.Stats(pr)
     st.sort_stats("cumulative").print_stats(28)
 

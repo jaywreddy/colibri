@@ -153,21 +153,21 @@ blocks = md_to_blocks(md)
 cells = man["cells"]
 wr, n_by = Counter(), Counter()
 def _wr(c):
-    return c["w_mm"] * c["h_mm"] + (c.get("back_w_mm", c["w_mm"]) * c.get("back_h_mm", c["h_mm"]) if c["two_layer"] else 0)
+    # one die per cell: every face of the box is a single written ply
+    return c["w_mm"] * c["h_mm"]
 for c in cells:
     wr[c["block"]] += _wr(c)
     n_by[c["block"]] += 1
 tot_wr = sum(wr.values())
 prod_wr = wr["production"]
 exp_wr = tot_wr - prod_wr
-two_wr = sum(_wr(c) for c in cells if c["two_layer"] and c["block"] != "production")
 port = sum(c["w_mm"] * c["h_mm"] for c in cells if c["cid"].startswith(("PORT", "SZ")))
 usable = man["layout"]["height_available_mm"] ** 2
 lay, gds = man["layout"], man["gds"]
 BLOCK_NAME = {"production": "Production dies", "moire": "Moiré", "diffraction": "Diffraction",
               "parallax": "Parallax", "halftone": "Halftone", "metrology": "Metrology"}
 BLOCK_WHY = {
-    "production": f"four box faces as plies: lid F+B, front F+B, two colour sides F only — the box's own {PLY_UM/1000:g} mm {GLASS_MATERIAL}",
+    "production": f"the box's six faces as single plies, plus spares — the box's own {PLY_UM/1000:g} mm {GLASS_MATERIAL}",
     "moire": "fringes are millimetres, so cells must be large to hold five of them; and it had the least evidence behind it",
     "parallax": "each cell is written twice, front die and back die",
     "diffraction": "a grating needs only enough area to fill the pupil",
@@ -186,13 +186,13 @@ BUDGET = f"""
 <tbody>{budget_rows}
 <tr class="hi"><td><b>total written</b></td><td class="n mono">{len(cells)}</td><td class="n mono">{tot_wr:,.0f}</td><td class="n mono">100%</td>
   <td class="muted-cell">{tot_wr/usable*100:.0f}% of the {usable:,.0f} mm² usable field; {lay['height_used_mm']:.1f} of {lay['height_available_mm']:.0f} mm of height</td></tr>
-<tr><td>experiments that need a bond</td><td class="n mono">{sum(1 for c in cells if c['two_layer'] and c['block'] != 'production')}</td><td class="n mono">{two_wr:,.0f}</td><td class="n mono">{two_wr/exp_wr*100:.0f}%</td>
-  <td class="muted-cell">of the experiment area; the other {100-two_wr/exp_wr*100:.0f}% returns its numbers without one</td></tr>
+<tr><td>experiments that need a bond</td><td class="n mono">0</td><td class="n mono">0</td><td class="n mono">0%</td>
+  <td class="muted-cell">none — the box is six single plies, so every cell returns its numbers on one layer</td></tr>
 <tr><td>portrait cells</td><td class="n mono">{n_port}</td><td class="n mono">{port:,.0f}</td><td class="n mono">0%</td>
   <td class="muted-cell">none — the six photo side dies are the portraits, at a 13.3 mm art box</td></tr>
 </tbody></table></div>
 <div class="platewrap" style="background:#0d1113;border-radius:3px;padding:10px;overflow-x:auto;margin:18px 0 8px">{svg_map}</div>
-<p class="dim" style="margin:0 0 26px">The plate as packed, from the manifest. Colour is block; gold is the four production dies; dashed outlines are back dies; the shaded band is the bonded experiments. Rows are packed by height with pockets and columns beside the tall dies, so a ladder reads left to right and a family may wrap.</p>
+<p class="dim" style="margin:0 0 26px">The plate as packed, from the manifest. Colour is block; gold is the production dies. Rows are packed by height with pockets and columns beside the tall dies, so a ladder reads left to right and a family may wrap.</p>
 """
 
 # ---------------------------------------------------------------- cell tables (appendix)
@@ -209,8 +209,7 @@ tabs = []
 for blk in sorted(wr, key=lambda k: -wr[k]):
     rows = []
     for c in sorted(by_block[blk], key=lambda c: (c["axis"], c["cid"])):
-        two = '<span class="two">bonded</span>' if c["two_layer"] else ""
-        rows.append(f'<tr><td class="mono"><b>{H.escape(c["label"])}</b>{two}</td>'
+        rows.append(f'<tr><td class="mono"><b>{H.escape(c["label"])}</b></td>' 
                     f'<td>{H.escape(units(c["title"]))}</td>'
                     f'<td class="n mono">{c["w_mm"]:g}&times;{c["h_mm"]:g}</td>'
                     f'<td class="dim">{H.escape(units(c["level"]))}</td></tr>')
@@ -323,7 +322,7 @@ ol {{ max-width: 72ch; color: var(--ink-2); }}
     <div class="given"><dt>Polarity</dt><dd>darkfield<small>clear data, positive resist</small></dd></div>
     <div class="given"><dt>Cells</dt><dd>{len(cells)}<small>{lay['height_used_mm']:.0f} of {lay['height_available_mm']:.0f} mm packed</small></dd></div>
     <div class="given"><dt>Production dies</dt><dd>{prod_wr/usable*100:.0f}%<small>of the field: lid + front pairs, two colour sides</small></dd></div>
-    <div class="given"><dt>Needs a bond</dt><dd>{two_wr/exp_wr*100:.0f}%<small>of the experiments; the rest is single-layer</small></dd></div>
+    <div class="given"><dt>Needs a bond</dt><dd>0%<small>the box is six single plies; every cell reads on one layer</small></dd></div>
     <div class="given"><dt>Mask</dt><dd>{gds['size_mb_by_format'].get('gds',0):.0f} MB<small>GDSII; {gds['size_mb_by_format'].get('oas',0):.1f} MB as OASIS</small></dd></div>
   </dl>
 
