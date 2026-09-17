@@ -11,14 +11,16 @@ import {
   type RenderRecipe,
 } from '../../src/api';
 
+// A pattern the box actually carries. The fixture used to name a retired
+// catalogue slug, which made a shape guard read like a catalogue claim.
 const SAMPLE: PatternManifest = {
-  slug: 'wayuu-kanasu-moire',
+  slug: 'globe-atlantic',
   variant: 'abcdef0123',
-  name: 'Wayuu kanasü moiré',
+  name: 'Atlantic globe',
   description: '',
-  tags: ['moire'],
+  tags: ['region_art'],
   params: { period_um: 4.0, duty: 0.5 },
-  substrate: { thickness_um: 500, material: 'fused silica', n: 1.46 },
+  substrate: { thickness_um: 2250, material: 'fused quartz', n: 1.4585 },
   extent_um: [2000, 2000],
   pixel_pitch_um: 0.5,
   min_feature_um: 2.0,

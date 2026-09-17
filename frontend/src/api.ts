@@ -104,7 +104,7 @@ async function tracedFetch(url: string, init?: RequestInit): Promise<Response> {
 
 /**
  * Human-readable text for a non-2xx response, safe to show in the header
- * error banner, the Pattern Lab error strip, or a picker retry tile.
+ * error banner or a picker retry tile.
  *
  * FastAPI reports every failure as `{"detail": "..."}` and our handlers put
  * the actionable sentence there ("regenerate the box and export again"), so
@@ -112,16 +112,12 @@ async function tracedFetch(url: string, init?: RequestInit): Promise<Response> {
  * error or a truncated stream is an HTML page. Truncated: the banner is one
  * line, and the full text still reaches the `title` tooltip.
  *
- * Every thrower whose message can reach a HUMAN routes through here: box
- * load/generate, fab export, and (as of this change) the two pattern endpoints
- * behind the Pattern Lab and the picker thumbnails. Those two used to build
- * their own strings — `getDefault(slug): 404` and `generatePattern: 400
- * {"detail":"…"}`, i.e. a status code plus the RAW body — which is the whole
- * reason PatternLab carries a `readableError` brace-scanner: the carefully
- * worded backend refusals (the 400k lattice budget, the ParamSpec range check,
- * the litho floor) surfaced as JSON repr noise. With the detail extracted here
- * `readableError` finds no brace and degrades to a passthrough; keep it that
- * way when adding an endpoint.
+ * Every thrower whose message can reach a HUMAN routes through here — which is
+ * now box load and box generate, the only two calls this visualizer makes that
+ * can be refused with something worth reading (the 400k lattice budget, the
+ * ParamSpec range check, the litho floor). Keep it that way when adding an
+ * endpoint: a status code plus the RAW body is how those carefully worded
+ * refusals used to surface as JSON repr noise.
  *
  * `listPatterns` / `listBoxes` deliberately still throw a bare status line:
  * neither message is ever shown (the catalog fetch retries forever and only
@@ -162,32 +158,12 @@ export async function listPatterns(): Promise<PatternDescriptor[]> {
   return r.json();
 }
 
-export async function getDefault(
-  slug: string,
-  opts: { signal?: AbortSignal } = {}
-): Promise<PatternManifest> {
-  const r = await tracedFetch(`/patterns/${slug}/default`, { signal: opts.signal });
-  // The slug is in the prefix because this is also the pattern-picker
-  // thumbnail fetch: a failed tile's tooltip has to name which pattern failed.
-  if (!r.ok) throw new Error(await errorDetail(r, `Load pattern ${slug}`));
-  return r.json();
-}
-
-export async function generatePattern(
-  slug: string,
-  params: Record<string, unknown>
-): Promise<PatternManifest> {
-  const r = await tracedFetch('/patterns/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ slug, params }),
-  });
-  // 400s here are the ones the user most needs to READ verbatim: the lattice
-  // budget refusal, the ParamSpec out-of-range rejection and the litho-floor
-  // refusal all put an actionable sentence in `detail`.
-  if (!r.ok) throw new Error(await errorDetail(r, `Regenerate ${slug}`));
-  return r.json();
-}
+// GET /patterns/{slug}/default and POST /patterns/generate had exactly one
+// caller each — the Pattern Lab, which asked the backend for a STANDALONE
+// pattern. The visualizer shows one box, composed in code, so the only thing it
+// asks the backend to build is a box (generateBox below); the picker's
+// thumbnails come straight off the cached PNG URLs (store.ts::loadThumbnails).
+// Both routes stay live for the CLI and for curl; the clients are gone.
 
 // -----------------------------------------------------------------------------
 // Ring Box Studio — BoxSpec / BoxManifest v2 per the design contract.

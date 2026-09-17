@@ -18,15 +18,22 @@ import {
 
 const mm1 = (um: number): string => (um / 1000).toFixed(1);
 
-/** One-click box size presets (outer dims, um). */
+/**
+ * One-click box size presets (outer dims, um).
+ *
+ * `production` is the box that ships — the same numbers api.ts::defaultBoxSpec
+ * and backend boxes.default_box_spec carry, so the rail opens with a preset
+ * selected instead of reading as a custom size. The rest are exploratory.
+ *
+ * The retired 'Mini (wafer)' preset sized the box so its six plates packed onto
+ * one 4-inch Si wafer; that flow went with export_wafer.py, and the plates are
+ * diced out of a 5-inch mask now.
+ */
 const SIZE_PRESETS = [
+  { id: 'production', label: 'Production', w: 32000, d: 32000, h: 35000 },
   { id: 'ring-box', label: 'Ring box', w: 50000, d: 50000, h: 40000 },
   { id: 'compact', label: 'Compact', w: 45000, d: 45000, h: 35000 },
   { id: 'pendant', label: 'Pendant', w: 40000, d: 40000, h: 55000 },
-  // Largest box whose 6 plates pack onto one 4-inch (100 mm) Si wafer with
-  // 300 um dicing streets — the fab wafer-layout target (see
-  // backend/app/export_wafer.py::solve_max_scale). H/W keeps the 0.8 ratio.
-  { id: 'mini-wafer', label: 'Mini (wafer)', w: 28900, d: 28900, h: 23120 },
 ] as const;
 
 /** Brass hinge tube OD presets (um). */

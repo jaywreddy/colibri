@@ -26,20 +26,6 @@ describe('api', () => {
     expect(out).toEqual([{ slug: 'photo-halftone' }]);
   });
 
-  it('generatePattern POSTs slug+params as JSON', async () => {
-    const spy = mockFetchOk({ slug: 'x', variant: 'v' });
-    vi.stubGlobal('fetch', spy);
-    await api.generatePattern('photo-halftone', { period_um: 4.0 });
-    const [url, opts] = spy.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/patterns/generate');
-    expect(opts.method).toBe('POST');
-    expect((opts.headers as Record<string, string>)['Content-Type']).toBe('application/json');
-    expect(JSON.parse(opts.body as string)).toEqual({
-      slug: 'photo-halftone',
-      params: { period_um: 4.0 },
-    });
-  });
-
   it('throws on non-ok response', async () => {
     vi.stubGlobal(
       'fetch',
@@ -147,7 +133,7 @@ describe('defaultBoxSpec (contract defaults)', () => {
       // 2.25 mm quartz) and the 65.5 um carrier lands at 295 um.
       expect(f.carrier_scale_mode).toBe('fixed');
       expect(f.carrier_pitch_um).toBe(65.5);
-      // Only the two photo walls leave their inner ply bare.
+      // EVERY wall is one written ply over a bare inner ply (2026-09-15).
       expect(f.single_ply).toBe(true);
       // Stamped front-art rim (bondedArtKeepoutUm). The bonded 2.25 mm plies
       // make the 3/8" (9525 um) tape wrap a stepped edge that consumes 3p =
