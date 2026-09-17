@@ -59,7 +59,9 @@ def _as_unit_mask(mask: Image.Image | np.ndarray) -> np.ndarray:
     bool arrays are taken as already 0..1 (1 = gold).
     """
     if isinstance(mask, Image.Image):
-        return _to_unit(mask)
+        # an 'L' image: 0..255 -> 0..1 (the helper this used to call went with
+        # the catalogue trim; the conversion is one line)
+        return np.asarray(mask.convert("L"), dtype=np.float32) / 255.0
     arr = np.asarray(mask)
     if arr.ndim != 2:
         raise ValueError(f"mask must be 2D, got shape {arr.shape}")
