@@ -1,11 +1,42 @@
 # Ring Box Studio
 
-A single-screen designer for a stained-glass-style glass ring box: six fused-silica
-plates carrying dual-layer gold-on-quartz moire patterns framed by generative gold
-engraving (vines, Colombian flora), assembled Tiffany-style with copper-foil tape and
-soldered seams, and hinged with a brass tube-and-rod hinge along the back top edge.
-The browser preview renders the full box in 3D — glass slabs, pattern shaders, foil
-strips, solder beads, hinge — with an animated opening lid.
+A stained-glass-style ring box in gold-on-quartz lithography: six single 2.25 mm
+fused-quartz plies, each carrying a single-layer diffraction picture (the J+P
+monogram, an Atlantic globe, three halftoned photographs, one solid gold base)
+whose colours are set by grating period, framed by generative gold engraving
+(vines, Colombian flora), butt-jointed Tiffany-style with 1/4″ copper-foil tape
+and soldered seams, and hinged with a brass tube-and-rod hinge along the back
+top edge. The browser preview renders the full box in 3D — glass slabs, pattern
+shaders, foil strips, solder beads, hinge — with an animated opening lid.
+
+## Status (2026-09-17) — parked, buttoned up
+
+- **Mask written.** The 5″ plate (`backend/data/witness/witness-5in.{gds,oas}`,
+  133.7 MB / 4.6 MB, 11 dies + 8 bench cells in a dicing grid) was written on
+  2026-09-15 and is the fab deliverable AND the regression gate: `just plate`
+  must rebuild it byte-identical per layer (write layer 10/0: 2,120,825
+  shapes). `docs/mask-writing.md` has the CMU recipe, `DICING.md` beside the
+  mask has the saw plan, `docs/assembly.md` the bench procedure.
+- **Repo cleaned up.** 2026-09-15..17: single-ply only, five box slugs plus two
+  hidden two-ply exemplars, simulators / Pattern Lab / wafer flow deleted,
+  constants in one holder (`app/production.py`), `app/plates/` package,
+  content-fingerprinted caches. History was rewritten to purge the personal
+  photographs (see below) — an old clone must be re-cloned, not pulled.
+- **Photographs are not in git.** The six pictures under
+  `backend/app/assets/photos/<name>.png` and the raw `photos/` folder are
+  personal, ignored, and live only on the author's disk (copies in
+  `photos/prepared/`). A fresh clone can run everything except the photo
+  faces and the plate; the tests that need a picture skip with a printed
+  reason (`pytest -rs`), which is why CI is green without them.
+- **Gates at parking:** CI green (frontend 78 vitest; backend chunks 1 and 9);
+  locally e2e 26/26, all 8 backend chunks, mask rebuild identical.
+- **Open decision:** the plate-ID ticks sit 2.94 mm from the ply edge, outside
+  the 2.05 mm 1/4″ foil fold, so they show on the box unless the solder bead
+  covers them. Accept, or move them on the next plate (a mask change —
+  `production.ID_TICK_OFFSET_UM`, gated by the witness rebuild).
+- **Resume:** `just dev` for the visualizer; `just test-backend` (8 sequential
+  chunks, one at a time — CLAUDE.md); `just plate` alone, ~8 min. The
+  decision log is `docs/decisions.md`, the plan `docs/plan.md`.
 
 **Where the design lives:** in code. `backend/app/boxes.py::default_box_spec` is the
 box — the six faces, their patterns, frame dials, band widths, seeds and ply policy —
@@ -38,8 +69,14 @@ backend/   FastAPI (Python, uv). ALL geometry in micrometers (um).
   app/assembly.py        assembly math: cut list, foil keep-out, seams, hinge —
                          pure geometry/validation, no I/O
   app/boxes.py           BoxSpec (6 faces + glass/foil/hinge) -> box manifest
-  app/plates.py          PlateSpec (central pattern + frame) -> raster compose,
-                         lazy SVG (ensure_plate_svg), cache under data/plates/<hash>
+  app/production.py      the ONE holder of process / stock / box constants;
+                         generates frontend/src/production.ts
+  app/plates/            PlateSpec (central pattern + frame) -> raster compose,
+                         lazy SVG; spec / recipe / photo / compose / literal /
+                         svg modules, cache under data/plates/<hash>
+  app/cache_fingerprint.py
+                         AST content fingerprints that invalidate the caches
+                         after a code / constant / asset change
   app/service.py         pattern materialize + disk cache under data/<slug>/<variant>
   app/patterns/          pattern registry, moire motifs, frame engine (frames/),
                          bitmap/ (photo -> halftone plates, assets/bitmaps/),
@@ -70,7 +107,7 @@ both sides must produce identical numbers for the same spec.
 
 **Default box (2026-09-15):** the six-face production plan
 (`backend/app/boxes.default_box_spec`) is all SINGLE-PLY, one written 2.25 mm
-fused-quartz ply per face over a bare inner ply: top = `monogram-jp` (the J and
+fused-quartz ply per face, no inner ply: top = `monogram-jp` (the J and
 the P as two grating periods), front = `globe-atlantic` (one orthographic view
 holding the US, Colombia and Europe, colour by region), left = `photo-halftone`
 beach, right = `photo-halftone` sunset, back = `photo-halftone` Paris (each with
@@ -90,7 +127,7 @@ Plate SVGs are also lazy: built on first fab-export request, not at compose time
 ## Tests
 
 ```sh
-just test-backend   # backend pytest, run as 10 sequential chunks (see below)
+just test-backend   # backend pytest, run as 8 sequential chunks (see below)
 just test-unit      # frontend vitest
 just test-e2e       # Playwright E2E (spins up both servers itself)
 just test-all       # all three layers, sequentially
@@ -151,7 +188,7 @@ from real kernel bugchecks (2026-06-10). Read these before touching geometry cod
   overlay in one pass — this is what froze and bugchecked the host. Hot paths use
   *concatenation* instead: overlapping members raster and SVG-fill identically,
   and the only consumers are fill-only. The authoritative in-code docstrings:
-  - `app/plates.py::_concat_polygons` — why plate composition concatenates
+  - `app/plates/compose.py::_concat_polygons` — why plate composition concatenates
   - `app/patterns/_helpers.py::crop_parts` — per-part clip instead of a
     whole-geometry intersection (and the OGC-validity caveat)
   - `app/patterns/frames/api.py::scene_to_multipolygon` — frame mask concat + crop
@@ -162,7 +199,7 @@ from real kernel bugchecks (2026-06-10). Read these before touching geometry cod
   The remaining `unary_union` calls in `_helpers.py` live only in caller-less
   helpers (`dot_array`, `zone_plate`, `ring_grating`, `chevron_stripes`) — each
   carries a docstring stating its concat-safety class if revived.
-- **Chunked test runs.** The backend suite is run as 5 sequential pytest
+- **Chunked test runs.** The backend suite is run as 8 sequential pytest
   invocations (`just test-backend`), each peaking around ~1 GB. Never run the
   whole suite in one process or chunks in parallel; never run two heavy compute
   processes concurrently. See `CLAUDE.md` for operator rules.

@@ -8,12 +8,13 @@
 > current physics extracted to `docs/physics-appendix.md` and the decision
 > table + BOM numbers extracted to `docs/decisions.md`.
 
-Status: **BUILT**, 2026-09-10 (second rebuild), on **2.25 mm fused quartz** (n = 1.4585). The plate is
-`backend/data/witness/witness-5in.{gds,oas}` (60.8 MB / 3.3 MB, 23 cells, 115.3 of 117.9 mm); the physics argument and the
-as-built numbers are in `archived/witness-physics-plan.md` (§4.7 for the dies). This file
-records the decisions and how they were validated. The 2026-09-10 rebuild
-follows a three-part review (faces, renderer, mechanics) — §6 lists what it
-found and what changed.
+Status: **WRITTEN**, 2026-09-15 (single-ply dicing-grid plate), on **2.25 mm fused quartz** (n = 1.4585). The plate is
+`backend/data/witness/witness-5in.{gds,oas}` (133.7 MB / 4.6 MB; 11 dies — lid ×2, base, front, back, six sides — plus
+8 bench cells; write layer 10/0 only, 2,120,825 shapes); `DICING.md` beside it is the saw plan. `just plate` must
+rebuild it byte-identical per layer — that rebuild is the regression gate for every code change since. The physics
+argument is in `physics-appendix.md` (the two-ply whitepaper it replaced is `archived/witness-physics-plan.md`). This
+file records the decisions and how they were validated; the 2026-09-10 rebuild it grew out of followed a three-part
+review (faces, renderer, mechanics) — §6 lists what it found and what changed.
 
 ## 0. Decisions, as taken
 > **2026-09-16 — no pairs at all.** The box is six SINGLE 2.25 mm plies,
