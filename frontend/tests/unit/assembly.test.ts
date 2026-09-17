@@ -266,6 +266,8 @@ describe('validation', () => {
 describe('stampFaces (box-level normalization)', () => {
   it('stamps glass, cut dims and keep-out into every face', () => {
     const s = spec();
+    // This test checks the DERIVED keep-out; the production pin would win.
+    s.art_rim_um = null;
     s.faces.front = { ...s.faces.front!, width_um: 1, height_um: 2, weld_margin_um: 0 };
     const stamped = stampFaces(s);
     expect(stamped.faces.front!.width_um).toBe(50000);

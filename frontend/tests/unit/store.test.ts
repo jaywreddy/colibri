@@ -28,8 +28,8 @@ describe('store (Ring Box Studio v2)', () => {
     expect(s.width_um).toBe(32000);
     expect(s.depth_um).toBe(32000);
     expect(s.height_um).toBe(35000);
-    expect(s.bonded).toBe(true);
-    expect(s.foil.tape_width_um).toBe(9525);
+    expect(s.bonded).toBe(false);
+    expect(s.foil.tape_width_um).toBe(6350);
     expect(s.hinge.segments).toBe(5);
   });
 
@@ -39,7 +39,7 @@ describe('store (Ring Box Studio v2)', () => {
     // preset tape folds over at all and every keep-out collapses to the bare
     // safety margin — a correct number, but one that cannot show that the
     // re-stamp happened at all. Move to a geometry where the tape does fold.
-    useStore.getState().patchBoxSpec({ bonded: false });
+    useStore.getState().patchBoxSpec({ bonded: false, art_rim_um: null });
     useStore.getState().patchGlass({ thickness_um: 500 });
     useStore.getState().patchFoil({ tape_width_um: 4763 });
     const s = useStore.getState().boxSpec;
