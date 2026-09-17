@@ -214,15 +214,20 @@ export function copperTapeLengthCm(spec: BoxSpec): number {
  * serialize differently depending on which side normalized it last.
  */
 export function stampFaces(spec: BoxSpec): BoxSpec {
+  // PINNED rim: a box whose mask is already written states its art rim rather
+  // than deriving it from the current foil, and the same number bounds both
+  // layers of every face (mirrors backend BoxSpec.art_rim_um /
+  // boxes.normalize_face_dims / PRODUCTION_ART_RIM_UM).
+  const pinned = spec.art_rim_um ?? null;
   // Bonded: front art starts at the larger of the foil rim and the inner ply's
   // window (mirrors backend boxes.normalize_face_dims / bonded_art_keepout_um).
-  const ko = spec.bonded ? bondedArtKeepoutUm(spec) : keepoutUm(spec);
+  const ko = pinned ?? (spec.bonded ? bondedArtKeepoutUm(spec) : keepoutUm(spec));
   // Bonded: the back layer lives on the INNER ply, whose edge is already one
   // ply in — expressed in the shared outer-ply frame its window insets by
   // ply + interior fold (mirrors backend boxes.normalize_face_dims).
-  const bw = spec.bonded
-    ? spec.glass.thickness_um + backWindowUm(spec)
-    : backWindowUm(spec);
+  const bw =
+    pinned ??
+    (spec.bonded ? spec.glass.thickness_um + backWindowUm(spec) : backWindowUm(spec));
   const cuts = new Map(cutList(spec).map((c) => [c.face, c]));
   // Keyed by string, not FaceId, because unknown keys survive the stamp.
   const faces: Record<string, PlateSpec> = {};

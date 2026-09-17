@@ -266,11 +266,13 @@ def test_default_box_spec_matches_contract():
     from app.boxes import FACE_IDS, default_box_spec
 
     spec = default_box_spec()
-    # THE PRODUCTION BOX: bonded 2.25 mm fused-quartz plies. These six numbers
+    # THE PRODUCTION BOX: six SINGLE 2.25 mm fused-quartz plies, butt-jointed
+    # with 1/4" foil (2026-09-16 — no inner plies, no bonding). These numbers
     # are mirrored term for term by the frontend's defaultBoxSpec(); the two
     # must move together or the live preview stops describing the real part.
     assert (spec.width_um, spec.depth_um, spec.height_um) == (32000.0, 32000.0, 35000.0)
-    assert spec.bonded is True
+    assert spec.bonded is False
+    assert spec.foil.tape_width_um == 6350.0
     assert spec.glass.thickness_um == 2250.0
     assert spec.glass.material == "fused quartz"
     assert spec.glass.n == pytest.approx(1.4585)
@@ -296,6 +298,86 @@ def test_default_box_spec_matches_contract():
     assert spec.faces["left"].pattern_params == {"image": "beach", "colour_mode": "authored"}
     assert spec.faces["right"].pattern_params == {"image": "sunset", "colour_mode": "authored"}
     assert [fid for fid in FACE_IDS if spec.faces[fid].single_ply] == list(FACE_IDS)
+
+
+def test_the_production_art_rim_is_pinned_not_derived_from_the_foil():
+    """The 2026-09-15 plate was WRITTEN with a 3.6375 mm rim on every face,
+    chosen when the box was bonded (one ply + the interior foil fold). The box
+    is six single plies now and its 1/4" foil implies a 2.55 mm rim instead —
+    but the mask does not move for a construction change, so the rim is PINNED.
+
+    Both layers carry it: on a single ply the front keep-out is the smaller of
+    the two rims (plates._raster_compose_plate), so a narrower back window would
+    pull the garland in just as surely as a narrower weld margin."""
+    from app.assembly import keepout_um
+    from app.boxes import FACE_IDS, PRODUCTION_ART_RIM_UM, default_box_spec
+
+    spec = default_box_spec()
+    assert PRODUCTION_ART_RIM_UM == 3637.5
+    assert spec.art_rim_um == PRODUCTION_ART_RIM_UM
+    # ...and it is NOT what this box's foil would give.
+    assert keepout_um(spec.foil, spec.glass.thickness_um) == pytest.approx(2550.0)
+    for fid in FACE_IDS:
+        face = spec.faces[fid]
+        assert face.weld_margin_um == PRODUCTION_ART_RIM_UM, fid
+        assert face.back_margin_um == PRODUCTION_ART_RIM_UM, fid
+    # Re-normalizing (materialize_box does it every time) must not undo it.
+    spec.normalize_face_dims()
+    assert spec.faces["top"].weld_margin_um == PRODUCTION_ART_RIM_UM
+
+
+def test_a_box_that_pins_no_rim_still_derives_one_from_its_foil():
+    """The pin is opt-in: any box the user builds keeps the derived rim."""
+    from app.assembly import back_window_um, keepout_um
+    from app.boxes import BoxSpec
+    from app.plates import PlateSpec
+
+    spec = BoxSpec(width_um=24000.0, depth_um=24000.0, height_um=24000.0)
+    spec.faces["top"] = PlateSpec(pattern_slug="monogram-jp")
+    assert spec.art_rim_um is None
+    spec.normalize_face_dims()
+    t = spec.glass.thickness_um
+    assert spec.faces["top"].weld_margin_um == keepout_um(spec.foil, t)
+    assert spec.faces["top"].back_margin_um == back_window_um(spec.foil, t)
+
+
+def test_the_ring_fits_a_single_ply_wall():
+    """One ply per face means a 2.25 mm wall, not a 4.5 mm bonded stack: the
+    same 32 x 32 x 35 mm outer box opens from a 23 mm interior to
+    27.5 x 27.5 x 30.5 mm, and the ring gains 4.5 mm on every axis."""
+    from app.boxes import PRODUCTION_PLY_UM, ring_fit, ring_interior_um
+
+    fit = ring_fit(32000.0, 32000.0, 35000.0, PRODUCTION_PLY_UM)
+    assert fit["interior_um"] == [27500.0, 27500.0, 30500.0]
+    assert fit["needed_um"] == list(ring_interior_um())
+    assert fit["clearance_um"] == [4500.0, 4500.0, 4500.0]
+    assert fit["fits"] is True
+
+
+def test_the_single_ply_cut_dims_are_the_dies_that_were_written():
+    """The inner plies leaving must not move a die. A face's OUTER ply was
+    always cut at the PLY thickness, so the single-ply ``face_cut_dims`` and the
+    bonded panelizer's ``face:F`` rect are the same rectangle — 32 x 32 for the
+    lid and base, 32 x 30.5 front and back, 27.5 x 30.5 for the sides, which is
+    what the 2026-09-15 plate was diced to."""
+    from app import ply_cuts as pc
+    from app.assembly import FACE_IDS, face_cut_dims
+    from app.boxes import PRODUCTION_PLY_UM, default_box_spec
+
+    spec = default_box_spec()
+    dims = (spec.width_um, spec.depth_um, spec.height_um)
+    pair = {r.face: (r.width_um, r.height_um)
+            for r in pc.pair_rects(*dims, PRODUCTION_PLY_UM)}
+    want = {
+        "top": (32000.0, 32000.0), "bottom": (32000.0, 32000.0),
+        "front": (32000.0, 30500.0), "back": (32000.0, 30500.0),
+        "left": (27500.0, 30500.0), "right": (27500.0, 30500.0),
+    }
+    for fid in FACE_IDS:
+        single = face_cut_dims(fid, *dims, PRODUCTION_PLY_UM)
+        assert single == pair[pc.subplate_id(fid, "F")], fid
+        assert single == want[fid], fid
+        assert (spec.faces[fid].width_um, spec.faces[fid].height_um) == want[fid], fid
 
 
 # ----- production face types --------------------------------------------------

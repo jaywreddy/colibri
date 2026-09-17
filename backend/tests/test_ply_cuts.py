@@ -16,6 +16,7 @@ from app.patterns.base import LITHO_FLOOR_UM
 from app.ply_cuts import (
     Placement,
     dice_tick_rects,
+    PRODUCTION_ID_TICK_OFFSET_UM,
     fold_band_offset_um,
     id_tick_rects,
     mirror_rects,
@@ -82,6 +83,34 @@ def test_id_ticks_encode_face_and_layer():
             assert widths.min() >= LITHO_FLOOR_UM
             # Inside the inner ply footprint, in the interior fold band.
             assert (np.abs(rects[:, 2:]) <= h / 2 - PLY + 1e-6).all()
+
+
+def test_the_production_tick_band_offset_is_pinned():
+    """The ID ticks on the written plate sit 2.94375 mm in from the die edge —
+    ``fold_band_offset_um(2250, 1387.5)``, the centre of the interior foil-fold
+    band of the BONDED build. The box is six single plies with 1/4" tape now, so
+    the derived band would be somewhere else entirely; the offset is PINNED so
+    the plate does not change."""
+    from app.witness_dies import bench_marks
+
+    assert PRODUCTION_ID_TICK_OFFSET_UM == pytest.approx(fold_band_offset_um(PLY, FOLD))
+    assert PRODUCTION_ID_TICK_OFFSET_UM == 2943.75
+
+    h = 32_000.0
+    ticks = id_tick_rects(0, False, h, h, PLY, 0.0,
+                          band_offset_um=PRODUCTION_ID_TICK_OFFSET_UM)
+    cy = (ticks[0][2] + ticks[0][3]) / 2.0
+    assert h / 2.0 + cy == pytest.approx(PRODUCTION_ID_TICK_OFFSET_UM)
+    # ...and that is what the plate writer actually emits.
+    plate = bench_marks("front", "F", h, h)
+    assert np.allclose(plate[: len(ticks)], id_tick_rects(
+        0, False, h, h, PLY, 0.0, band_offset_um=PRODUCTION_ID_TICK_OFFSET_UM))
+    # And where that leaves them on the NEW build: the 1/4" fold reaches
+    # 2.05 mm, so the tick is no longer under the copper — it sits in the blank
+    # ring between the fold and the 3.6375 mm art rim. Outside the garland,
+    # inside the rim, and visible unless the bead covers it (see the constant's
+    # docstring). Pinned here so that fact cannot change silently.
+    assert 2050.0 < PRODUCTION_ID_TICK_OFFSET_UM < 3637.5
 
 
 def test_dice_ticks_stay_in_the_street():

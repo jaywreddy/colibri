@@ -370,8 +370,14 @@ export type BoxSpec = {
   /** Bonded (two-ply) construction: each face is TWO single-side plates glued
    * face-to-face. glass.thickness_um is then the PLY (also the optical
    * parallax gap); the wall is 2x; cut dims / foil margins follow the
-   * nested-shell math. Default false (classic single double-side plate). */
+   * nested-shell math. Default false — the production box is six single plies
+   * since 2026-09-16. */
   bonded?: boolean;
+  /** PINNED art rim (um), overriding the rim stampFaces would derive from the
+   * foil, on BOTH layers of every face. null/absent = derive it. The production
+   * box pins it because its mask is already written — mirrors backend
+   * BoxSpec.art_rim_um / boxes.PRODUCTION_ART_RIM_UM. */
+  art_rim_um?: number | null;
   /** Litho metal for the PREVIEW's conductor response (masks are identical):
    * 'gold' | 'chrome' (bright, platinum-line read) | 'chrome-ar' (AR-coated
    * mask grade, ink-black linework). */
@@ -540,12 +546,13 @@ export function defaultGlassSpec(): GlassSpec {
 }
 
 /**
- * PRODUCTION foil: 3/8" copper. A bonded 2.25 mm stack wraps a 6.75 mm stepped
- * edge; 1/4" tape is 0.4 mm short of it and leaves no fold. Mirrors backend
- * boxes.PRODUCTION_TAPE_UM.
+ * PRODUCTION foil: 1/4" copper. A single 2.25 mm ply is a 2.25 mm edge, so the
+ * tape leaves a 2.05 mm fold on each face — clear of the 3.6375 mm art rim.
+ * (The bonded build needed 3/8" to wrap its 6.75 mm stepped edge.) Mirrors
+ * backend boxes.PRODUCTION_TAPE_UM.
  */
 export function defaultFoilSpec(): FoilSpec {
-  return { tape_width_um: 9525.0, safety_um: 500.0, bead_um: 2000.0, finish: 'bright' };
+  return { tape_width_um: 6350.0, safety_um: 500.0, bead_um: 2000.0, finish: 'bright' };
 }
 
 export function defaultHingeSpec(): HingeSpec {
@@ -588,10 +595,22 @@ export function defaultPlateSpec(
 export const PRODUCTION_CARRIER_UM = 65.5;
 
 /**
- * The PRODUCTION box — 32 × 32 × 35 mm outer (a 23 × 23 × 26 mm interior for a
- * 21 mm ring standing in a 1 mm liner; backend boxes.RING_*), bonded 2.25 mm fused-quartz
- * plies. MUST stay identical to backend `boxes.default_box_spec()`: this is what
- * the live preview POSTs and what the fab bake ships.
+ * The PRODUCTION art rim, micrometres, PINNED. Every face's gold starts
+ * 3.6375 mm in from its edge — the number the 2026-09-15 plate was WRITTEN
+ * with, chosen when the box was bonded (one ply + the interior foil fold) and
+ * kept so the plate does not change now that the box is six single plies.
+ * Mirrors backend boxes.PRODUCTION_ART_RIM_UM.
+ */
+export const PRODUCTION_ART_RIM_UM = 3637.5;
+
+/**
+ * The PRODUCTION box — 32 × 32 × 35 mm outer, SIX SINGLE 2.25 mm fused-quartz
+ * plies butt-jointed with 1/4" foil (2026-09-16: no inner plies, no bonding),
+ * which opens the interior to 27.5 × 27.5 × 30.5 mm for a 21 mm ring standing
+ * in a 1 mm liner (backend boxes.RING_*). The art rim is PINNED, not derived
+ * from the foil, because the plate is already written. MUST stay identical to
+ * backend `boxes.default_box_spec()`: this is what the live preview POSTs and
+ * what the fab bake ships.
  */
 export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxSpec {
   const faces: Partial<Record<FaceId, PlateSpec>> = {};
@@ -620,7 +639,8 @@ export function defaultBoxSpec(patternSlug: string = DEFAULT_PATTERN_SLUG): BoxS
     hinge: defaultHingeSpec(),
     faces,
     carrier_pitch_um: PRODUCTION_CARRIER_UM,
-    bonded: true,
+    bonded: false,
+    art_rim_um: PRODUCTION_ART_RIM_UM,
     metal: 'gold',
     label: '',
   };

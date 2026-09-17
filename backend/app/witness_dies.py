@@ -96,23 +96,19 @@ def die_dims(face: str) -> dict[str, float]:
     return {"f_w": fw, "f_h": fh, "b_w": bw, "b_h": bh}
 
 
-def _fold_um() -> float:
-    from .assembly import bonded_overlap_um
-
-    _, spec = blank_plan()
-    return bonded_overlap_um(spec.foil, PLY_UM)
-
-
 def bench_marks(face: str, ply: str, stack_w: float, stack_h: float) -> np.ndarray:
     """Tick-code ID for one ply (``face`` index + 1 bars, underlined on a B
-    ply), in the interior foil-fold band — stack-centred, METAL sense. The
-    vernier combs of the bonded design are not written: the plate carries
-    single plies and a bare inner ply has nothing to beat against."""
+    ply), under the foil band — stack-centred, METAL sense. The vernier combs
+    of the bonded design are not written: the plate carries single plies and
+    there is nothing behind one to beat against.
+
+    The band offset is PINNED (``ply_cuts.PRODUCTION_ID_TICK_OFFSET_UM``), not
+    derived from the box's current foil: these marks are on the written plate."""
     from .assembly import FACE_IDS
 
-    fold = _fold_um()
     return pc.id_tick_rects(list(FACE_IDS).index(face), ply == "B",
-                            stack_w, stack_h, PLY_UM, fold)
+                            stack_w, stack_h, PLY_UM, 0.0,
+                            band_offset_um=pc.PRODUCTION_ID_TICK_OFFSET_UM)
 
 
 def dice_ticks(w: float, h: float) -> np.ndarray:

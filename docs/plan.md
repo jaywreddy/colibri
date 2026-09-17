@@ -16,6 +16,16 @@ follows a three-part review (faces, renderer, mechanics) — §6 lists what it
 found and what changed.
 
 ## 0. Decisions, as taken
+> **2026-09-16 — no pairs at all.** The box is six SINGLE 2.25 mm plies,
+> butt-jointed: no inner plies, no bonding, 1/4″ foil, a 2.25 mm wall and a
+> 27.5 × 27.5 × 30.5 mm interior. See decision 12 in `docs/decisions.md` for
+> what that changed and, more to the point, for the two numbers it deliberately
+> did NOT change — the art rim (3637.5 µm) and the ID-tick band offset
+> (2943.75 µm) are PINNED to what the 2026-09-15 plate was written with, and the
+> die sizes were already the single-ply cut dims. The mask below still describes
+> the plate on the bench. Everything in §0 that reads "bonded", "pair", "inner
+> ply", "4.5 mm wall" or "3/8″ tape" is the build history, not the build.
+
 
 | # | Decision | Taken |
 |---|---|---|
