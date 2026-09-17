@@ -5,12 +5,13 @@
 # and write fab masks; on the dev host they are the "one heavy process at a
 # time" rule (CLAUDE.md), and on a shared runner they are minutes of wall clock
 # for a signal the local `just test-e2e` / `just test-backend` already give.
-# This workflow answers one question fast: does the tree still typecheck, do the
-# unit tests pass, and do the two light backend chunks still hold?
+# This workflow answers one question fast: does the tree still typecheck and
+# lint, do the unit tests pass, and do the two light backend chunks still hold?
 name: ci
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -32,6 +33,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: typecheck
         run: pnpm exec tsc --noEmit
+      # `pnpm lint` IS the package script (eslint.config.js ignores dist/,
+      # node_modules/ and the Playwright output dirs), so what CI runs and what
+      # a developer runs are the same command — a CI lint failure reproduces
+      # with one copy-paste. Warnings do not fail the build: the config turns on
+      # only rules that catch defects, and the ~12 standing warnings are
+      # exhaustive-deps notes on effects that are deliberately narrow.
+      - name: lint
+        run: pnpm lint
       - name: unit tests
         run: pnpm exec vitest run
 
@@ -45,15 +54,20 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      # Resolve + install once, so the two pytest steps below are pure test runs
+      # and a dependency break reports as a dependency break.
+      - name: install
+        run: uv sync --extra dev
       # Chunks 1 and 9 of the justfile's proven order — the assembly contract
       # and the plate/box composition (1), and the screen-rect / colour-plan /
-      # witness geometry (9). Run as two SEPARATE steps, never one pytest
-      # invocation: the chunking is a memory bound, and keeping the CI command
-      # shape identical to the local one is what makes a CI failure
+      # witness / ply-cut geometry (9). Run as two SEPARATE steps, never one
+      # pytest invocation: the chunking is a memory bound, and keeping the CI
+      # command shape identical to the local one is what makes a CI failure
       # reproducible with a single copy-paste.
       - name: pytest chunk 1
         run: uv run --extra dev pytest tests/test_assembly.py tests/test_plates_and_boxes.py -q
       - name: pytest chunk 9
         run: >-
           uv run --extra dev pytest tests/test_screenrects.py tests/test_colourplan.py
-          tests/test_witness.py tests/test_export_svg_rects.py -q
+          tests/test_witness.py tests/test_ply_cuts.py tests/test_export_svg_rects.py -q
